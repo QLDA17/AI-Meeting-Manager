@@ -1,0 +1,14 @@
+-- MultiMinutes AI MySQL bootstrap schema
+CREATE TABLE IF NOT EXISTS meetings (
+    id VARCHAR(64) PRIMARY KEY,
+    title VARCHAR(500) NOT NULL,
+    meeting_date VARCHAR(64) NOT NULL,
+    duration VARCHAR(64) NOT NULL,
+    speaker_count INT NOT NULL DEFAULT 0,
+    transcript LONGTEXT NULL,
+    summary_json LONGTEXT NULL,
+    status VARCHAR(32) NOT NULL,
+    llm_source VARCHAR(32) NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

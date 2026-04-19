@@ -1,0 +1,109 @@
+[
+  {
+    "id": "m1",
+    "title": "Daily Standup - Project MultiMinutes",
+    "date": "2026-04-07 09:00",
+    "duration": "15m",
+    "speaker_count": 3,
+    "status": "completed",
+    "llm_source": "live",
+    "transcript": "[00:00:01] [Speaker_1] Hello everyone, let's start the standup.\n[00:00:05] [Speaker_2] I completed the R3-09 stabilization task.\n[00:00:10] [Speaker_3] Great, I will start R4-01 today.",
+    "summary": {
+      "key_points": [
+        "Standup started",
+        "R3-09 completed",
+        "R4-01 starting"
+      ],
+      "decisions": [
+        "Proceed with UI foundation"
+      ],
+      "action_items": [
+        {
+          "task": "Develop R4-01 UI",
+          "owner": "Speaker_3",
+          "deadline": "2026-04-08"
+        }
+      ],
+      "meeting_summary": "Daily standup focusing on the transition from backend stabilization to UI foundation."
+    },
+    "created_at": "2026-04-09T01:12:51.796052"
+  },
+  {
+    "id": "m2",
+    "title": "Technical Design Review",
+    "date": "2026-04-06 14:00",
+    "duration": "45m",
+    "speaker_count": 5,
+    "status": "completed",
+    "llm_source": "fallback",
+    "transcript": "[00:00:01] [Speaker_1] Let's review the Gemini integration.\n[00:05:00] [Speaker_4] We need adaptive traffic shaping.",
+    "summary": {
+      "key_points": [
+        "Gemini review",
+        "Quota issues discussed"
+      ],
+      "decisions": [
+        "Implement adaptive shaping"
+      ],
+      "action_items": [],
+      "meeting_summary": "Review of the technical architecture for Google Gemini integration."
+    },
+    "created_at": "2026-04-09T01:12:51.808585"
+  },
+  {
+    "id": "m3",
+    "title": "u_vld2chgq8f-magma-prod-2025-sample-142bpm-459102.mp3",
+    "date": "2026-04-09 01:18",
+    "duration": "0m 15s",
+    "speaker_count": 3,
+    "status": "completed",
+    "llm_source": "live",
+    "transcript": "[00:00:01] [Speaker_1] Hello everyone, let's start the standup.\n[00:00:05] [Speaker_2] I completed the R3-09 stabilization task and it's working well.\n[00:00:10] [Speaker_3] Great job. I've started the R4-03 Real-time Transcription View today.\n[00:00:15] [Speaker_1] Excellent, let's proceed with the summary generation.",
+    "summary": {
+      "key_points": [
+        "Standup meeting discussing R3-09 and R4-03",
+        "Staged processing verified"
+      ],
+      "decisions": [
+        "Proceed to next feature development"
+      ],
+      "action_items": [
+        {
+          "task": "Complete R4-03 UI",
+          "owner": "Speaker_3",
+          "deadline": "Today"
+        }
+      ],
+      "meeting_summary": "Auto-generated summary after full staged processing."
+    },
+    "created_at": "2026-04-09T01:18:04.657690"
+  },
+  {
+    "id": "m4",
+    "title": "recording.wav",
+    "date": "2026-04-10 23:43",
+    "duration": "0m 15s",
+    "speaker_count": 3,
+    "status": "completed",
+    "llm_source": "live",
+    "transcript": "[00:00:01] [Speaker_1] Hello everyone, let's start the standup.\n[00:00:05] [Speaker_2] I completed the R3-09 stabilization task and it's working well.\n[00:00:10] [Speaker_3] Great job. I've started the R4-03 Real-time Transcription View today.\n[00:00:15] [Speaker_1] Excellent, let's proceed with the summary generation.",
+    "summary": {
+      "key_points": [
+        "Standup meeting discussing R3-09 and R4-03",
+        "Staged processing verified"
+      ],
+      "decisions": [
+        "Proceed to next feature development"
+      ],
+      "action_items": [
+        {
+          "task": "Complete R4-03 UI",
+          "owner": "Speaker_3",
+          "deadline": "Today"
+        }
+      ],
+      "meeting_summary": "Auto-generated summary after full staged processing."
+    },
+    "created_at": "2026-04-10T23:43:15.748881"
+  }
+]

@@ -1,0 +1,49 @@
+agents:
+  technical:
+    - id: backend_core_agent
+      role: Backend Core Agent
+      goal: Build STT, translation, summarization APIs
+    - id: backend_audio_agent
+      role: Backend Audio Agent
+      goal: Handle audio capture, denoise, and chunking
+    - id: frontend_agent
+      role: Frontend Agent
+      goal: Build dashboard, transcript sync, and exports
+    - id: db_designer_agent
+      role: DB Designer Agent
+      goal: Design schema, migrations, indexing
+    - id: devops_agent
+      role: DevOps Agent
+      goal: Build CI/CD and deployment automation
+    - id: architect_agent
+      role: Architect Agent
+      goal: Validate integration and system architecture
+  schedule_cost:
+    - id: cost_estimator_agent
+      role: Cost Estimator Agent
+      goal: Estimate token budgets and monthly cost
+    - id: resource_optimizer_agent
+      role: Resource Optimizer Agent
+      goal: Reduce cost via caching and batching
+    - id: prompt_engineer_agent
+      role: Prompt Engineer Agent
+      goal: Run prompt A/B and version prompts
+    - id: tech_writer_agent
+      role: Tech Writer Agent
+      goal: Produce technical documentation and changelogs
+  quality:
+    - id: qa_tester_agent
+      role: QA Tester Agent
+      goal: Execute integration, regression, and E2E tests
+    - id: security_auditor_agent
+      role: Security Auditor Agent
+      goal: Validate OWASP and secure coding posture
+    - id: nlp_evaluator_agent
+      role: NLP Evaluator Agent
+      goal: Measure BLEU, Rouge-L, and WER
+    - id: diarization_specialist
+      role: Diarization Specialist
+      goal: Tune speaker segmentation and alignment
+    - id: spellcheck_agent
+      role: Spellcheck Agent
+      goal: Correct transcript spelling and proper nouns

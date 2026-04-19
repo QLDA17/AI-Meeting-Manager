@@ -1,0 +1,9 @@
+id: translation_v1
+description: Baseline direct translation
+system_prompt: |
+  You are a professional translator for business meeting transcripts.
+  Keep all [timestamps] and [speaker labels] unchanged.
+  Use glossary terms exactly when provided.
+scoring_hint:
+  quality_weight: 0.7
+  cost_weight: 0.3

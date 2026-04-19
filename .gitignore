@@ -1,0 +1,45 @@
+# Environment
+.env
+.env.local
+.venv311/
+
+# Python
+.venv/
+venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Node
+node_modules/
+npm-debug.log
+yarn-error.log
+dist/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Database & Logs
+*.db
+*.sqlite
+*.sqlite3
+logs/
+*.log
+
+# Uploads & Temp
+data/uploads/*
+!data/uploads/.gitkeep
+tmp/
+temp/

@@ -1,0 +1,126 @@
+@import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --color-primary-50: #f0fdf4;
+    --color-primary-100: #dcfce7;
+    --color-primary-200: #bbf7d0;
+    --color-primary-300: #86efac;
+    --color-primary-400: #4ade80;
+    --color-primary-500: #22c55e;
+    --color-primary-600: #16a34a;
+    --color-primary-700: #15803d;
+    --color-primary-800: #166534;
+    --color-primary-900: #14532d;
+
+    --color-success: #22c55e;
+    --color-warning: #f59e0b;
+    --color-error: #ef4444;
+    --color-info: #3b82f6;
+
+    --surface-base: #ffffff;
+    --surface-raised: #f9fafb;
+    --surface-overlay: rgba(0, 0, 0, 0.45);
+
+    --gradient-brand: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
+    --gradient-subtle: linear-gradient(180deg, #f0fdf4 0%, #ffffff 100%);
+
+    color-scheme: light;
+  }
+
+  .dark {
+    --surface-base: #0f172a;
+    --surface-raised: #0b1322;
+    --surface-overlay: rgba(2, 6, 23, 0.7);
+    color-scheme: dark;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  html,
+  body,
+  #root {
+    min-height: 100%;
+  }
+
+  body {
+    margin: 0;
+    font-family: "Plus Jakarta Sans", system-ui, sans-serif;
+    background: var(--gradient-subtle);
+    color: #1f2937;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  .dark body {
+    background: radial-gradient(1100px 560px at 0% -20%, rgba(34, 197, 94, 0.18), transparent 55%),
+      #0b1322;
+    color: #e2e8f0;
+  }
+}
+
+@layer components {
+  .app-bg {
+    background: radial-gradient(1200px 600px at -10% -10%, rgba(34, 197, 94, 0.12), transparent 50%),
+      radial-gradient(800px 500px at 110% -20%, rgba(16, 185, 129, 0.12), transparent 50%);
+  }
+
+  .panel-glass {
+    background: rgba(255, 255, 255, 0.86);
+    backdrop-filter: blur(10px);
+  }
+
+  .dark .panel-glass {
+    background: rgba(15, 23, 42, 0.78);
+  }
+
+  .transcript-font {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 0.8125rem;
+  }
+
+  .skeleton {
+    background: linear-gradient(90deg, #f3f4f6 25%, #e5e7eb 50%, #f3f4f6 75%);
+    background-size: 200% 100%;
+    animation: shimmer 2s infinite linear;
+  }
+
+  .dark .skeleton {
+    background: linear-gradient(90deg, #1e293b 25%, #334155 50%, #1e293b 75%);
+    background-size: 200% 100%;
+  }
+}
+
+@layer utilities {
+  .custom-scrollbar::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    background: #d1d5db;
+    border-radius: 9999px;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: #9ca3af;
+  }
+
+  .dark .custom-scrollbar::-webkit-scrollbar-thumb {
+    background: #475569;
+  }
+
+  .dark .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: #64748b;
+  }
+}

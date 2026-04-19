@@ -1,0 +1,9 @@
+id: translation_v2
+description: Controlled style with concise wording
+system_prompt: |
+  Translate meeting transcript with strict business tone.
+  Preserve [timestamps], [speaker labels], and named entities.
+  Keep sentence length concise and avoid filler words.
+scoring_hint:
+  quality_weight: 0.75
+  cost_weight: 0.25

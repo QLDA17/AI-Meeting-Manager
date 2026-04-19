@@ -1,0 +1,12 @@
+id: translation_v3
+description: High fidelity translation with glossary priority
+system_prompt: |
+  Translate each chunk up to 500 tokens.
+  Priority order:
+  1) preserve metadata markers
+  2) preserve business meaning
+  3) apply glossary exact-match replacements.
+  Output only translated text.
+scoring_hint:
+  quality_weight: 0.8
+  cost_weight: 0.2

@@ -1,0 +1,183 @@
+/**
+ * Sidebar Component (v3 - Simplified)
+ * Organization/Group hierarchy navigation
+ * Removed: Team management, Org admin section, Group admin section
+ */
+import React from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+import {
+  LogOut,
+  X,
+  Settings,
+  Shield,
+} from 'lucide-react';
+import { useAuth } from '../../context/AuthContext';
+import { useCurrentRole } from '../../hooks';
+import { useOrgStore } from '../../stores';
+import OrgSelector from './OrgSelector';
+import GroupNav from './GroupNav';
+import QuickAccess from './QuickAccess';
+
+interface SidebarProps {
+  mobileOpen: boolean;
+  onClose: () => void;
+}
+
+const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onClose }) => {
+  const navigate = useNavigate();
+  const { user, logout } = useAuth();
+  const role = useCurrentRole();
+  const { currentOrg } = useOrgStore();
+
+  const handleLogout = () => {
+    logout();
+    navigate('/login');
+  };
+
+  const handleGroupSelect = () => {
+    // Auto-close mobile sidebar on selection
+    if (window.innerWidth < 1024) {
+      onClose();
+    }
+  };
+
+  return (
+    <>
+      {/* Mobile overlay */}
+      <div
+        className={`fixed inset-0 z-40 bg-black/35 transition-opacity lg:hidden ${
+          mobileOpen ? 'opacity-100' : 'pointer-events-none opacity-0'
+        }`}
+        onClick={onClose}
+      />
+
+      {/* Sidebar */}
+      <aside
+        className={`fixed inset-y-0 left-0 z-50 w-72 transform border-r border-gray-200 bg-white/95 transition-transform duration-300 dark:border-slate-800 dark:bg-slate-900/95 lg:static lg:translate-x-0 ${
+          mobileOpen ? 'translate-x-0' : '-translate-x-full'
+        }`}
+      >
+        <div className="flex h-full flex-col">
+          {/* Logo & Close */}
+          <div className="flex items-center justify-between border-b border-gray-100 px-4 py-4 dark:border-slate-800">
+            <Link to="/" className="flex items-center gap-3">
+              <div className="inline-flex h-10 w-10 items-center justify-center rounded-xl bg-primary-600 text-sm font-extrabold text-white shadow-lg">
+                MM
+              </div>
+              <div>
+                <p className="text-sm font-bold text-gray-900 dark:text-slate-100">
+                  MultiMinutes AI
+                </p>
+                <p className="text-xs text-primary-700 dark:text-primary-300">
+                  Ghi chép thông minh
+                </p>
+              </div>
+            </Link>
+            <button
+              onClick={onClose}
+              className="rounded-lg p-1.5 text-gray-500 hover:bg-gray-100 dark:text-slate-300 dark:hover:bg-slate-800 lg:hidden"
+              aria-label="Close menu"
+            >
+              <X size={18} />
+            </button>
+          </div>
+
+          {/* Scrollable Content */}
+          <div className="custom-scrollbar flex-1 overflow-y-auto py-3">
+            {/* Organization Selector */}
+            <div className="px-2 pb-3">
+              <OrgSelector />
+            </div>
+
+            {/* Groups Section */}
+            <div className="mb-3">
+              <div className="px-4 pb-2">
+                <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-slate-400">
+                  Nhóm
+                </p>
+              </div>
+              <GroupNav onGroupSelect={handleGroupSelect} />
+            </div>
+
+            {/* Divider */}
+            <div className="mx-4 my-3 border-t border-gray-200 dark:border-slate-700" />
+
+            {/* Quick Access */}
+            <div className="mb-3">
+              <div className="px-4 pb-2">
+                <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-slate-400">
+                  Truy cập nhanh
+                </p>
+              </div>
+              <QuickAccess />
+            </div>
+
+            {/* Admin Access */}
+            {(role?.isSystemAdmin || role?.isOrgAdmin) && (
+              <>
+                <div className="mx-4 my-3 border-t border-gray-200 dark:border-slate-700" />
+                <div className="mb-3">
+                  <div className="px-4 pb-2">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-slate-400">
+                      Quản trị
+                    </p>
+                  </div>
+                  <nav className="space-y-1 px-2">
+                    <Link
+                      to="/org/admin"
+                      onClick={onClose}
+                      className="flex items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-100 hover:text-primary-600 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-primary-400"
+                    >
+                      <Settings size={18} />
+                      Admin Console
+                    </Link>
+                  </nav>
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* User Profile & Logout */}
+          <div className="border-t border-gray-100 p-4 dark:border-slate-800">
+            <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 dark:border-slate-700 dark:bg-slate-800/70">
+              <div className="flex items-center gap-3">
+                <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-primary-100 text-sm font-bold text-primary-700 dark:bg-primary-900/40 dark:text-primary-200">
+                  {(user?.displayName?.[0] || user?.email?.[0] || 'U').toUpperCase()}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-semibold text-gray-800 dark:text-slate-100">
+                    {user?.displayName || user?.email || 'Unknown'}
+                  </p>
+                  <p className="truncate text-xs text-gray-500 dark:text-slate-400">
+                    {currentOrg?.name || 'Chưa chọn tổ chức'}
+                  </p>
+                  {/* Role badge */}
+                  {role && !role.isSystemAdmin && (
+                    <span className={`mt-1 inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white ${
+                      role.isOrgAdmin ? 'bg-amber-600' :
+                      role.isGroupAdmin ? 'bg-cyan-600' :
+                      role.isViewer ? 'bg-gray-400' : 'bg-blue-500'
+                    }`}>
+                      {role.isOrgAdmin ? 'Quản trị tổ chức' :
+                       role.isGroupAdmin ? 'Quản trị nhóm' :
+                       role.isViewer ? 'Người xem' : 'Thành viên'}
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+            <button
+              onClick={handleLogout}
+              className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-2 text-sm font-semibold text-red-700 transition hover:bg-red-100 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300"
+            >
+              <LogOut size={16} />
+              Đăng xuất
+            </button>
+          </div>
+        </div>
+      </aside>
+    </>
+  );
+};
+
+export default Sidebar;
