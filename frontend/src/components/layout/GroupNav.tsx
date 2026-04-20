@@ -64,7 +64,8 @@ const GroupNav: React.FC<GroupNavProps> = ({ onGroupSelect }) => {
     <div className="space-y-1 px-2">
       {groups.map((group: Group) => {
         const active = isActive(group.id);
-        const isAdmin = group.admins?.some((admin) => admin.id === 'user-001'); // Mock current user
+        // Check if current user is admin via groupMemberships (no admins field on Group type)
+        const isAdmin = false; // Will be determined from auth context in real implementation
 
         return (
           <Link

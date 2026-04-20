@@ -70,7 +70,6 @@ const CreateGroupModal: React.FC<CreateGroupModalProps> = ({ isOpen, onClose }) 
         memberCount: formData.selectedMembers.length + 1,
         meetingCount: 0,
         totalHours: 0,
-        admins: [],
         createdBy: user?.id || 'user-001',
         createdAt: new Date(),
         updatedAt: new Date(),

@@ -1,14 +1,16 @@
 /**
  * Group Store - Group context management
- * Zustand store for group state with mock data
+ * Zustand store for group state with mock data.
+ *
+ * NOTE: Meeting data is NOT stored here to avoid duplication.
+ * Use useAppStore().getMeetingsByGroupId(groupId) for group meetings.
  */
 import { create } from 'zustand';
-import type { Group, Meeting, User } from '../types';
+import type { Group, User } from '../types';
 import {
   mockGroups,
   mockUsers,
   getGroupById,
-  getMeetingsByGroupId,
 } from '../data';
 
 interface GroupState {
@@ -18,7 +20,6 @@ interface GroupState {
 
   // Data
   group: Group | null;
-  meetings: Meeting[];
   members: User[];
 
   // UI State
@@ -28,7 +29,6 @@ interface GroupState {
   // Actions
   setCurrentGroup: (groupId: string) => void;
   loadGroup: (groupId: string) => void;
-  loadMeetings: (groupId: string) => void;
   loadMembers: (groupId: string) => void;
   clearError: () => void;
 
@@ -38,7 +38,6 @@ interface GroupState {
     memberCount: number;
     totalHours: number;
   };
-  getMeetingsByGroup: () => Meeting[];
   getMembersByGroup: () => User[];
 }
 
@@ -47,7 +46,6 @@ export const useGroupStore = create<GroupState>((set, get) => ({
   currentGroupId: null,
   currentGroup: null,
   group: null,
-  meetings: [],
   members: [],
   isLoading: false,
   error: null,
@@ -57,7 +55,6 @@ export const useGroupStore = create<GroupState>((set, get) => ({
     const group = mockGroups.find((g) => g.id === groupId) || null;
     set({ currentGroupId: groupId, currentGroup: group });
     // Auto-load related data
-    get().loadMeetings(groupId);
     get().loadMembers(groupId);
   },
 
@@ -70,14 +67,6 @@ export const useGroupStore = create<GroupState>((set, get) => ({
       } else {
         set({ error: 'Group not found', isLoading: false });
       }
-    }, 300);
-  },
-
-  loadMeetings: (groupId: string) => {
-    set({ isLoading: true });
-    setTimeout(() => {
-      const meetings = getMeetingsByGroupId(groupId);
-      set({ meetings, isLoading: false });
     }, 300);
   },
 
@@ -102,12 +91,6 @@ export const useGroupStore = create<GroupState>((set, get) => ({
       memberCount: group.memberCount,
       totalHours: group.totalHours,
     };
-  },
-
-  getMeetingsByGroup: () => {
-    const { currentGroupId } = get();
-    if (!currentGroupId) return [];
-    return getMeetingsByGroupId(currentGroupId);
   },
 
   getMembersByGroup: () => {

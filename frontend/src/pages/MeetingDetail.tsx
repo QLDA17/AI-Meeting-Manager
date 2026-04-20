@@ -17,10 +17,9 @@ import {
   MoreVertical,
   CheckCircle2,
   Globe,
-  X,
   AlertCircle,
 } from 'lucide-react';
-import { getGroupById, getOrgById } from '../data';
+import { getGroupById, getOrgById, getUserById } from '../data';
 import { useAppStore } from '../stores';
 import { format } from 'date-fns';
 import AudioPlayer from '../components/meeting/AudioPlayer';
@@ -37,6 +36,7 @@ const MeetingDetail: React.FC = () => {
   const meeting = getMeetingById(id || '');
   const group = meeting ? getGroupById(meeting.groupId) : null;
   const org = meeting ? getOrgById(meeting.orgId) : null;
+  const creator = meeting ? getUserById(meeting.createdBy) : null;
 
   if (!meeting) {
     return (
@@ -266,28 +266,29 @@ const MeetingDetail: React.FC = () => {
                       </button>
                     </div>
                     
-                    <div className="space-y-6">
-                      {[
-                        { time: '00:00', speaker: 'Speaker 1', text: 'Chào buổi sáng mọi người. Chúng ta bắt đầu cuộc họp định kỳ tuần này.' },
-                        { time: '00:45', speaker: 'Speaker 2', text: 'Chào anh. Em đã chuẩn bị báo cáo về tiến độ Sprint 25.' },
-                        { time: '01:30', speaker: 'Speaker 1', text: 'Tốt, chúng ta sẽ đi qua phần đó sau khi xem qua các đầu việc tồn đọng.' },
-                        { time: '02:15', speaker: 'Speaker 3', text: 'Về phần thiết kế, chúng ta cần thêm 2 ngày để hoàn thiện các wireframes cho Org Admin Panel.' },
-                      ].map((seg, i) => (
-                        <div key={i} className="group flex gap-4">
-                          <span className="mt-1 w-12 shrink-0 font-mono text-xs font-bold text-gray-400 group-hover:text-primary-500">
-                            {seg.time}
-                          </span>
-                          <div className="flex-1">
-                            <p className="mb-1 text-xs font-black uppercase tracking-wider text-gray-500 dark:text-slate-500">
-                              {seg.speaker}
-                            </p>
-                            <p className="rounded-xl border border-transparent p-3 text-sm leading-relaxed text-gray-700 transition hover:border-gray-100 hover:bg-gray-50 dark:text-slate-300 dark:hover:border-slate-800 dark:hover:bg-slate-800/50">
-                              {seg.text}
-                            </p>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
+                    {meeting.transcriptUrl ? (
+                      <div className="rounded-2xl border border-gray-100 bg-gray-50 p-6 text-sm text-gray-600 dark:border-slate-800 dark:bg-slate-800/50 dark:text-slate-400">
+                        <p className="italic">Bản ghi đầy đủ có thể tải về từ đường dẫn đính kèm.</p>
+                        <a
+                          href={meeting.transcriptUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="mt-2 inline-block font-bold text-primary-600 hover:underline"
+                        >
+                          Xem bản ghi →
+                        </a>
+                      </div>
+                    ) : (
+                      <div className="rounded-2xl border border-dashed border-gray-200 bg-gray-50 p-10 text-center dark:border-slate-700 dark:bg-slate-800/30">
+                        <MessageSquare size={32} className="mx-auto mb-3 text-gray-300 dark:text-slate-600" />
+                        <p className="text-sm font-bold text-gray-500 dark:text-slate-400">
+                          Chưa có bản ghi cho cuộc họp này
+                        </p>
+                        <p className="mt-1 text-xs text-gray-400">
+                          Bản ghi sẽ xuất hiện sau khi AI xử lý xong file âm thanh
+                        </p>
+                      </div>
+                    )}
                   </motion.div>
                 )}
 
@@ -303,24 +304,30 @@ const MeetingDetail: React.FC = () => {
                     <h3 className="text-lg font-black text-gray-900 dark:text-slate-100">
                       Việc cần làm được trích xuất
                     </h3>
-                    <div className="divide-y divide-gray-100 dark:divide-slate-800">
-                      {[
-                        { task: 'Hoàn thiện báo cáo Sprint 25', due: 'Ngày mai', assignee: 'Speaker 2' },
-                        { task: 'Thiết kế wireframes Org Admin Panel', due: 'Thứ 6', assignee: 'Speaker 3' },
-                        { task: 'Gửi link demo cho khách hàng', due: 'Sáng thứ 2', assignee: 'Speaker 1' },
-                      ].map((item, i) => (
-                        <div key={i} className="flex items-center justify-between py-4">
-                          <div className="flex items-center gap-3">
-                            <input type="checkbox" className="h-5 w-5 rounded-md border-gray-300 text-primary-600" />
-                            <div>
-                              <p className="text-sm font-bold text-gray-900 dark:text-slate-100">{item.task}</p>
-                              <p className="text-xs text-gray-500">Phụ trách: {item.assignee} · Hạn: {item.due}</p>
+                    {(!meeting.decisions || meeting.decisions.length === 0) ? (
+                      <div className="rounded-2xl border border-dashed border-gray-200 bg-gray-50 p-10 text-center dark:border-slate-700 dark:bg-slate-800/30">
+                        <CheckCircle2 size={32} className="mx-auto mb-3 text-gray-300 dark:text-slate-600" />
+                        <p className="text-sm font-bold text-gray-500 dark:text-slate-400">
+                          Chưa có việc cần làm nào được trích xuất
+                        </p>
+                        <p className="mt-1 text-xs text-gray-400">
+                          AI sẽ tự động trích xuất sau khi xử lý xong
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="divide-y divide-gray-100 dark:divide-slate-800">
+                        {meeting.decisions.map((decision, i) => (
+                          <div key={i} className="flex items-center justify-between py-4">
+                            <div className="flex items-center gap-3">
+                              <input type="checkbox" className="h-5 w-5 rounded-md border-gray-300 text-primary-600" readOnly />
+                              <div>
+                                <p className="text-sm font-bold text-gray-900 dark:text-slate-100">{decision}</p>
+                              </div>
                             </div>
                           </div>
-                          <button className="text-xs font-bold text-primary-600">Sửa</button>
-                        </div>
-                      ))}
-                    </div>
+                        ))}
+                      </div>
+                    )}
                   </motion.div>
                 )}
 
@@ -388,7 +395,9 @@ const MeetingDetail: React.FC = () => {
               </div>
               <div>
                 <p className="text-xs text-gray-400">Người tạo</p>
-                <p className="text-sm font-bold text-gray-900 dark:text-slate-100">Nguyễn Thành Huyền</p>
+                <p className="text-sm font-bold text-gray-900 dark:text-slate-100">
+                  {creator?.displayName || creator?.email || '---'}
+                </p>
               </div>
             </div>
           </div>

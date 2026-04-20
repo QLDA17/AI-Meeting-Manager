@@ -1,6 +1,9 @@
 /**
  * UI Store - UI state management
- * Zustand store for theme, sidebar, and navigation states
+ * Zustand store for theme, sidebar, and modal states only.
+ *
+ * NOTE: Org/Group selection is managed by orgStore and groupStore.
+ * Do NOT add selectedOrgId/selectedGroupId here to avoid duplication.
  */
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
@@ -10,10 +13,6 @@ interface UIState {
   isDarkMode: boolean;
   sidebarOpen: boolean;
   mobileSidebarOpen: boolean;
-
-  // Organization & Group Selection
-  selectedOrgId: string | null;
-  selectedGroupId: string | null;
 
   // Modal/Dialog States
   isCreateMeetingOpen: boolean;
@@ -28,10 +27,6 @@ interface UIState {
   setMobileSidebarOpen: (value: boolean) => void;
   toggleMobileSidebar: () => void;
 
-  // Organization/Group Selection
-  setSelectedOrg: (orgId: string | null) => void;
-  setSelectedGroup: (groupId: string | null) => void;
-
   // Modal Actions
   setCreateMeetingOpen: (value: boolean) => void;
   setCreateGroupOpen: (value: boolean) => void;
@@ -45,10 +40,6 @@ export const useUIStore = create<UIState>()(
       isDarkMode: localStorage.getItem('theme') === 'dark',
       sidebarOpen: true,
       mobileSidebarOpen: false,
-
-      // Organization & Group Selection
-      selectedOrgId: null,
-      selectedGroupId: null,
 
       // Modal/Dialog States
       isCreateMeetingOpen: false,
@@ -78,10 +69,6 @@ export const useUIStore = create<UIState>()(
       toggleMobileSidebar: () =>
         set((state) => ({ mobileSidebarOpen: !state.mobileSidebarOpen })),
 
-      // Organization/Group Selection
-      setSelectedOrg: (orgId) => set({ selectedOrgId: orgId, selectedGroupId: null }),
-      setSelectedGroup: (groupId) => set({ selectedGroupId: groupId }),
-
       // Modal Actions
       setCreateMeetingOpen: (value) => set({ isCreateMeetingOpen: value }),
       setCreateGroupOpen: (value) => set({ isCreateGroupOpen: value }),
@@ -92,8 +79,6 @@ export const useUIStore = create<UIState>()(
       partialize: (state) => ({
         isDarkMode: state.isDarkMode,
         sidebarOpen: state.sidebarOpen,
-        selectedOrgId: state.selectedOrgId,
-        selectedGroupId: state.selectedGroupId,
       }),
     }
   )

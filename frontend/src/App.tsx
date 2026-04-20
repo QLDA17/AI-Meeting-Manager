@@ -3,11 +3,15 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Toaster } from 'react-hot-toast';
 import { AuthProvider, useAuth } from './context/AuthContext';
+import { usePermission } from './hooks/usePermission';
 import Layout from './layouts/Layout';
 import AdminLayout from './layouts/AdminLayout';
 
 // Lazy loaded pages
+import Landing from './pages/Landing';
 const Login = React.lazy(() => import('./pages/Login'));
+const Register = React.lazy(() => import('./pages/Register'));
+const ForgotPassword = React.lazy(() => import('./pages/ForgotPassword'));
 const Dashboard = React.lazy(() => import('./pages/Dashboard'));
 const MeetingList = React.lazy(() => import('./pages/MeetingList'));
 const MeetingDetail = React.lazy(() => import('./pages/MeetingDetail'));
@@ -41,15 +45,27 @@ const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) =
   return <>{children}</>;
 };
 
+// Public Only Route Guard (redirect authenticated users to dashboard)
+const PublicOnlyRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { isAuthenticated } = useAuth();
+  if (isAuthenticated) return <Navigate to="/dashboard" replace />;
+  return <>{children}</>;
+};
+
 // Role-based Access Guard
 const RoleGuard: React.FC<{ children: React.ReactNode; roles: string[] }> = ({ children, roles }) => {
-  const { user } = useAuth();
-  const userRole = user?.systemRole || (user as any)?.role;
-  if (!userRole || !roles.includes(userRole)) {
+  const { isSystemAdmin, isOrgAdmin, currentRole } = usePermission();
+
+  const hasAccess =
+    (roles.includes('system-admin') && isSystemAdmin) ||
+    (roles.includes('org-admin') && (isOrgAdmin || isSystemAdmin)) ||
+    (currentRole && roles.includes(currentRole));
+
+  if (!hasAccess) {
     return (
       <div className="p-8 text-center">
-        <h1 className="text-2xl font-bold text-red-500">Access Denied</h1>
-        <p className="text-gray-600">You don't have permission to view this page.</p>
+        <h1 className="text-2xl font-bold text-red-500">Không có quyền truy cập</h1>
+        <p className="text-gray-600">Bạn không có quyền xem trang này.</p>
       </div>
     );
   }
@@ -66,12 +82,16 @@ const AppRoutes: React.FC = () => {
   return (
     <Routes>
       {/* Public Routes */}
-      <Route path="/login" element={<React.Suspense fallback={<PageLoader />}><Login /></React.Suspense>} />
+      <Route path="/" element={<Landing />} />
+      <Route path="/home" element={<Navigate to="/" replace />} />
+      <Route path="/login" element={<PublicOnlyRoute><React.Suspense fallback={<PageLoader />}><Login /></React.Suspense></PublicOnlyRoute>} />
+      <Route path="/register" element={<PublicOnlyRoute><React.Suspense fallback={<PageLoader />}><Register /></React.Suspense></PublicOnlyRoute>} />
+      <Route path="/forgot-password" element={<PublicOnlyRoute><React.Suspense fallback={<PageLoader />}><ForgotPassword /></React.Suspense></PublicOnlyRoute>} />
       <Route path="/join/:code?" element={<React.Suspense fallback={<PageLoader />}><JoinMeeting /></React.Suspense>} />
       <Route path="/room/:code" element={<React.Suspense fallback={<PageLoader />}><MeetingRoom /></React.Suspense>} />
 
       {/* Protected Routes (Main Layout) */}
-      <Route path="/" element={<ProtectedRoute><Layout /></ProtectedRoute>}>
+      <Route path="/dashboard" element={<ProtectedRoute><Layout /></ProtectedRoute>}>
         <Route index element={<React.Suspense fallback={<PageLoader />}><Dashboard /></React.Suspense>} />
         <Route path="meetings" element={<React.Suspense fallback={<PageLoader />}><MeetingList /></React.Suspense>} />
         <Route path="meetings/:id" element={<React.Suspense fallback={<PageLoader />}><MeetingDetail /></React.Suspense>} />

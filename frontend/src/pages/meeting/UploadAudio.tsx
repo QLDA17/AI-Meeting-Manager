@@ -8,21 +8,18 @@ import { useNavigate } from 'react-router-dom';
 import {
   Upload,
   Mic,
-  Calendar,
   Clock,
   Users,
   FileAudio,
   CheckCircle2,
   X,
-  AlertCircle,
   Loader2,
   Music,
-  Settings,
   Globe,
   FileText,
 } from 'lucide-react';
-import { getGroupById } from '../../data';
 import { useOrgStore, useAppStore } from '../../stores';
+import { formatFileSize } from '../../utils';
 import type { Meeting } from '../../types';
 
 type UploadStep = 'context' | 'upload' | 'details' | 'processing' | 'success';
@@ -42,7 +39,6 @@ const UploadAudio: React.FC = () => {
   const [description, setDescription] = useState('');
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [isDragging, setIsDragging] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState(0);
   const [processingStage, setProcessingStage] = useState(0);
   const [processingComplete, setProcessingComplete] = useState(false);
 
@@ -54,7 +50,6 @@ const UploadAudio: React.FC = () => {
   const [sourceLanguage, setSourceLanguage] = useState('vi');
   const [targetLanguage, setTargetLanguage] = useState('en');
 
-  const selectedGroup = getGroupById(selectedGroupId);
   const orgGroups = currentOrg ? groups.filter((g) => g.orgId === currentOrg.id) : [];
 
   const steps = [
@@ -82,6 +77,7 @@ const UploadAudio: React.FC = () => {
     setIsDragging(false);
     const files = e.dataTransfer.files;
     if (files.length > 0) handleFileSelect(files[0]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleFileSelect = (file: File) => {
@@ -114,19 +110,11 @@ const UploadAudio: React.FC = () => {
 
   const startProcessing = () => {
     setCurrentStep('processing');
-    setUploadProgress(0);
     setProcessingStage(0);
+    setProcessingComplete(false);
 
-    const uploadInterval = setInterval(() => {
-      setUploadProgress((prev) => {
-        if (prev >= 100) {
-          clearInterval(uploadInterval);
-          startProcessingStages();
-          return 100;
-        }
-        return prev + 10;
-      });
-    }, 200);
+    // Simulate upload then processing stages
+    setTimeout(() => startProcessingStages(), 1000);
   };
 
   const startProcessingStages = () => {
@@ -135,7 +123,7 @@ const UploadAudio: React.FC = () => {
       { name: 'Phân tách người nói', duration: 1500, active: speakerDiarization },
       { name: 'Dịch thuật', duration: 1500, active: translation },
       { name: 'Tóm tắt AI', duration: 2000, active: aiSummary },
-    ].filter(s => s.active);
+    ].filter((s) => s.active);
 
     let currentStage = 0;
 
@@ -155,17 +143,12 @@ const UploadAudio: React.FC = () => {
     processNext();
   };
 
-  const formatFileSize = (bytes: number) => {
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  };
-
   const activeStages = [
     { name: 'Chuyển văn bản', icon: <Mic size={18} />, active: true },
     { name: 'Phân tách người nói', icon: <Users size={18} />, active: speakerDiarization },
     { name: 'Dịch thuật', icon: <Globe size={18} />, active: translation },
     { name: 'Tóm tắt AI', icon: <FileText size={18} />, active: aiSummary },
-  ].filter(s => s.active);
+  ].filter((s) => s.active);
 
   const handleUploadComplete = () => {
     const newMeeting: Meeting = {
@@ -178,18 +161,22 @@ const UploadAudio: React.FC = () => {
       endTime: new Date(`${meetingDate}T${meetingTime}`),
       duration: 60,
       status: 'completed',
-      attendees: attendees.split(',').map((a) => a.trim()).filter(Boolean).map((name, i) => ({
-        id: `user-up-${i}`,
-        email: '',
-        firstName: name.split(' ')[0] || '',
-        lastName: name.split(' ')[1] || '',
-        displayName: name,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        isActive: true,
-        orgMemberships: [],
-        groupMemberships: [],
-      })),
+      attendees: attendees
+        .split(',')
+        .map((a) => a.trim())
+        .filter(Boolean)
+        .map((name, i) => ({
+          id: `user-up-${i}`,
+          email: '',
+          firstName: name.split(' ')[0] || '',
+          lastName: name.split(' ').slice(1).join(' ') || '',
+          displayName: name,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          isActive: true,
+          orgMemberships: [],
+          groupMemberships: [],
+        })),
       createdBy: 'user-001',
       createdAt: new Date(),
       updatedAt: new Date(),
@@ -237,6 +224,7 @@ const UploadAudio: React.FC = () => {
 
       {/* Content */}
       <AnimatePresence mode="wait">
+        {/* Step 1: Context */}
         {currentStep === 'context' && (
           <motion.div
             key="context"
@@ -250,7 +238,7 @@ const UploadAudio: React.FC = () => {
               <div>
                 <label className="mb-2 block text-sm font-bold text-gray-500">Tổ chức</label>
                 <div className="rounded-xl bg-gray-50 px-4 py-3 font-bold dark:bg-slate-800">
-                  {currentOrg?.name}
+                  {currentOrg?.name || 'Chưa chọn tổ chức'}
                 </div>
               </div>
               <div>
@@ -262,7 +250,9 @@ const UploadAudio: React.FC = () => {
                 >
                   <option value="">-- Chọn nhóm --</option>
                   {orgGroups.map((g) => (
-                    <option key={g.id} value={g.id}>{g.name}</option>
+                    <option key={g.id} value={g.id}>
+                      {g.name}
+                    </option>
                   ))}
                 </select>
               </div>
@@ -279,6 +269,7 @@ const UploadAudio: React.FC = () => {
           </motion.div>
         )}
 
+        {/* Step 2: Upload */}
         {currentStep === 'upload' && (
           <motion.div
             key="upload"
@@ -296,9 +287,17 @@ const UploadAudio: React.FC = () => {
                   isDragging ? 'border-primary-500 bg-primary-50' : 'border-gray-200 hover:border-primary-400'
                 }`}
               >
-                <input id="file-input" type="file" className="hidden" onChange={(e) => e.target.files?.[0] && handleFileSelect(e.target.files[0])} />
+                <input
+                  id="file-input"
+                  type="file"
+                  accept=".wav,.mp3,.m4a,audio/*"
+                  className="hidden"
+                  onChange={(e) => e.target.files?.[0] && handleFileSelect(e.target.files[0])}
+                />
                 <Music size={60} className="mx-auto mb-4 text-gray-300" />
-                <p className="text-lg font-bold text-gray-700 dark:text-slate-300">Kéo thả file âm thanh vào đây</p>
+                <p className="text-lg font-bold text-gray-700 dark:text-slate-300">
+                  Kéo thả file âm thanh vào đây
+                </p>
                 <p className="text-sm text-gray-400">Hỗ trợ .wav, .mp3, .m4a (Max 50MB)</p>
               </div>
             ) : (
@@ -310,16 +309,27 @@ const UploadAudio: React.FC = () => {
                     <p className="text-xs text-gray-500">{formatFileSize(selectedFile.size)}</p>
                   </div>
                 </div>
-                <button onClick={() => setSelectedFile(null)} className="text-red-500"><X size={20} /></button>
+                <button onClick={() => setSelectedFile(null)} className="text-red-500">
+                  <X size={20} />
+                </button>
               </div>
             )}
             <div className="mt-10 flex justify-between">
-              <button onClick={() => setCurrentStep('context')} className="font-bold text-gray-500">Quay lại</button>
-              <button disabled={!selectedFile} onClick={handleNext} className="rounded-xl bg-primary-600 px-8 py-3 font-bold text-white transition hover:bg-primary-700 disabled:opacity-50">Tiếp tục</button>
+              <button onClick={() => setCurrentStep('context')} className="font-bold text-gray-500">
+                Quay lại
+              </button>
+              <button
+                disabled={!selectedFile}
+                onClick={handleNext}
+                className="rounded-xl bg-primary-600 px-8 py-3 font-bold text-white transition hover:bg-primary-700 disabled:opacity-50"
+              >
+                Tiếp tục
+              </button>
             </div>
           </motion.div>
         )}
 
+        {/* Step 3: Details */}
         {currentStep === 'details' && (
           <motion.div
             key="details"
@@ -340,15 +350,27 @@ const UploadAudio: React.FC = () => {
 
               <div className="grid grid-cols-2 gap-4">
                 <div className="rounded-lg border border-gray-100 bg-gray-50 p-4 dark:bg-slate-800">
-                  <label className="mb-2 block text-[10px] font-black uppercase text-gray-400">Provider STT</label>
-                  <select value={sttProvider} onChange={(e) => setSttProvider(e.target.value)} className="w-full bg-transparent text-sm font-bold outline-none">
+                  <label className="mb-2 block text-[10px] font-black uppercase text-gray-400">
+                    Provider STT
+                  </label>
+                  <select
+                    value={sttProvider}
+                    onChange={(e) => setSttProvider(e.target.value)}
+                    className="w-full bg-transparent text-sm font-bold outline-none"
+                  >
                     <option value="google">Google Gemini (Nhanh)</option>
                     <option value="whisper">OpenAI Whisper (Chuẩn)</option>
                   </select>
                 </div>
                 <div className="rounded-lg border border-gray-100 bg-gray-50 p-4 dark:bg-slate-800">
-                  <label className="mb-2 block text-[10px] font-black uppercase text-gray-400">Ngôn ngữ gốc</label>
-                  <select value={sourceLanguage} onChange={(e) => setSourceLanguage(e.target.value)} className="w-full bg-transparent text-sm font-bold outline-none">
+                  <label className="mb-2 block text-[10px] font-black uppercase text-gray-400">
+                    Ngôn ngữ gốc
+                  </label>
+                  <select
+                    value={sourceLanguage}
+                    onChange={(e) => setSourceLanguage(e.target.value)}
+                    className="w-full bg-transparent text-sm font-bold outline-none"
+                  >
                     <option value="vi">Tiếng Việt</option>
                     <option value="en">Tiếng Anh</option>
                   </select>
@@ -358,20 +380,39 @@ const UploadAudio: React.FC = () => {
               <div className="space-y-3 rounded-2xl bg-gray-50 p-4 dark:bg-slate-800">
                 <p className="text-xs font-black uppercase text-gray-400">Cấu hình AI nâng cao</p>
                 <label className="flex items-center gap-3">
-                  <input type="checkbox" checked={aiSummary} onChange={(e) => setAiSummary(e.target.checked)} className="h-5 w-5 rounded-md text-primary-600" />
+                  <input
+                    type="checkbox"
+                    checked={aiSummary}
+                    onChange={(e) => setAiSummary(e.target.checked)}
+                    className="h-5 w-5 rounded-md text-primary-600"
+                  />
                   <span className="text-sm font-bold">Tự động tóm tắt & trích xuất việc cần làm</span>
                 </label>
                 <label className="flex items-center gap-3">
-                  <input type="checkbox" checked={speakerDiarization} onChange={(e) => setSpeakerDiarization(e.target.checked)} className="h-5 w-5 rounded-md text-primary-600" />
+                  <input
+                    type="checkbox"
+                    checked={speakerDiarization}
+                    onChange={(e) => setSpeakerDiarization(e.target.checked)}
+                    className="h-5 w-5 rounded-md text-primary-600"
+                  />
                   <span className="text-sm font-bold">Nhận diện và phân tách người nói</span>
                 </label>
                 <div className="space-y-2">
                   <label className="flex items-center gap-3">
-                    <input type="checkbox" checked={translation} onChange={(e) => setTranslation(e.target.checked)} className="h-5 w-5 rounded-md text-primary-600" />
+                    <input
+                      type="checkbox"
+                      checked={translation}
+                      onChange={(e) => setTranslation(e.target.checked)}
+                      className="h-5 w-5 rounded-md text-primary-600"
+                    />
                     <span className="text-sm font-bold">Dịch thuật tự động</span>
                   </label>
                   {translation && (
-                    <select value={targetLanguage} onChange={(e) => setTargetLanguage(e.target.value)} className="ml-8 rounded-lg border border-gray-200 px-3 py-1 text-xs font-bold outline-none">
+                    <select
+                      value={targetLanguage}
+                      onChange={(e) => setTargetLanguage(e.target.value)}
+                      className="ml-8 rounded-lg border border-gray-200 px-3 py-1 text-xs font-bold outline-none"
+                    >
                       <option value="en">Sang Tiếng Anh</option>
                       <option value="vi">Sang Tiếng Việt</option>
                     </select>
@@ -380,12 +421,21 @@ const UploadAudio: React.FC = () => {
               </div>
             </div>
             <div className="mt-10 flex justify-between">
-              <button onClick={() => setCurrentStep('upload')} className="font-bold text-gray-500">Quay lại</button>
-              <button onClick={handleNext} className="rounded-xl bg-primary-600 px-8 py-3 font-bold text-white shadow-lg shadow-primary-500/20">Bắt đầu xử lý</button>
+              <button onClick={() => setCurrentStep('upload')} className="font-bold text-gray-500">
+                Quay lại
+              </button>
+              <button
+                disabled={!meetingTitle.trim()}
+                onClick={handleNext}
+                className="rounded-xl bg-primary-600 px-8 py-3 font-bold text-white shadow-lg shadow-primary-500/20 disabled:opacity-50"
+              >
+                Bắt đầu xử lý
+              </button>
             </div>
           </motion.div>
         )}
 
+        {/* Step 4: Processing */}
         {currentStep === 'processing' && (
           <motion.div
             key="processing"
@@ -394,18 +444,37 @@ const UploadAudio: React.FC = () => {
             className="rounded-3xl border border-gray-200 bg-white p-10 dark:border-slate-700 dark:bg-slate-900"
           >
             <h3 className="mb-2 text-center text-xl font-black">Đang phân tích AI...</h3>
-            <p className="mb-10 text-center text-sm text-gray-500">Hệ thống đang sử dụng {sttProvider.toUpperCase()} để xử lý</p>
-            
+            <p className="mb-10 text-center text-sm text-gray-500">
+              Hệ thống đang sử dụng {sttProvider.toUpperCase()} để xử lý
+            </p>
+
             <div className="space-y-4">
               {activeStages.map((stage, idx) => {
                 const isComplete = idx < processingStage;
                 const isCurrent = idx === processingStage && !processingComplete;
                 return (
-                  <div key={stage.name} className={`flex items-center gap-4 rounded-2xl border p-4 transition ${isCurrent ? 'border-primary-500 bg-primary-50/30' : 'border-gray-100'}`}>
+                  <div
+                    key={stage.name}
+                    className={`flex items-center gap-4 rounded-2xl border p-4 transition ${
+                      isCurrent ? 'border-primary-500 bg-primary-50/30' : 'border-gray-100'
+                    }`}
+                  >
                     <div className="flex h-10 w-10 items-center justify-center rounded-full bg-white shadow-sm">
-                      {isComplete ? <CheckCircle2 className="text-green-500" /> : isCurrent ? <Loader2 className="animate-spin text-primary-600" /> : <Clock className="text-gray-300" />}
+                      {isComplete ? (
+                        <CheckCircle2 className="text-green-500" />
+                      ) : isCurrent ? (
+                        <Loader2 className="animate-spin text-primary-600" />
+                      ) : (
+                        <Clock className="text-gray-300" />
+                      )}
                     </div>
-                    <span className={`text-sm font-bold ${isCurrent ? 'text-primary-700' : isComplete ? 'text-gray-900' : 'text-gray-400'}`}>{stage.name}</span>
+                    <span
+                      className={`text-sm font-bold ${
+                        isCurrent ? 'text-primary-700' : isComplete ? 'text-gray-900' : 'text-gray-400'
+                      }`}
+                    >
+                      {stage.name}
+                    </span>
                   </div>
                 );
               })}
@@ -413,12 +482,15 @@ const UploadAudio: React.FC = () => {
           </motion.div>
         )}
 
+        {/* Step 5: Success */}
         {currentStep === 'success' && (
           <motion.div
             key="success"
             initial={{ opacity: 0, scale: 0.9 }}
             animate={{ opacity: 1, scale: 1 }}
-            onAnimationComplete={() => { if (currentStep === 'success') handleUploadComplete(); }}
+            onAnimationComplete={() => {
+              if (currentStep === 'success') handleUploadComplete();
+            }}
             className="rounded-3xl border border-gray-200 bg-white p-12 text-center dark:border-slate-700 dark:bg-slate-900"
           >
             <div className="mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-full bg-green-100 text-green-600">
@@ -427,8 +499,15 @@ const UploadAudio: React.FC = () => {
             <h2 className="text-3xl font-black">Hoàn tất!</h2>
             <p className="mt-4 text-gray-500">Bản ghi của bạn đã được xử lý và sẵn sàng để xem.</p>
             <div className="mt-10 flex flex-col gap-3">
-              <button onClick={() => navigate('/meetings')} className="rounded-xl bg-primary-600 py-3 font-black text-white shadow-lg shadow-primary-500/20">Xem bản ghi ngay</button>
-              <button onClick={() => navigate('/')} className="font-bold text-gray-500">Về trang chủ</button>
+              <button
+                onClick={() => navigate('/meetings')}
+                className="rounded-xl bg-primary-600 py-3 font-black text-white shadow-lg shadow-primary-500/20"
+              >
+                Xem bản ghi ngay
+              </button>
+              <button onClick={() => navigate('/')} className="font-bold text-gray-500">
+                Về trang chủ
+              </button>
             </div>
           </motion.div>
         )}
