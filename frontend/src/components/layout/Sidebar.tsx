@@ -123,6 +123,16 @@ const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onClose }) => {
                     </p>
                   </div>
                   <nav className="space-y-1 px-2">
+                    {role?.isSystemAdmin && (
+                      <Link
+                        to="/admin/console"
+                        onClick={onClose}
+                        className="flex items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium text-red-600 transition hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/10"
+                      >
+                        <Shield size={18} />
+                        Hệ thống (Root)
+                      </Link>
+                    )}
                     <Link
                       to="/org/admin"
                       onClick={onClose}
@@ -152,13 +162,15 @@ const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onClose }) => {
                     {currentOrg?.name || 'Chưa chọn tổ chức'}
                   </p>
                   {/* Role badge */}
-                  {role && !role.isSystemAdmin && (
+                  {role && (
                     <span className={`mt-1 inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white ${
+                      role.isSystemAdmin ? 'bg-red-600' :
                       role.isOrgAdmin ? 'bg-amber-600' :
                       role.isGroupAdmin ? 'bg-cyan-600' :
                       role.isViewer ? 'bg-gray-400' : 'bg-blue-500'
                     }`}>
-                      {role.isOrgAdmin ? 'Quản trị tổ chức' :
+                      {role.isSystemAdmin ? 'Quản trị Hệ thống' :
+                       role.isOrgAdmin ? 'Quản trị tổ chức' :
                        role.isGroupAdmin ? 'Quản trị nhóm' :
                        role.isViewer ? 'Người xem' : 'Thành viên'}
                     </span>

@@ -4,27 +4,21 @@
 import type { User } from '../types';
 
 export const mockUsers: User[] = [
-    // Super Admin - System Administrator
+    // user-000: System Administrator - QUẢN TRỊ HỆ THỐNG RIÊNG BIỆT
     {
         id: 'user-000',
         email: 'superadmin@multiminutes.com',
         firstName: 'System',
         lastName: 'Admin',
-        displayName: 'System Administrator',
+        displayName: 'System Administrator (Root)',
         avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=superadmin',
         createdAt: new Date('2024-01-01'),
         updatedAt: new Date(),
         lastLoginAt: new Date(),
         isActive: true,
-        systemRole: 'system-admin', // SYSTEM ADMIN - Full access
-        orgMemberships: [
-            { userId: 'user-000', orgId: 'org-001', role: 'org-admin', joinedAt: new Date('2024-01-01') },
-            { userId: 'user-000', orgId: 'org-002', role: 'org-admin', joinedAt: new Date('2024-01-01') },
-        ],
-        groupMemberships: [
-            { userId: 'user-000', groupId: 'group-001', role: 'group-admin', joinedAt: new Date('2024-01-01') },
-            { userId: 'user-000', groupId: 'group-004', role: 'group-admin', joinedAt: new Date('2024-01-01') },
-        ],
+        systemRole: 'system-admin', // CHUYÊN TRÁCH HỆ THỐNG
+        orgMemberships: [], // Không tham gia công ty cụ thể nào
+        groupMemberships: [],
         language: 'vi',
         timezone: 'Asia/Ho_Chi_Minh',
         notificationPreferences: {
@@ -35,28 +29,33 @@ export const mockUsers: User[] = [
         },
     },
 
-    // Current logged-in user
+    // user-001: Nguyễn Văn An - Đa vai trò (Org Admin & Group Admin)
     {
         id: 'user-001',
-        email: 'nguyen.a@abc-company.com',
+        email: 'nguyen.an@techviet.com',
         firstName: 'Nguyễn',
-        lastName: 'Văn A',
-        displayName: 'Nguyễn Văn A (System Admin)',
-        avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=nguyen-a',
+        lastName: 'Văn An',
+        displayName: 'Nguyễn Văn An',
+        avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=nguyen-an',
         createdAt: new Date('2025-01-01'),
         updatedAt: new Date('2025-01-15'),
         lastLoginAt: new Date(),
         isActive: true,
-        systemRole: 'system-admin', // Demoted user-000, promoted user-001 to system-admin
+        systemRole: 'member', // Quay lại làm member thông thường của hệ thống
+
+        // Tham gia 2 công ty
         orgMemberships: [
-            { userId: 'user-001', orgId: 'org-001', role: 'org-admin', joinedAt: new Date('2025-01-01') },
-            { userId: 'user-001', orgId: 'org-002', role: 'member', joinedAt: new Date('2025-02-01') },
+            { userId: 'user-001', orgId: 'org-001', role: 'org-admin', joinedAt: new Date('2025-01-01') }, // Công ty 1: TechViet Solutions - Admin Org
+            { userId: 'user-001', orgId: 'org-002', role: 'member', joinedAt: new Date('2025-02-01') },    // Công ty 2: Global Corp - Chỉ là nhân viên
         ],
+
+        // Vai trò trong các nhóm
         groupMemberships: [
-            { userId: 'user-001', groupId: 'group-001', role: 'group-admin', joinedAt: new Date('2025-01-05') },
-            { userId: 'user-001', groupId: 'group-002', role: 'member', joinedAt: new Date('2025-01-10') },
-            { userId: 'user-001', groupId: 'group-003', role: 'viewer', joinedAt: new Date('2025-01-15') },
+            { userId: 'user-001', groupId: 'group-001', role: 'group-admin', joinedAt: new Date('2025-01-05') }, // Trưởng phòng Kinh doanh (Công ty 1)
+            { userId: 'user-001', groupId: 'group-004', role: 'group-admin', joinedAt: new Date('2025-02-03') }, // Trưởng nhóm Phát triển AI (Công ty 2)
+            { userId: 'user-001', groupId: 'group-002', role: 'member', joinedAt: new Date('2025-01-10') },      // Thành viên phòng Kỹ thuật (Công ty 1)
         ],
+
         language: 'vi',
         timezone: 'Asia/Ho_Chi_Minh',
         notificationPreferences: {

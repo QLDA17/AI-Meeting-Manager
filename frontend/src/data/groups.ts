@@ -47,12 +47,12 @@ export const mockGroups: Group[] = [
         totalHours: 55,
     },
 
-    // XYZ Corp Groups
+    // Global Corp Groups (org-002)
     {
         id: 'group-004',
         orgId: 'org-002',
-        name: 'Engineering',
-        description: 'Core engineering team',
+        name: 'Phát triển AI',
+        description: 'Đội ngũ kỹ thuật nòng cốt phát triển trí tuệ nhân tạo',
         privacyLevel: 'internal',
         createdAt: new Date('2025-02-03'),
         updatedAt: new Date('2025-02-09'),

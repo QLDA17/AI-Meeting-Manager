@@ -4,7 +4,7 @@
  */
 import React, { useState, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Upload,
   Mic,
@@ -26,12 +26,21 @@ type UploadStep = 'context' | 'upload' | 'details' | 'processing' | 'success';
 
 const UploadAudio: React.FC = () => {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { currentOrg, groups, setCurrentGroup } = useOrgStore();
   const { addMeeting } = useAppStore();
 
   // State
-  const [currentStep, setCurrentStep] = useState<UploadStep>('context');
-  const [selectedGroupId, setSelectedGroupId] = useState('');
+  const [currentStep, setCurrentStep] = React.useState<UploadStep>('context');
+  const [selectedGroupId, setSelectedGroupId] = React.useState('');
+
+  // Set initial group from URL
+  React.useEffect(() => {
+    const groupId = searchParams.get('groupId');
+    if (groupId) {
+      setSelectedGroupId(groupId);
+    }
+  }, [searchParams]);
   const [meetingTitle, setMeetingTitle] = useState('');
   const [meetingDate, setMeetingDate] = useState(new Date().toISOString().split('T')[0]);
   const [meetingTime, setMeetingTime] = useState('14:00');

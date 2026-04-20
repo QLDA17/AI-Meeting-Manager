@@ -6,9 +6,9 @@ import type { Organization } from '../types';
 export const mockOrganizations: Organization[] = [
     {
         id: 'org-001',
-        name: 'ABC Company',
-        description: 'Leading technology and business consulting firm',
-        logo: 'https://api.dicebear.com/7.x/identicon/svg?seed=abc-company',
+        name: 'TechViet Solutions',
+        description: 'Công ty tư vấn và giải pháp công nghệ hàng đầu Việt Nam',
+        logo: 'https://api.dicebear.com/7.x/identicon/svg?seed=techviet',
         createdAt: new Date('2025-01-01'),
         updatedAt: new Date('2025-01-20'),
         memberCount: 24,
@@ -19,9 +19,9 @@ export const mockOrganizations: Organization[] = [
 
     {
         id: 'org-002',
-        name: 'XYZ Corp',
-        description: 'Innovative software development and consulting',
-        logo: 'https://api.dicebear.com/7.x/identicon/svg?seed=xyz-corp',
+        name: 'Global Corp',
+        description: 'Tập đoàn đa quốc gia - Giải pháp phần mềm và nhân sự',
+        logo: 'https://api.dicebear.com/7.x/identicon/svg?seed=global-corp',
         createdAt: new Date('2025-02-01'),
         updatedAt: new Date('2025-02-10'),
         memberCount: 15,

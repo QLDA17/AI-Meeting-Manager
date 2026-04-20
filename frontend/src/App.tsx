@@ -91,25 +91,25 @@ const AppRoutes: React.FC = () => {
       <Route path="/room/:code" element={<React.Suspense fallback={<PageLoader />}><MeetingRoom /></React.Suspense>} />
 
       {/* Protected Routes (Main Layout) */}
-      <Route path="/dashboard" element={<ProtectedRoute><Layout /></ProtectedRoute>}>
-        <Route index element={<React.Suspense fallback={<PageLoader />}><Dashboard /></React.Suspense>} />
-        <Route path="meetings" element={<React.Suspense fallback={<PageLoader />}><MeetingList /></React.Suspense>} />
-        <Route path="meetings/:id" element={<React.Suspense fallback={<PageLoader />}><MeetingDetail /></React.Suspense>} />
-        <Route path="create" element={<React.Suspense fallback={<PageLoader />}><CreateMeeting /></React.Suspense>} />
-        <Route path="upload" element={<React.Suspense fallback={<PageLoader />}><UploadAudio /></React.Suspense>} />
-        <Route path="actions" element={<React.Suspense fallback={<PageLoader />}><ActionItems /></React.Suspense>} />
-        <Route path="notifications" element={<React.Suspense fallback={<PageLoader />}><Notifications /></React.Suspense>} />
+      <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
+        <Route path="/dashboard" element={<React.Suspense fallback={<PageLoader />}><Dashboard /></React.Suspense>} />
+        <Route path="/meetings" element={<React.Suspense fallback={<PageLoader />}><MeetingList /></React.Suspense>} />
+        <Route path="/meetings/:id" element={<React.Suspense fallback={<PageLoader />}><MeetingDetail /></React.Suspense>} />
+        <Route path="/create" element={<React.Suspense fallback={<PageLoader />}><CreateMeeting /></React.Suspense>} />
+        <Route path="/upload" element={<React.Suspense fallback={<PageLoader />}><UploadAudio /></React.Suspense>} />
+        <Route path="/actions" element={<React.Suspense fallback={<PageLoader />}><ActionItems /></React.Suspense>} />
+        <Route path="/notifications" element={<React.Suspense fallback={<PageLoader />}><Notifications /></React.Suspense>} />
         
         {/* Group Routes */}
-        <Route path="groups/create" element={<React.Suspense fallback={<PageLoader />}><CreateGroup /></React.Suspense>} />
-        <Route path="groups/:id" element={<React.Suspense fallback={<PageLoader />}><GroupDetail /></React.Suspense>} />
+        <Route path="/groups/create" element={<React.Suspense fallback={<PageLoader />}><CreateGroup /></React.Suspense>} />
+        <Route path="/groups/:id" element={<React.Suspense fallback={<PageLoader />}><GroupDetail /></React.Suspense>} />
 
         {/* Organization Admin Routes */}
-        <Route path="org/admin" element={<RoleGuard roles={['org-admin', 'system-admin']}><React.Suspense fallback={<PageLoader />}><OrgAdminConsole /></React.Suspense></RoleGuard>} />
-        <Route path="org/admin/:tab" element={<RoleGuard roles={['org-admin', 'system-admin']}><React.Suspense fallback={<PageLoader />}><OrgAdminConsole /></React.Suspense></RoleGuard>} />
+        <Route path="/org/admin" element={<RoleGuard roles={['org-admin', 'system-admin']}><React.Suspense fallback={<PageLoader />}><OrgAdminConsole /></React.Suspense></RoleGuard>} />
+        <Route path="/org/admin/:tab" element={<RoleGuard roles={['org-admin', 'system-admin']}><React.Suspense fallback={<PageLoader />}><OrgAdminConsole /></React.Suspense></RoleGuard>} />
 
         {/* Profile */}
-        <Route path="profile" element={<ProtectedRoute><React.Suspense fallback={<PageLoader />}><Profile /></React.Suspense></ProtectedRoute>} />
+        <Route path="/profile" element={<ProtectedRoute><React.Suspense fallback={<PageLoader />}><Profile /></React.Suspense></ProtectedRoute>} />
       </Route>
 
       {/* System Admin Routes (Separate Layout) */}

@@ -25,9 +25,9 @@ export const orgUserRoles: OrgUserRole[] = [
   { userId: 'user-000', orgId: 'org-001', role: 'org-admin', joinedAt: new Date('2024-01-01') },
   { userId: 'user-000', orgId: 'org-002', role: 'org-admin', joinedAt: new Date('2024-01-01') },
 
-  // user-001 (Nguyễn Văn A) - Org Admin của ABC Company, Member của XYZ Corp
-  { userId: 'user-001', orgId: 'org-001', role: 'org-admin', joinedAt: new Date('2025-01-01') },
-  { userId: 'user-001', orgId: 'org-002', role: 'member', joinedAt: new Date('2025-02-01') },
+  // user-001 (Nguyễn Văn An) - Đa vai trò
+  { userId: 'user-001', orgId: 'org-001', role: 'org-admin', joinedAt: new Date('2025-01-01') }, // Admin TechViet Solutions
+  { userId: 'user-001', orgId: 'org-002', role: 'member', joinedAt: new Date('2025-02-01') },    // Nhân viên Global Corp
 
   // user-002 (Trần Thị B) - Member của ABC Company
   { userId: 'user-002', orgId: 'org-001', role: 'member', joinedAt: new Date('2025-01-02') },
@@ -57,10 +57,10 @@ export const groupUserRoles: GroupUserRole[] = [
   { userId: 'user-000', groupId: 'group-001', role: 'group-admin', joinedAt: new Date('2024-01-01') },
   { userId: 'user-000', groupId: 'group-004', role: 'group-admin', joinedAt: new Date('2024-01-01') },
 
-  // user-001 (Nguyễn Văn A) - group-admin của group-001, member của group-002, viewer của group-003
-  { userId: 'user-001', groupId: 'group-001', role: 'group-admin', joinedAt: new Date('2025-01-05') },
-  { userId: 'user-001', groupId: 'group-002', role: 'member', joinedAt: new Date('2025-01-10') },
-  { userId: 'user-001', groupId: 'group-003', role: 'viewer', joinedAt: new Date('2025-01-15') },
+  // user-001 (Nguyễn Văn An) - Đa vai trò
+  { userId: 'user-001', groupId: 'group-001', role: 'group-admin', joinedAt: new Date('2025-01-05') }, // Trưởng phòng Kinh doanh (Công ty 1)
+  { userId: 'user-001', groupId: 'group-004', role: 'group-admin', joinedAt: new Date('2025-02-03') }, // Trưởng nhóm Phát triển AI (Công ty 2)
+  { userId: 'user-001', groupId: 'group-002', role: 'member', joinedAt: new Date('2025-01-10') },      // Nhân viên Kỹ thuật (Công ty 1)
 
   // user-002 (Trần Thị B) - group-admin của group-001
   { userId: 'user-002', groupId: 'group-001', role: 'group-admin', joinedAt: new Date('2025-01-05') },

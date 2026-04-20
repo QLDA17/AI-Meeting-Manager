@@ -154,7 +154,7 @@ const GroupDetail: React.FC = () => {
 
           <div className="flex items-center gap-2">
             <button
-              onClick={() => navigate('/create')}
+              onClick={() => navigate(`/create?groupId=${id}`)}
               className="inline-flex items-center gap-2 rounded-lg bg-primary-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-primary-700"
             >
               <Plus size={14} />

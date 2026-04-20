@@ -1,9 +1,9 @@
 /**
  * CreateMeeting - Tạo cuộc họp mới với QR, mã tham gia, cài đặt thiết bị
  */
-import React, { useState } from "react";
-import { useNavigate } from "react-router-dom";
-import { motion } from "framer-motion";
+import React, { useState, useEffect } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { motion, AnimatePresence } from "framer-motion";
 import { QRCodeSVG } from "qrcode.react";
 import {
   Plus,
@@ -17,9 +17,11 @@ import {
   X,
   UserPlus,
   Link2,
+  ChevronDown,
 } from "lucide-react";
 import { Card, Button, Input, Tooltip, showToast } from "../components/ui";
 import { useAuth } from "../context/AuthContext";
+import { useOrgStore } from "../stores";
 
 const generateMeetingCode = (): string => {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -42,9 +44,13 @@ interface Participant {
 
 const CreateMeeting: React.FC = () => {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { user } = useAuth();
+  const { groups } = useOrgStore();
+  
   const [step, setStep] = useState<"setup" | "invite">("setup");
   const [title, setTitle] = useState("");
+  const [selectedGroupId, setSelectedGroupId] = useState<string>("");
   const [meetingCode] = useState(generateMeetingCode());
   const [copied, setCopied] = useState(false);
   const [inviteEmail, setInviteEmail] = useState("");
@@ -58,6 +64,16 @@ const CreateMeeting: React.FC = () => {
   const [enableCamera, setEnableCamera] = useState(true);
   const [enableMic, setEnableMic] = useState(true);
   const [enableRecord, setEnableRecord] = useState(true);
+
+  // Set initial group from URL
+  useEffect(() => {
+    const groupId = searchParams.get("groupId");
+    if (groupId) {
+      setSelectedGroupId(groupId);
+    } else if (groups.length > 0) {
+      setSelectedGroupId(groups[0].id);
+    }
+  }, [searchParams, groups]);
 
   const joinUrl = `${window.location.origin}/join/${meetingCode}`;
 
@@ -115,9 +131,14 @@ const CreateMeeting: React.FC = () => {
       showToast.error("Vui lòng nhập tên cuộc họp");
       return;
     }
+    if (!selectedGroupId) {
+      showToast.error("Vui lòng chọn nhóm cho cuộc họp");
+      return;
+    }
     navigate(`/room/${meetingCode}`, {
       state: {
         title,
+        groupId: selectedGroupId,
         organizer: user?.displayName || user?.email || "Bạn",
         enableCamera,
         enableMic,
@@ -178,6 +199,29 @@ const CreateMeeting: React.FC = () => {
                   value={title}
                   onChange={(e) => setTitle(e.target.value)}
                 />
+                <div className="space-y-1.5">
+                  <label className="text-sm font-medium text-gray-700 dark:text-slate-200 ml-1">
+                    Chọn nhóm
+                  </label>
+                  <div className="relative group">
+                    <select
+                      value={selectedGroupId}
+                      onChange={(e) => setSelectedGroupId(e.target.value)}
+                      className="w-full h-11 pl-4 pr-10 appearance-none rounded-xl border border-gray-200 bg-white text-gray-900 focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20 transition-all dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                    >
+                      {groups.length === 0 ? (
+                        <option value="" disabled>Chưa có nhóm nào</option>
+                      ) : (
+                        groups.map((group) => (
+                          <option key={group.id} value={group.id}>
+                            {group.name}
+                          </option>
+                        ))
+                      )}
+                    </select>
+                    <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none group-focus-within:text-primary-500 transition-colors" size={18} />
+                  </div>
+                </div>
                 <div>
                   <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-slate-200">
                     Mã tham gia

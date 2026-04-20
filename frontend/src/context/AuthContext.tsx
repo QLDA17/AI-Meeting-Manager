@@ -79,24 +79,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } catch (err) {
       console.error('Login failed, falling back to mock:', err);
 
-      // Mock users - CHỈ CHO PHÉP admin, user, multirole
-      const validUsers: Record<string, number> = {
-        'admin': 1,       // user-001 (System Admin mới)
-        'user': 10,       // user-010 (Member thường)
-        'multirole': 11,  // user-011 (Đa vai trò)
-      };
-
+      // Mock users - Tìm user theo email hoặc username
       const userInput = username.toLowerCase().trim();
-      const userIndex = validUsers[userInput];
+      const mockUser = mockUsers.find(u => 
+        u.email.toLowerCase() === userInput || 
+        u.id.toLowerCase() === userInput ||
+        (userInput === 'superadmin' && u.id === 'user-000') ||
+        (userInput === 'admin' && u.id === 'user-001') ||
+        (userInput === 'user' && u.id === 'user-010')
+      );
 
-      if (userIndex === undefined) {
-        // Invalid username
+      if (!mockUser) {
         setIsLoading(false);
-        setError('Tài khoản không tồn tại. Thử dùng "admin", "user" hoặc "multirole".');
+        setError('Tài khoản không tồn tại. Thử "superadmin" hoặc "admin".');
         return;
       }
-
-      const mockUser = mockUsers[userIndex];
 
       const newSession: Session = {
         userId: mockUser.id,
@@ -109,10 +106,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setUser(mockUser);
       setSession(newSession);
 
-      // Redirect based on role
-      if (mockUser.systemRole === 'system-admin') {
-        // System admin -> thẳng admin panel
+      // Điều hướng tách biệt:
+      if (mockUser.id === 'user-000') {
+        // Tài khoản superadmin -> Vào thẳng Admin Console
         setTimeout(() => window.location.href = '/admin/console', 100);
+      } else {
+        // Các tài khoản khác (bao gồm user-001) -> Vào Dashboard người dùng
+        setTimeout(() => window.location.href = '/dashboard', 100);
       }
     } finally {
       setIsLoading(false);
