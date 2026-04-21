@@ -1,8 +1,8 @@
 /**
- * MeetingRoom v3 - Scalable & Premium AI Meeting Experience
- * Support for large numbers of participants with Spotlight & Grid modes
+ * MeetingRoom v3.1 - Enhanced Device Management & Refined Sidebar
+ * Ensures hardware release on camera toggle and premium sidebar experience.
  */
-import React, { useState, useEffect, useRef, useMemo } from "react";
+import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -24,7 +24,10 @@ import {
   Sparkles,
   LayoutGrid,
   Maximize2,
-  MoreVertical
+  MoreVertical,
+  Volume2,
+  ShieldCheck,
+  Settings
 } from "lucide-react";
 import { showToast } from "../components/ui";
 import { useWebSocket } from "../hooks";
@@ -109,10 +112,14 @@ const VideoView: React.FC<{
   const videoRef = useRef<HTMLVideoElement>(null);
 
   useEffect(() => {
-    if (videoRef.current && stream) {
-      if (videoRef.current.srcObject !== stream) {
-        videoRef.current.srcObject = stream;
-        videoRef.current.play().catch(e => console.log("Video play error:", e));
+    if (videoRef.current) {
+      if (stream) {
+        if (videoRef.current.srcObject !== stream) {
+          videoRef.current.srcObject = stream;
+          videoRef.current.play().catch(e => console.log("Video play error:", e));
+        }
+      } else {
+        videoRef.current.srcObject = null;
       }
     }
   }, [stream]);
@@ -197,38 +204,72 @@ const MeetingRoom: React.FC = () => {
     participants.filter(p => p.id !== spotlightId)
   , [participants, spotlightId]);
 
+  // Handle Camera Hardware Toggle
+  const stopCameraHardware = useCallback(() => {
+    if (localStream) {
+      localStream.getVideoTracks().forEach(track => {
+        track.stop();
+        console.log("Webcam hardware released (track stopped)");
+      });
+    }
+  }, [localStream]);
+
+  const startCameraHardware = useCallback(async () => {
+    try {
+      // If we already have a stream, stop the old tracks first
+      stopCameraHardware();
+      
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        video: { width: 1280, height: 720, facingMode: 'user' }, 
+        audio: true // Keep audio on
+      });
+      
+      // If mic is off, ensure audio track is disabled initially
+      const audioTrack = stream.getAudioTracks()[0];
+      if (audioTrack) audioTrack.enabled = micOn;
+      
+      setLocalStream(stream);
+      console.log("Webcam hardware initialized");
+      return stream;
+    } catch (err) {
+      console.error("Camera hardware error:", err);
+      setCameraOn(false);
+      showToast.error("Không thể truy cập Camera. Kiểm tra quyền trình duyệt.");
+      return null;
+    }
+  }, [micOn, stopCameraHardware]);
+
+  // Initial Camera Start
   useEffect(() => {
-    let stream: MediaStream | null = null;
-    const startCamera = async () => {
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({ 
-          video: { width: 1280, height: 720, facingMode: 'user' }, 
-          audio: true 
-        });
-        setLocalStream(stream);
-        setCameraOn(true);
-        setMicOn(true);
-        showToast.success("Camera đã sẵn sàng!");
-      } catch (err) {
-        console.error("Camera error:", err);
-        setCameraOn(false);
-        setMicOn(true);
-        showToast.error("Camera bị từ chối.");
-      }
-    };
-    startCamera();
+    startCameraHardware();
     return () => {
-      if (stream) stream.getTracks().forEach(t => t.stop());
+      stopCameraHardware();
+      if (localStream) localStream.getAudioTracks().forEach(t => t.stop());
     };
   }, []);
 
+  // Strict Camera Toggle Effect
   useEffect(() => {
-    if (localStream) {
-      const videoTrack = localStream.getVideoTracks()[0];
-      if (videoTrack) videoTrack.enabled = cameraOn;
+    if (cameraOn) {
+      // Re-request hardware access when turning ON
+      if (!localStream || !localStream.getVideoTracks()[0] || localStream.getVideoTracks()[0].readyState === 'ended') {
+        startCameraHardware();
+      } else {
+        localStream.getVideoTracks()[0].enabled = true;
+      }
+    } else {
+      // Completely STOP the track to turn off the hardware light
+      if (localStream) {
+        localStream.getVideoTracks().forEach(track => {
+          track.enabled = false;
+          track.stop(); // This is crucial for releasing the hardware
+        });
+        console.log("Camera track stopped and light should be OFF");
+      }
     }
-  }, [cameraOn, localStream]);
+  }, [cameraOn]);
 
+  // Mic Toggle Effect
   useEffect(() => {
     if (localStream) {
       const audioTrack = localStream.getAudioTracks()[0];
@@ -266,7 +307,8 @@ const MeetingRoom: React.FC = () => {
   };
 
   const leaveMeeting = () => {
-    localStream?.getTracks().forEach(t => t.stop());
+    stopCameraHardware();
+    localStream?.getAudioTracks().forEach(t => t.stop());
     screenStream?.getTracks().forEach(t => t.stop());
     navigate("/meetings");
   };
@@ -280,6 +322,7 @@ const MeetingRoom: React.FC = () => {
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-[#020617] text-slate-100 overflow-hidden font-sans">
+      {/* Premium Header */}
       <header className="h-16 flex items-center justify-between px-6 bg-[#020617]/80 backdrop-blur-md border-b border-slate-800/50 z-20">
         <div className="flex items-center gap-4">
           <div className="w-10 h-10 rounded-xl bg-indigo-600 flex items-center justify-center shadow-lg shadow-indigo-500/20">
@@ -288,8 +331,8 @@ const MeetingRoom: React.FC = () => {
           <div>
             <h1 className="text-sm font-bold tracking-tight">{meeting?.title || 'Cuộc họp'}</h1>
             <div className="flex items-center gap-2">
-              <span className={`text-[10px] font-bold ${localStream ? 'text-green-400' : 'text-red-400'}`}>
-                {localStream ? '● Camera sẵn sàng' : '○ Đang khởi camera...'}
+              <span className={`text-[10px] font-bold ${localStream && cameraOn ? 'text-green-400' : 'text-slate-500'}`}>
+                {localStream && cameraOn ? '● Camera sẵn sàng' : '○ Camera đang tắt'}
               </span>
               <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Mã: {code}</span>
               <div className="h-1 w-1 rounded-full bg-slate-700" />
@@ -302,8 +345,8 @@ const MeetingRoom: React.FC = () => {
 
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-green-900/30 border border-green-500/30">
-             <span className={`w-2 h-2 rounded-full ${localStream ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
-             <span className="text-xs font-bold text-green-400">{localStream ? 'LIVE' : 'OFFLINE'}</span>
+             <span className={`w-2 h-2 rounded-full ${localStream && cameraOn ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
+             <span className="text-xs font-bold text-green-400">{localStream && cameraOn ? 'LIVE' : 'OFFLINE'}</span>
           </div>
           <div className="flex items-center gap-3 px-4 py-2 rounded-2xl bg-slate-900 border border-slate-800">
              <RecordingTimer isRecording={isRecording} />
@@ -317,40 +360,191 @@ const MeetingRoom: React.FC = () => {
       </header>
 
       <div className="flex-1 flex overflow-hidden relative">
-        <aside className="w-64 border-r border-slate-800/50 bg-[#020617]/50 flex flex-col hidden xl:flex">
-          <div className="p-4 border-b border-slate-800/50 flex items-center justify-between">
-            <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Thành viên khác</span>
-            <LayoutGrid size={14} className="text-slate-600" />
+        {/* Left Sidebar - Participants & Grid Actions */}
+        <aside className="w-80 border-r border-white/5 bg-[#020617]/80 backdrop-blur-2xl flex flex-col hidden lg:flex z-20">
+          <div className="p-6 border-b border-white/5 space-y-5">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-lg bg-indigo-500/10 flex items-center justify-center border border-indigo-500/20">
+                  <Users size={16} className="text-indigo-400" />
+                </div>
+                <span className="text-xs font-black text-slate-200 uppercase tracking-widest">Thành viên</span>
+              </div>
+              <div className="flex items-center gap-1">
+                <button className="p-2 rounded-xl hover:bg-white/5 text-slate-400 hover:text-white transition-all active:scale-90">
+                  <Settings size={16} />
+                </button>
+              </div>
+            </div>
+            
+            <div className="relative group">
+              <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-500 group-focus-within:text-indigo-400 transition-colors">
+                 <LayoutGrid size={14} />
+              </div>
+              <input 
+                type="text" 
+                placeholder="Tìm kiếm..." 
+                className="w-full bg-slate-900/40 border border-white/5 rounded-2xl pl-10 pr-4 py-2.5 text-xs outline-none focus:border-indigo-500/50 focus:bg-slate-900/80 transition-all placeholder:text-slate-600"
+              />
+            </div>
           </div>
-          <div className="flex-1 overflow-y-auto p-3 space-y-3 custom-scrollbar">
-            {galleryParticipants.map(p => (
-              <div 
-                key={p.id} 
-                onClick={() => setSpotlightId(p.id)}
-                className="group relative aspect-video rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden cursor-pointer hover:border-indigo-500/50 transition-all"
-              >
-                {p.cameraOn ? (
-                   <div className="h-full w-full bg-slate-800" />
-                ) : (
-                  <div className="h-full w-full flex items-center justify-center bg-slate-800">
-                    <div className="w-10 h-10 rounded-full bg-indigo-600/20 border border-indigo-500/30 flex items-center justify-center text-xs font-bold text-indigo-400">
-                      {p.name[0]}
+
+          <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
+            <div className="space-y-6">
+              {/* Category: Host/Organizer */}
+              <div className="space-y-3">
+                <div className="px-2 flex items-center justify-between">
+                  <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Điều phối viên</span>
+                  <span className="px-1.5 py-0.5 rounded-md bg-indigo-500/10 text-indigo-400 text-[8px] font-black uppercase">1</span>
+                </div>
+                
+                {/* Me Participant */}
+                <motion.div 
+                  layout
+                  onClick={() => setSpotlightId('me')}
+                  className={clsx(
+                    "group relative p-3 rounded-2xl border transition-all cursor-pointer overflow-hidden",
+                    spotlightId === 'me' 
+                      ? "bg-gradient-to-br from-indigo-500/10 to-transparent border-indigo-500/30 ring-1 ring-indigo-500/20 shadow-lg shadow-indigo-500/5" 
+                      : "bg-white/[0.02] border-white/5 hover:border-white/10 hover:bg-white/[0.04]"
+                  )}
+                >
+                  <div className="flex items-center gap-3.5">
+                    <div className="w-12 h-12 rounded-2xl bg-slate-800 overflow-hidden border border-white/10 relative shadow-inner">
+                       {cameraOn && localStream ? (
+                          <VideoView stream={localStream} mirror={true} className="scale-110" />
+                       ) : (
+                          <div className="h-full w-full flex items-center justify-center bg-gradient-to-br from-indigo-500/20 to-slate-800 text-indigo-400 font-black text-lg">
+                            {(user?.displayName || "Me")[0]}
+                          </div>
+                       )}
+                       {spotlightId === 'me' && (
+                         <div className="absolute inset-0 border-2 border-indigo-500/50 rounded-2xl z-20 pointer-events-none" />
+                       )}
+                       <div className="absolute bottom-1 right-1 z-30">
+                          <div className={clsx(
+                            "w-2.5 h-2.5 rounded-full border-2 border-slate-900 shadow-sm",
+                            localStream && cameraOn ? "bg-emerald-500" : "bg-rose-500"
+                          )} />
+                       </div>
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <p className="text-sm font-black text-slate-200 truncate tracking-tight">Bạn</p>
+                        <ShieldCheck size={12} className="text-indigo-400 flex-shrink-0" />
+                      </div>
+                      <p className="text-[10px] text-slate-500 font-bold uppercase tracking-tighter">Ban tổ chức</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div className="flex flex-col items-end gap-1">
+                        {!micOn ? (
+                          <MicOff size={14} className="text-rose-500/80" />
+                        ) : (
+                          <div className="h-4 flex items-end gap-0.5 px-1">
+                             {[1, 2, 3].map(i => (
+                               <motion.div 
+                                 key={i}
+                                 animate={{ height: [4, 10, 4] }}
+                                 transition={{ duration: 0.5, repeat: Infinity, delay: i * 0.1 }}
+                                 className="w-0.5 bg-emerald-500 rounded-full"
+                               />
+                             ))}
+                          </div>
+                        )}
+                        {screenSharing && (
+                          <div className="p-1 rounded-md bg-indigo-500/20">
+                            <MonitorUp size={10} className="text-indigo-400" />
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </div>
-                )}
-                <div className="absolute bottom-2 left-2 px-2 py-1 rounded-lg bg-black/60 backdrop-blur-md border border-white/5 flex items-center gap-2">
-                   <span className="text-[9px] font-bold text-white truncate max-w-[80px]">{p.name}</span>
-                   {!p.micOn && <MicOff size={10} className="text-red-400" />}
+                </motion.div>
+              </div>
+
+              {/* Category: Participants */}
+              <div className="space-y-3">
+                <div className="px-2 flex items-center justify-between">
+                  <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Thành viên khác</span>
+                  <span className="px-1.5 py-0.5 rounded-md bg-white/5 text-slate-400 text-[8px] font-black uppercase">{galleryParticipants.length}</span>
+                </div>
+
+                <div className="space-y-2">
+                  {galleryParticipants.map(p => (
+                    <motion.div 
+                      layout
+                      key={p.id} 
+                      onClick={() => setSpotlightId(p.id)}
+                      className={clsx(
+                        "group relative p-3 rounded-2xl border transition-all cursor-pointer overflow-hidden",
+                        spotlightId === p.id 
+                          ? "bg-indigo-500/10 border-indigo-500/30 shadow-lg shadow-indigo-500/5" 
+                          : "bg-white/[0.01] border-white/5 hover:border-white/10 hover:bg-white/[0.03]"
+                      )}
+                    >
+                      <div className="flex items-center gap-3.5">
+                        <div className="w-10 h-10 rounded-xl bg-slate-900 overflow-hidden border border-white/5 relative group-hover:border-white/20 transition-colors">
+                          {p.cameraOn ? (
+                             <div className="h-full w-full bg-indigo-500/5 flex items-center justify-center">
+                                <Video size={16} className="text-slate-500" />
+                             </div>
+                          ) : (
+                            <div className="h-full w-full flex items-center justify-center bg-slate-800 text-slate-400 font-black text-sm uppercase">
+                              {p.name[0]}
+                            </div>
+                          )}
+                          {spotlightId === p.id && (
+                            <div className="absolute inset-0 border-2 border-indigo-500/50 rounded-xl z-20 pointer-events-none" />
+                          )}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className={clsx(
+                            "text-xs font-bold truncate transition-colors",
+                            spotlightId === p.id ? "text-indigo-300" : "text-slate-300 group-hover:text-white"
+                          )}>{p.name}</p>
+                          <p className="text-[10px] text-slate-500 font-bold uppercase tracking-tighter opacity-80">{p.role}</p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {!p.micOn ? (
+                             <MicOff size={12} className="text-slate-600" />
+                          ) : p.isSpeaking ? (
+                            <div className="w-2 h-2 bg-emerald-500 rounded-full shadow-[0_0_10px_rgba(16,185,129,0.5)] animate-pulse" />
+                          ) : null}
+                          <button className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg hover:bg-white/10 text-slate-500 hover:text-white transition-all">
+                             <MoreVertical size={14} />
+                          </button>
+                        </div>
+                      </div>
+                    </motion.div>
+                  ))}
                 </div>
               </div>
-            ))}
+            </div>
+          </div>
+
+          {/* Sidebar Footer: Advanced Controls */}
+          <div className="p-6 border-t border-white/5 bg-slate-950/40 backdrop-blur-md">
+            <div className="grid grid-cols-2 gap-3">
+              <button className="flex flex-col items-center justify-center gap-2 p-4 rounded-[1.25rem] bg-indigo-500/5 border border-indigo-500/10 hover:bg-indigo-500/10 hover:border-indigo-500/20 transition-all group active:scale-95 shadow-sm shadow-indigo-500/5">
+                <div className="w-8 h-8 rounded-xl bg-indigo-500/10 flex items-center justify-center border border-indigo-500/20 group-hover:scale-110 transition-transform">
+                  <ShieldCheck size={16} className="text-indigo-400" />
+                </div>
+                <span className="text-[10px] font-black text-slate-400 group-hover:text-indigo-300 uppercase tracking-wider">Bảo mật</span>
+              </button>
+              <button className="flex flex-col items-center justify-center gap-2 p-4 rounded-[1.25rem] bg-white/[0.02] border border-white/5 hover:bg-white/[0.05] hover:border-white/10 transition-all group active:scale-95 shadow-sm">
+                <div className="w-8 h-8 rounded-xl bg-white/5 flex items-center justify-center border border-white/10 group-hover:scale-110 transition-transform">
+                  <Volume2 size={16} className="text-slate-400 group-hover:text-white" />
+                </div>
+                <span className="text-[10px] font-black text-slate-500 group-hover:text-slate-300 uppercase tracking-wider">Cấu hình</span>
+              </button>
+            </div>
           </div>
         </aside>
 
         <main className="flex-1 p-6 relative flex flex-col gap-4">
           <div className="flex-1 relative rounded-[2.5rem] bg-slate-900 border border-slate-800 overflow-hidden shadow-2xl group">
               {spotlightId === 'me' ? (
-                localStream ? (
+                localStream && cameraOn ? (
                   <div className="h-full w-full bg-black relative">
                     <VideoView 
                       stream={screenSharing && screenStream && mainView === "screen" ? screenStream : localStream}
