@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { Search, Plus, MoreVertical, Building2, CheckCircle2, AlertCircle, TrendingUp, BarChart3 } from 'lucide-react';
 import { mockOrganizations } from '../../../data';
 import { format } from 'date-fns';
@@ -12,6 +12,7 @@ import {
   ResponsiveContainer,
   Cell,
 } from 'recharts';
+import { clsx } from 'clsx';
 
 const chartData = [
   { name: 'ABC Company', hours: 286 },
@@ -24,28 +25,39 @@ const chartData = [
 const COLORS = ['#ef4444', '#3b82f6', '#10b981', '#f59e0b', '#8b5cf6'];
 
 const AdminOrganizations: React.FC = () => {
+  const stats = [
+    { label: 'Tổng Doanh nghiệp', value: mockOrganizations.length, icon: <Building2 />, color: 'blue' },
+    { label: 'Đang hoạt động', value: mockOrganizations.length, icon: <CheckCircle2 />, color: 'green' },
+    { label: 'Dung lượng (TB)', value: '1.2', icon: <TrendingUp />, color: 'purple' },
+    { label: 'Bị khóa', value: 0, icon: <AlertCircle />, color: 'red' },
+  ];
+
   return (
     <div className="space-y-6">
       {/* Header Stats */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {[
-          { label: 'Tổng Doanh nghiệp', value: mockOrganizations.length, icon: <Building2 />, color: 'blue' },
-          { label: 'Đang hoạt động', value: mockOrganizations.length, icon: <CheckCircle2 />, color: 'green' },
-          { label: 'Dung lượng (TB)', value: '1.2', icon: <TrendingUp />, color: 'purple' },
-          { label: 'Bị khóa', value: 0, icon: <AlertCircle />, color: 'red' },
-        ].map((s) => (
-          <div key={s.label} className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-            <div className="flex items-center gap-3">
-              <div className={`rounded-xl bg-${s.color}-50 p-2 text-${s.color}-600 dark:bg-${s.color}-900/20 dark:text-${s.color}-400`}>
-                {s.icon}
-              </div>
-              <div>
-                <p className="text-2xl font-black text-gray-900 dark:text-slate-100">{s.value}</p>
-                <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">{s.label}</p>
+        {stats.map((s) => {
+          const colorStyles = {
+            blue: "bg-blue-50 text-blue-600 dark:bg-blue-900/20 dark:text-blue-400",
+            green: "bg-green-50 text-green-600 dark:bg-green-900/20 dark:text-green-400",
+            purple: "bg-purple-50 text-purple-600 dark:bg-purple-900/20 dark:text-purple-400",
+            red: "bg-red-50 text-red-600 dark:bg-red-900/20 dark:text-red-400",
+          }[s.color as 'blue' | 'green' | 'purple' | 'red'];
+
+          return (
+            <div key={s.label} className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+              <div className="flex items-center gap-3">
+                <div className={clsx("rounded-xl p-2", colorStyles)}>
+                  {s.icon}
+                </div>
+                <div>
+                  <p className="text-2xl font-black text-gray-900 dark:text-slate-100">{s.value}</p>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">{s.label}</p>
+                </div>
               </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       {/* Analytics Section */}
@@ -127,7 +139,7 @@ const AdminOrganizations: React.FC = () => {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100 dark:divide-slate-800">
-              {mockOrganizations.map((org) => (
+              {(mockOrganizations || []).map((org) => (
                 <tr key={org.id} className="transition hover:bg-gray-50/50 dark:hover:bg-slate-800/30">
                   <td className="px-6 py-5">
                     <div className="flex items-center gap-3">
@@ -137,10 +149,10 @@ const AdminOrganizations: React.FC = () => {
                   </td>
                   <td className="px-6 py-5 font-bold text-gray-600 dark:text-slate-400">{org.memberCount}</td>
                   <td className="px-6 py-5 font-bold text-gray-600 dark:text-slate-400">{org.totalHours}h</td>
-                  <td className="px-6 py-5 text-xs font-bold text-gray-500">{format(org.createdAt, 'dd/MM/yyyy')}</td>
+                  <td className="px-6 py-5 text-xs font-bold text-gray-500">{format(new Date(org.createdAt), 'dd/MM/yyyy')}</td>
                   <td className="px-6 py-5">
                     <span className="inline-flex rounded-lg bg-green-50 px-2.5 py-1 text-[10px] font-black uppercase tracking-tighter text-green-700 dark:bg-green-900/20 dark:text-green-400">
-                      Hoạt động
+                      Hoàn thành
                     </span>
                   </td>
                   <td className="px-6 py-5 text-right">

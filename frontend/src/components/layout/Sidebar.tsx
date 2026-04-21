@@ -12,7 +12,7 @@ import {
   Shield,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
-import { useCurrentRole } from '../../hooks';
+import { usePermission } from '../../hooks';
 import { useOrgStore } from '../../stores';
 import OrgSelector from './OrgSelector';
 import GroupNav from './GroupNav';
@@ -26,7 +26,7 @@ interface SidebarProps {
 const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onClose }) => {
   const navigate = useNavigate();
   const { user, logout } = useAuth();
-  const role = useCurrentRole();
+  const { isSystemAdmin, isOrgAdmin, isGroupAdmin, isViewer } = usePermission();
   const { currentOrg } = useOrgStore();
 
   const handleLogout = () => {
@@ -60,7 +60,7 @@ const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onClose }) => {
         <div className="flex h-full flex-col">
           {/* Logo & Close */}
           <div className="flex items-center justify-between border-b border-gray-100 px-4 py-4 dark:border-slate-800">
-            <Link to="/" className="flex items-center gap-3">
+            <Link to={isSystemAdmin ? '/admin/console' : '/dashboard'} className="flex items-center gap-3">
               <div className="inline-flex h-10 w-10 items-center justify-center rounded-xl bg-primary-600 text-sm font-extrabold text-white shadow-lg">
                 MM
               </div>
@@ -113,7 +113,7 @@ const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onClose }) => {
             </div>
 
             {/* Admin Access */}
-            {(role?.isSystemAdmin || role?.isOrgAdmin) && (
+            {(isSystemAdmin || isOrgAdmin) && (
               <>
                 <div className="mx-4 my-3 border-t border-gray-200 dark:border-slate-700" />
                 <div className="mb-3">
@@ -123,7 +123,7 @@ const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onClose }) => {
                     </p>
                   </div>
                   <nav className="space-y-1 px-2">
-                    {role?.isSystemAdmin && (
+                    {isSystemAdmin && (
                       <Link
                         to="/admin/console"
                         onClick={onClose}
@@ -162,17 +162,17 @@ const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onClose }) => {
                     {currentOrg?.name || 'Chưa chọn tổ chức'}
                   </p>
                   {/* Role badge */}
-                  {role && (
+                  {(isSystemAdmin || isOrgAdmin || isGroupAdmin || isViewer) && (
                     <span className={`mt-1 inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white ${
-                      role.isSystemAdmin ? 'bg-red-600' :
-                      role.isOrgAdmin ? 'bg-amber-600' :
-                      role.isGroupAdmin ? 'bg-cyan-600' :
-                      role.isViewer ? 'bg-gray-400' : 'bg-blue-500'
+                      isSystemAdmin ? 'bg-red-600' :
+                      isOrgAdmin ? 'bg-amber-600' :
+                      isGroupAdmin ? 'bg-cyan-600' :
+                      isViewer ? 'bg-gray-400' : 'bg-blue-500'
                     }`}>
-                      {role.isSystemAdmin ? 'Quản trị Hệ thống' :
-                       role.isOrgAdmin ? 'Quản trị tổ chức' :
-                       role.isGroupAdmin ? 'Quản trị nhóm' :
-                       role.isViewer ? 'Người xem' : 'Thành viên'}
+                      {isSystemAdmin ? 'Quản trị Hệ thống' :
+                       isOrgAdmin ? 'Quản trị tổ chức' :
+                       isGroupAdmin ? 'Quản trị nhóm' :
+                       isViewer ? 'Người xem' : 'Thành viên'}
                     </span>
                   )}
                 </div>

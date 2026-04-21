@@ -1,18 +1,15 @@
-/**
- * SystemAdminConsole - Bảng điều khiển Quản trị toàn hệ thống
- * Đã được nâng cấp với Biểu đồ chuyên nghiệp, Quản lý thông báo, Prompts và Audit Logs
- */
-import React from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { useLocation, useNavigate } from 'react-router-dom';
+import React, { useEffect, useMemo, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import {
-  Shield,
   Activity,
+  AlertTriangle
 } from 'lucide-react';
-import { mockMeetings, mockOrganizations, mockUsers } from '../../data';
+import { useAdminStore } from '../../features/admin/stores/adminStore';
+import { useAppStore, useOrgStore } from '../../stores';
+import { mockOrganizations, mockUsers } from '../../data';
 
-// Modular Components
-import AdminDashboard from './components/AdminDashboard';
+// New Modular Components - Ensure DEFAULT imports match their files
+import AdminDashboard from '../../features/admin/components/AdminDashboard';
 import AdminOrganizations from './components/AdminOrganizations';
 import AdminUsers from './components/AdminUsers';
 import AdminAIServices from './components/AdminAIServices';
@@ -25,10 +22,41 @@ type AdminTab = 'dashboard' | 'organizations' | 'users' | 'ai-services' | 'notif
 
 const SystemAdminConsole: React.FC = () => {
   const location = useLocation();
-  const navigate = useNavigate();
+  const { setStats } = useAdminStore();
+  const { meetings } = useAppStore();
+  const { orgs } = useOrgStore();
+  const [hasCrash, setHasCrash] = useState(false);
   
-  // Xác định tab hiện tại dựa trên URL path
-  const activeTab = React.useMemo<AdminTab>(() => {
+  // Safe Stats Calculation
+  useEffect(() => {
+    try {
+      const safeMeetings = Array.isArray(meetings) ? meetings : [];
+      const safeOrgs = Array.isArray(orgs) ? orgs : [];
+      
+      const totalHours = safeMeetings.reduce((sum, m) => {
+        const duration = (m as any)?.duration || 0;
+        return sum + (typeof duration === 'number' ? duration : 0);
+      }, 0) / 60;
+
+      const processingNow = safeMeetings.filter(m => {
+        const status = (m as any)?.status;
+        return status === 'processing' || status === 'queued';
+      }).length;
+
+      setStats({
+        totalOrgs: safeOrgs.length || (mockOrganizations?.length || 0),
+        totalUsers: mockUsers?.length || 0,
+        totalMeetings: safeMeetings.length,
+        totalHours: totalHours,
+        processingNow: processingNow,
+      });
+    } catch (err) {
+      console.error("SystemAdminConsole: Stats Calculation Crash", err);
+      // setHasCrash(true); // Don't crash the whole UI for stats
+    }
+  }, [setStats, meetings, orgs]);
+
+  const activeTab = useMemo<AdminTab>(() => {
     const path = location.pathname;
     if (path.includes('/organizations')) return 'organizations';
     if (path.includes('/users')) return 'users';
@@ -40,87 +68,38 @@ const SystemAdminConsole: React.FC = () => {
     return 'dashboard';
   }, [location.pathname]);
 
-  const stats = {
-    totalOrgs: mockOrganizations.length,
-    totalUsers: mockUsers.length,
-    totalMeetings: mockMeetings.length,
-    totalHours: mockMeetings.reduce((sum, m) => sum + m.duration, 0) / 60,
-    processingNow: mockMeetings.filter(m => m.status === 'processing').length,
-  };
+  if (hasCrash) {
+    return (
+      <div className="p-12 text-center bg-white dark:bg-slate-900 rounded-[2rem] border-2 border-dashed border-red-200">
+         <AlertTriangle className="mx-auto text-red-500 mb-4" size={48} />
+         <h1 className="text-2xl font-black text-gray-900 dark:text-white mb-2">Hệ thống Console gặp sự cố</h1>
+         <p className="text-gray-500 mb-6">Một lỗi nghiêm trọng đã xảy ra khi xử lý dữ liệu quản trị.</p>
+         <button onClick={() => window.location.reload()} className="px-8 py-3 bg-indigo-600 text-white rounded-2xl font-bold shadow-lg shadow-indigo-500/20">
+           Thử tải lại trang
+         </button>
+      </div>
+    );
+  }
 
   return (
-    <div className="space-y-6">
-      {/* Header Area */}
-      <motion.div
-        initial={{ opacity: 0, y: -10 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between"
-      >
-        <div>
-          <div className="flex items-center gap-2">
-            <div className="rounded-lg bg-red-600 p-1.5 text-white shadow-lg shadow-red-500/20">
-              <Shield size={20} />
-            </div>
-            <h1 className="text-2xl font-black tracking-tight text-gray-900 dark:text-slate-100">
-              Quản trị Hệ thống
-            </h1>
-          </div>
-          <p className="mt-1 text-sm font-medium text-gray-500 dark:text-slate-400">
-            Toàn quyền điều hành nền tảng MultiMinutes AI
-          </p>
-        </div>
-        <div className="flex items-center gap-3">
-          <div className="hidden items-center gap-2 rounded-full bg-green-50 px-3 py-1 text-xs font-bold text-green-700 dark:bg-green-900/20 dark:text-green-400 sm:flex">
-            <Activity size={12} />
-            Hệ thống ổn định
-          </div>
-        </div>
-      </motion.div>
+    <div className="space-y-8">
+      {/* System Status Banner (Minimal) */}
+      <div className="flex items-center gap-2 mb-2">
+        <Activity size={14} className="text-green-500 animate-pulse" />
+        <span className="text-[10px] font-bold text-gray-400 dark:text-slate-500 uppercase tracking-widest">
+          Hệ thống đang ổn định • Real-time Monitoring
+        </span>
+      </div>
 
-      {/* Content View Area */}
-      <div className="min-h-[600px]">
-        <AnimatePresence mode="wait">
-          {activeTab === 'dashboard' && (
-            <motion.div key="dashboard" initial={{ opacity: 0, x: 10 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -10 }}>
-              <AdminDashboard stats={stats} />
-            </motion.div>
-          )}
-          {activeTab === 'organizations' && (
-            <motion.div key="orgs" initial={{ opacity: 0, x: 10 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -10 }}>
-              <AdminOrganizations />
-            </motion.div>
-          )}
-          {activeTab === 'users' && (
-            <motion.div key="users" initial={{ opacity: 0, x: 10 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -10 }}>
-              <AdminUsers />
-            </motion.div>
-          )}
-          {activeTab === 'ai-services' && (
-            <motion.div key="ai" initial={{ opacity: 0, x: 10 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -10 }}>
-              <AdminAIServices />
-            </motion.div>
-          )}
-          {activeTab === 'prompts' && (
-            <motion.div key="prompts" initial={{ opacity: 0, x: 10 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -10 }}>
-              <AdminPrompts />
-            </motion.div>
-          )}
-          {activeTab === 'notifications' && (
-            <motion.div key="notifications" initial={{ opacity: 0, x: 10 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -10 }}>
-              <AdminNotifications />
-            </motion.div>
-          )}
-          {activeTab === 'audit-logs' && (
-            <motion.div key="logs" initial={{ opacity: 0, x: 10 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -10 }}>
-              <AdminAuditLogs />
-            </motion.div>
-          )}
-          {activeTab === 'settings' && (
-            <motion.div key="settings" initial={{ opacity: 0, x: 10 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -10 }}>
-              <AdminSettings />
-            </motion.div>
-          )}
-        </AnimatePresence>
+      <div className="min-h-[60vh]">
+          {activeTab === 'dashboard' && <AdminDashboard />}
+          {activeTab === 'organizations' && <AdminOrganizations />}
+          {activeTab === 'users' && <AdminUsers />}
+          {activeTab === 'ai-services' && <AdminAIServices />}
+          {activeTab === 'notifications' && <AdminNotifications />}
+          {activeTab === 'prompts' && <AdminPrompts />}
+          {activeTab === 'audit-logs' && <AdminAuditLogs />}
+          {activeTab === 'settings' && <AdminSettings />}
       </div>
     </div>
   );

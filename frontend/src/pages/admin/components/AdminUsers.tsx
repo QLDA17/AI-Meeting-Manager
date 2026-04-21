@@ -12,8 +12,8 @@ import {
   PieChart,
   Pie,
   Cell,
-  Legend,
 } from 'recharts';
+import { clsx } from 'clsx';
 
 const growthData = [
   { name: '01/04', users: 120 },
@@ -34,28 +34,39 @@ const roleData = [
 const COLORS = ['#3b82f6', '#10b981', '#ef4444'];
 
 const AdminUsers: React.FC = () => {
+  const stats = [
+    { label: 'Tổng người dùng', value: '450', icon: <Users />, color: 'blue' },
+    { label: 'Đang hoạt động', value: '412', icon: <UserCheck />, color: 'green' },
+    { label: 'Người dùng mới', value: '+45', icon: <UserPlus />, color: 'purple' },
+    { label: 'Đã vô hiệu hóa', value: '8', icon: <UserMinus />, color: 'red' },
+  ];
+
   return (
     <div className="space-y-6">
       {/* Header Stats */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {[
-          { label: 'Tổng người dùng', value: '450', icon: <Users />, color: 'blue' },
-          { label: 'Đang hoạt động', value: '412', icon: <UserCheck />, color: 'green' },
-          { label: 'Người dùng mới', value: '+45', icon: <UserPlus />, color: 'purple' },
-          { label: 'Đã vô hiệu hóa', value: '8', icon: <UserMinus />, color: 'red' },
-        ].map((s) => (
-          <div key={s.label} className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-            <div className="flex items-center gap-3">
-              <div className={`rounded-xl bg-${s.color}-50 p-2 text-${s.color}-600 dark:bg-${s.color}-900/20 dark:text-${s.color}-400`}>
-                {s.icon}
-              </div>
-              <div>
-                <p className="text-2xl font-black text-gray-900 dark:text-slate-100">{s.value}</p>
-                <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">{s.label}</p>
+        {stats.map((s) => {
+          const colorStyles = {
+            blue: "bg-blue-50 text-blue-600 dark:bg-blue-900/20 dark:text-blue-400",
+            green: "bg-green-50 text-green-600 dark:bg-green-900/20 dark:text-green-400",
+            purple: "bg-purple-50 text-purple-600 dark:bg-purple-900/20 dark:text-purple-400",
+            red: "bg-red-50 text-red-600 dark:bg-red-900/20 dark:text-red-400",
+          }[s.color as 'blue' | 'green' | 'purple' | 'red'];
+
+          return (
+            <div key={s.label} className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+              <div className="flex items-center gap-3">
+                <div className={clsx("rounded-xl p-2", colorStyles)}>
+                  {s.icon}
+                </div>
+                <div>
+                  <p className="text-2xl font-black text-gray-900 dark:text-slate-100">{s.value}</p>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">{s.label}</p>
+                </div>
               </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       {/* Analytics Area */}
@@ -148,7 +159,7 @@ const AdminUsers: React.FC = () => {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100 dark:divide-slate-800">
-              {mockUsers.slice(0, 10).map((user) => (
+              {(mockUsers || []).slice(0, 10).map((user) => (
                 <tr key={user.id} className="transition hover:bg-gray-50/50 dark:hover:bg-slate-800/30">
                   <td className="px-6 py-5">
                     <div className="flex items-center gap-3">
@@ -169,7 +180,7 @@ const AdminUsers: React.FC = () => {
                     )}
                   </td>
                   <td className="px-6 py-5 text-xs font-bold text-gray-500">
-                    {user.orgMemberships.length > 0 ? `${user.orgMemberships.length} Org(s)` : '---'}
+                    {(user.orgMemberships || []).length > 0 ? `${user.orgMemberships.length} Org(s)` : '---'}
                   </td>
                   <td className="px-6 py-5 text-right">
                     <button className="text-xs font-black uppercase tracking-widest text-red-600 hover:text-red-700 transition-colors">

@@ -1,5 +1,4 @@
 import React, { useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
 import {
   TerminalSquare,
   Save,
@@ -8,9 +7,7 @@ import {
   Play,
   Copy,
   Info,
-  ChevronRight,
   Code,
-  Tag,
 } from 'lucide-react';
 
 interface SystemPrompt {
@@ -89,7 +86,7 @@ const AdminPrompts: React.FC = () => {
           </button>
         </div>
         <div className="space-y-2">
-          {mockPrompts.map((p) => (
+          {(mockPrompts || []).map((p) => (
             <button
               key={p.id}
               onClick={() => handleSelect(p)}
@@ -143,7 +140,7 @@ const AdminPrompts: React.FC = () => {
                <div className="mb-3 flex items-center justify-between">
                   <label className="text-xs font-black uppercase tracking-widest text-gray-400">Nội dung Prompt</label>
                   <div className="flex gap-2">
-                    {selectedPrompt.variables.map(v => (
+                    {(selectedPrompt.variables || []).map(v => (
                        <span key={v} className="rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-bold text-blue-600 dark:bg-blue-900/30">
                          {`{{${v}}}`}
                        </span>

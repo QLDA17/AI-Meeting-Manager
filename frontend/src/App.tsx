@@ -48,7 +48,10 @@ const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) =
 // Public Only Route Guard (redirect authenticated users to dashboard)
 const PublicOnlyRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { isAuthenticated } = useAuth();
-  if (isAuthenticated) return <Navigate to="/dashboard" replace />;
+  const { isSystemAdmin } = usePermission();
+  if (isAuthenticated) {
+    return <Navigate to={isSystemAdmin ? '/admin/console' : '/dashboard'} replace />;
+  }
   return <>{children}</>;
 };
 
@@ -95,6 +98,7 @@ const AppRoutes: React.FC = () => {
         <Route path="/dashboard" element={<React.Suspense fallback={<PageLoader />}><Dashboard /></React.Suspense>} />
         <Route path="/meetings" element={<React.Suspense fallback={<PageLoader />}><MeetingList /></React.Suspense>} />
         <Route path="/meetings/:id" element={<React.Suspense fallback={<PageLoader />}><MeetingDetail /></React.Suspense>} />
+        <Route path="/meetings/create" element={<React.Suspense fallback={<PageLoader />}><CreateMeeting /></React.Suspense>} />
         <Route path="/create" element={<React.Suspense fallback={<PageLoader />}><CreateMeeting /></React.Suspense>} />
         <Route path="/upload" element={<React.Suspense fallback={<PageLoader />}><UploadAudio /></React.Suspense>} />
         <Route path="/actions" element={<React.Suspense fallback={<PageLoader />}><ActionItems /></React.Suspense>} />

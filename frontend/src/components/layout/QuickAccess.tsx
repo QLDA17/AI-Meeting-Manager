@@ -30,7 +30,7 @@ const QuickAccess: React.FC = () => {
     },
     {
       label: 'Họp trực tuyến',
-      path: '/create',
+      path: '/meetings/create',
       icon: <Mic size={16} />,
     },
     {
@@ -51,8 +51,8 @@ const QuickAccess: React.FC = () => {
   ];
 
   const isActive = (path: string) => {
-    if (path === '/meetings' && location.pathname.startsWith('/meetings')) return true;
-    if (path === '/create' && location.pathname.startsWith('/create')) return true;
+    if (path === '/meetings' && location.pathname === '/meetings') return true;
+    if (path === '/meetings/create' && location.pathname === '/meetings/create') return true;
     if (path === '/actions' && location.pathname.startsWith('/actions')) return true;
     if (path === '/notifications' && location.pathname.startsWith('/notifications')) return true;
     return location.pathname === path;

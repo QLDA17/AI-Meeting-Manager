@@ -9,19 +9,19 @@ import {
   ArrowRight,
   Mic,
   FileText,
-  Video,
   Users,
   Building2,
   FolderOpen,
-  TrendingUp,
   Plus,
   Zap,
   Crown,
 } from "lucide-react";
-import { StatCard, Button, Badge, AnimatedCounter, LiveIndicator } from "../components/ui";
+import { StatCard, Button, AnimatedCounter } from "../components/ui";
 import { useOrgStore } from "../stores";
-import { useAppStore, useNotificationStore } from "../stores";
+import { useAppStore } from "../stores";
 import { usePermission } from "../hooks";
+import { MeetingCard } from "../features/meeting/components/MeetingCard";
+import { clsx } from "clsx";
 
 const Dashboard: React.FC = () => {
   const { user } = useAuth();
@@ -31,27 +31,29 @@ const Dashboard: React.FC = () => {
   const { meetings, getStats } = useAppStore();
   const [loading, setLoading] = useState(true);
 
-  // Simulate initial load
   useEffect(() => {
     const timer = setTimeout(() => setLoading(false), 400);
     return () => clearTimeout(timer);
   }, []);
 
-  // Load org data when org changes
   useEffect(() => {
     if (currentOrg?.id) {
       loadGroups(currentOrg.id);
     }
   }, [currentOrg?.id, loadGroups]);
 
-  const appStats = useMemo(() => getStats(), [meetings]);
+  const appStats = useMemo(() => getStats(), [meetings, getStats]);
 
   const processingCount = useMemo(
     () => meetings.filter((m) => (m as any).status === "processing" || (m as any).status === "queued").length,
     [meetings]
   );
 
-  const recentMeetings = useMemo(() => meetings.slice(0, 5), [meetings]);
+  const recentMeetings = useMemo(() => {
+    return [...meetings]
+      .sort((a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime())
+      .slice(0, 4);
+  }, [meetings]);
 
   const hoursSaved = useMemo(() => {
     const estimatedHours = meetings.length * 2;
@@ -67,243 +69,161 @@ const Dashboard: React.FC = () => {
   }
 
   return (
-    <div className="space-y-8">
-      {/* Welcome Header */}
+    <div className="mx-auto max-w-7xl space-y-10 pb-12">
+      {/* Premium Hero Section */}
       <motion.section
         initial={{ opacity: 0, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
-        className="panel-glass rounded-3xl border border-gray-200 p-6 shadow-card dark:border-slate-700"
+        className="relative overflow-hidden rounded-[2.5rem] border border-primary-100 bg-white p-8 shadow-sm dark:border-slate-800 dark:bg-slate-900 lg:p-12"
       >
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-          <div>
-            <p className="text-body text-gray-500 dark:text-slate-400">
-              Xin chào, <span className="font-semibold text-gray-800 dark:text-slate-100">{user?.displayName || user?.email}</span>
+        {/* Background Decor */}
+        <div className="absolute right-0 top-0 -mr-24 -mt-24 h-96 w-96 rounded-full bg-primary-50/50 blur-3xl dark:bg-primary-900/10" />
+        <div className="absolute bottom-0 left-0 -ml-24 -mb-24 h-72 w-72 rounded-full bg-blue-50/50 blur-3xl dark:bg-blue-900/10" />
+
+        <div className="relative z-10 flex flex-col gap-8 lg:flex-row lg:items-center lg:justify-between">
+          <div className="max-w-2xl">
+            <div className="mb-4 inline-flex items-center gap-2 rounded-full bg-primary-50 px-3 py-1 text-xs font-semibold text-primary-700 dark:bg-primary-900/30 dark:text-primary-300">
+              <Sparkles size={14} />
+              <span>Workspace của bạn đã sẵn sàng</span>
+            </div>
+            <h1 className="text-4xl font-extrabold tracking-tight text-gray-900 dark:text-white sm:text-5xl">
+              Chào buổi sáng, <span className="text-gradient">{user?.displayName?.split(' ')[0] || user?.email?.split('@')[0]}</span>
+            </h1>
+            <p className="mt-4 text-lg text-gray-600 dark:text-slate-400">
+              Hôm nay là một ngày tuyệt vời để tối ưu hóa các cuộc họp của bạn. Bạn có <span className="font-semibold text-gray-900 dark:text-white">{processingCount}</span> bản ghi đang xử lý.
             </p>
-            <h1 className="mt-1 text-h1 text-gray-900 dark:text-slate-100">Bảng điều khiển cuộc họp thông minh</h1>
-            {processingCount > 0 && (
-              <div className="mt-2 flex items-center gap-2">
-                <LiveIndicator isLive size="sm" color="warning" showLabel label="Đang xử lý" />
-                <span className="text-xs text-gray-600 dark:text-slate-400">
-                  {processingCount} cuộc họp đang được phân tích
-                </span>
-              </div>
-            )}
-            {currentOrg && (
-              <div className="mt-2 flex items-center gap-2 text-sm text-gray-600 dark:text-slate-300">
-                <Building2 size={14} />
-                <span className="font-medium">{currentOrg.name}</span>
-                {isOrgAdmin && (
-                  <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-700 dark:bg-amber-900/30 dark:text-amber-200 flex items-center gap-1">
-                    <Crown size={10} /> Org Admin
-                  </span>
-                )}
-              </div>
-            )}
+            
+            <div className="mt-8 flex flex-wrap gap-4">
+              <Button size="lg" onClick={() => navigate('/meetings/create')} className="h-12 px-8 rounded-xl shadow-lg shadow-primary-500/20">
+                <Plus size={20} className="mr-2" />
+                Cuộc họp mới
+              </Button>
+              <Button size="lg" variant="secondary" onClick={() => navigate('/upload')} className="h-12 px-8 rounded-xl bg-white dark:bg-slate-900">
+                <Mic size={20} className="mr-2" />
+                Tải lên ghi âm
+              </Button>
+            </div>
           </div>
-          <div className="flex flex-wrap gap-3">
-            <Button variant="secondary" onClick={() => navigate('/upload')} icon={<Mic size={16} />}>
-              Upload audio
-            </Button>
-            <Button variant="ghost" onClick={() => navigate("/meetings")} icon={<FileText size={16} />}>
-              Xem tất cả
-            </Button>
+
+          <div className="hidden lg:block">
+            <div className="relative h-48 w-48 rounded-3xl bg-gradient-to-br from-primary-500 to-green-400 p-1 shadow-2xl rotate-3 hover:rotate-0 transition-transform duration-500">
+              <div className="flex h-full w-full flex-col items-center justify-center rounded-[1.4rem] bg-white dark:bg-slate-900">
+                <AnimatedCounter value={appStats.totalMeetings} className="text-5xl font-black text-primary-600" />
+                <span className="text-sm font-bold uppercase tracking-widest text-gray-400">Cuộc họp</span>
+              </div>
+            </div>
           </div>
         </div>
       </motion.section>
 
-      {/* Stats Cards */}
-      <motion.section
-        initial={{ opacity: 0, y: 12 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.1 }}
-        className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4"
-      >
-        <StatCard 
-          label="Tổng cuộc họp" 
-          value={<AnimatedCounter value={appStats.totalMeetings} />}
-          subtitle="Đã xử lý trong hệ thống" 
-        />
-        <StatCard
-          label="Đang xử lý"
-          value={<AnimatedCounter value={processingCount} />}
-          subtitle="Hàng đợi AI hiện tại"
-          accent="warning"
-          icon={<Clock3 size={16} />}
-        />
-        <StatCard
-          label="Tổng giờ ghi âm"
-          value={`${appStats.totalHours.toFixed(1)}h`}
-          subtitle="Thời lượng tích luỹ"
-          accent="primary"
-          icon={<TrendingUp size={16} />}
-        />
-        <StatCard
-          label="Giờ tiết kiệm"
-          value={hoursSaved}
-          subtitle="Ước tính tự động hóa"
-          icon={<Sparkles size={16} />}
-        />
-      </motion.section>
-
-      {/* Main Grid */}
-      <motion.section
-        initial={{ opacity: 0, y: 12 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.2 }}
-        className="grid grid-cols-1 gap-6 xl:grid-cols-12"
-      >
-        {/* Left Column: Org Stats + Recent Meetings */}
-        <div className="xl:col-span-8 space-y-6">
-          {/* Organization Stats */}
-          {currentOrg && (
-            <div className="rounded-3xl border border-gray-200 bg-white p-6 shadow-card dark:border-slate-700 dark:bg-slate-900">
-              <div className="mb-4 flex items-center justify-between">
-                <h2 className="text-h3 text-gray-900 dark:text-slate-100 flex items-center gap-2">
-                  <Building2 size={18} className="text-primary-600" />
-                  Thống kê tổ chức
-                </h2>
-                {isOrgAdmin && (
-                  <button
-                    onClick={() => navigate("/org/admin")}
-                    className="text-sm font-semibold text-primary-600 hover:text-primary-700 dark:text-primary-300"
-                  >
-                    Xem bảng quản trị →
-                  </button>
-                )}
-              </div>
-              <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
-                <div className="rounded-xl bg-gray-50 p-4 dark:bg-slate-800/70">
-                  <div className="flex items-center gap-2 text-sm text-gray-600 dark:text-slate-400">
-                    <Users size={14} />
-                    <span>Thành viên</span>
-                  </div>
-                  <p className="mt-2 text-2xl font-bold text-gray-900 dark:text-slate-100">
-                    <AnimatedCounter value={currentOrg?.memberCount || 0} />
-                  </p>
-                </div>
-                <div className="rounded-xl bg-gray-50 p-4 dark:bg-slate-800/70">
-                  <div className="flex items-center gap-2 text-sm text-gray-600 dark:text-slate-400">
-                    <FolderOpen size={14} />
-                    <span>Groups</span>
-                  </div>
-                  <p className="mt-2 text-2xl font-bold text-gray-900 dark:text-slate-100">
-                    <AnimatedCounter value={currentOrg?.groupCount || 0} />
-                  </p>
-                </div>
-                <div className="rounded-xl bg-gray-50 p-4 dark:bg-slate-800/70">
-                  <div className="flex items-center gap-2 text-sm text-gray-600 dark:text-slate-400">
-                    <FileText size={14} />
-                    <span>Cuộc họp</span>
-                  </div>
-                  <p className="mt-2 text-2xl font-bold text-gray-900 dark:text-slate-100">
-                    <AnimatedCounter value={currentOrg?.meetingCount || 0} />
-                  </p>
-                </div>
-                <div className="rounded-xl bg-gray-50 p-4 dark:bg-slate-800/70">
-                  <div className="flex items-center gap-2 text-sm text-gray-600 dark:text-slate-400">
-                    <TrendingUp size={14} />
-                    <span>Tổng giờ</span>
-                  </div>
-                  <p className="mt-2 text-2xl font-bold text-gray-900 dark:text-slate-100">
-                    <AnimatedCounter value={currentOrg?.totalHours || 0} suffix="h" />
-                  </p>
-                </div>
-              </div>
-            </div>
-          )}
+      <div className="grid grid-cols-1 gap-8 xl:grid-cols-12">
+        {/* Main Column */}
+        <div className="space-y-10 xl:col-span-8">
+          {/* Stats Summary - Fixed props */}
+          <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+            <StatCard 
+              label="Tổng cuộc họp" 
+              value={appStats.totalMeetings} 
+              icon={<FileText size={20} />} 
+              accent="primary"
+            />
+            <StatCard 
+              label="Đang xử lý" 
+              value={processingCount} 
+              icon={<Zap size={20} />} 
+              accent={processingCount > 0 ? "warning" : "default"}
+            />
+            <StatCard 
+              label="Thành viên" 
+              value={currentOrg?.memberCount || 0} 
+              icon={<Users size={20} />} 
+            />
+            <StatCard 
+              label="Tiết kiệm" 
+              value={hoursSaved} 
+              icon={<Clock3 size={20} />} 
+            />
+          </div>
 
           {/* Recent Meetings */}
-          <div className="rounded-3xl border border-gray-200 bg-white shadow-card dark:border-slate-700 dark:bg-slate-900">
-            <div className="flex items-center justify-between border-b border-gray-100 px-6 py-4 dark:border-slate-800">
-              <h2 className="text-h3 text-gray-900 dark:text-slate-100">Cuộc họp gần đây</h2>
+          <section>
+            <div className="mb-6 flex items-center justify-between">
+              <div>
+                <h2 className="text-2xl font-bold text-gray-900 dark:text-white">Cuộc họp gần đây</h2>
+                <p className="text-sm text-gray-500">Truy cập nhanh vào các nội dung vừa thảo luận</p>
+              </div>
               <button
                 onClick={() => navigate("/meetings")}
-                className="inline-flex items-center gap-1 text-body font-semibold text-primary-700 hover:text-primary-800 dark:text-primary-300"
+                className="group inline-flex items-center gap-1.5 text-sm font-bold text-primary-600 transition-colors hover:text-primary-700"
               >
                 Xem tất cả
-                <ArrowRight size={14} />
+                <ArrowRight size={18} className="transition-transform group-hover:translate-x-1" />
               </button>
             </div>
-            <div className="custom-scrollbar overflow-x-auto">
-              <table className="min-w-full">
-                <thead>
-                  <tr className="bg-gray-50 dark:bg-slate-800/60">
-                    <th className="px-6 py-3 text-left text-caption font-semibold uppercase tracking-wide text-gray-500">Cuộc họp</th>
-                    <th className="px-6 py-3 text-left text-caption font-semibold uppercase tracking-wide text-gray-500">Ngày</th>
-                    <th className="px-6 py-3 text-left text-caption font-semibold uppercase tracking-wide text-gray-500">Trạng thái</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {recentMeetings.length === 0 ? (
-                    <tr>
-                      <td colSpan={3} className="px-6 py-10 text-center text-body text-gray-500">
-                        Chưa có cuộc họp nào. Hãy tạo cuộc họp đầu tiên.
-                      </td>
-                    </tr>
-                  ) : (
-                    recentMeetings.map((meeting) => (
-                      <tr
-                        key={meeting.id}
-                        className="cursor-pointer border-t border-gray-100 transition hover:bg-primary-50/40 dark:border-slate-800 dark:hover:bg-slate-800/40"
-                        onClick={() => navigate(`/meetings/${meeting.id}`)}
-                      >
-                        <td className="px-6 py-4">
-                          <p className="text-body font-semibold text-gray-900 dark:text-slate-100">{meeting.title}</p>
-                          <p className="mt-1 text-caption text-gray-500">{meeting.duration} phút</p>
-                        </td>
-                        <td className="px-6 py-4 text-body text-gray-600 dark:text-slate-300">{new Date(meeting.startTime).toLocaleDateString()}</td>
-                        <td className="px-6 py-4">
-                          <Badge status={"completed" as any} />
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
+            
+            {recentMeetings.length === 0 ? (
+              <div className="rounded-[2rem] border-2 border-dashed border-gray-100 p-12 text-center dark:border-slate-800">
+                <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-gray-50 text-gray-400 dark:bg-slate-800">
+                  <FolderOpen size={32} />
+                </div>
+                <h3 className="mb-2 text-xl font-bold text-gray-900 dark:text-white">Chưa có cuộc họp nào</h3>
+                <p className="mx-auto max-w-xs text-gray-500 dark:text-slate-400">Bắt đầu bằng cách tạo cuộc họp mới hoặc tải lên tệp âm thanh có sẵn.</p>
+                <Button variant="secondary" onClick={() => navigate('/upload')} className="mt-6 rounded-xl px-8">Tải lên ngay</Button>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+                {recentMeetings.map((meeting, idx) => (
+                  <MeetingCard key={meeting.id} meeting={meeting} index={idx} />
+                ))}
+              </div>
+            )}
+          </section>
         </div>
 
-        {/* Right Column: Thao tác nhanh */}
-        <div className="xl:col-span-4 space-y-6">
-          {/* Thao tác nhanh */}
-          <div className="rounded-3xl border border-gray-200 bg-white p-6 shadow-card dark:border-slate-700 dark:bg-slate-900">
-            <h3 className="text-h3 text-gray-900 dark:text-slate-100 mb-4 flex items-center gap-2"><Zap size={18} className="text-primary-600" /> Thao tác nhanh</h3>
-            <div className="grid grid-cols-2 gap-3">
-              <button
-                onClick={() => navigate('/upload')}
-                className="flex flex-col items-center gap-2 rounded-xl border-2 border-dashed border-gray-200 p-4 text-sm font-medium text-gray-600 transition hover:border-primary-300 hover:text-primary-600 dark:border-slate-700 dark:text-slate-300 dark:hover:border-primary-700 dark:hover:text-primary-300"
-              >
-                <Mic size={20} />
-                <span>Upload Audio</span>
-              </button>
-              <button
-                onClick={() => navigate("/groups/create")}
-                className="flex flex-col items-center gap-2 rounded-xl border-2 border-dashed border-gray-200 p-4 text-sm font-medium text-gray-600 transition hover:border-primary-300 hover:text-primary-600 dark:border-slate-700 dark:text-slate-300 dark:hover:border-primary-700 dark:hover:text-primary-300"
-              >
-                <Plus size={20} />
-                <span>Tạo nhóm</span>
-              </button>
-              <button
-                onClick={() => navigate("/meetings")}
-                className="flex flex-col items-center gap-2 rounded-xl border-2 border-dashed border-gray-200 p-4 text-sm font-medium text-gray-600 transition hover:border-primary-300 hover:text-primary-600 dark:border-slate-700 dark:text-slate-300 dark:hover:border-primary-700 dark:hover:text-primary-300"
-              >
-                <FileText size={20} />
-                <span>Tìm cuộc họp</span>
-              </button>
-              <button
-                onClick={() => navigate("/notifications")}
-                className="flex flex-col items-center gap-2 rounded-xl border-2 border-dashed border-gray-200 p-4 text-sm font-medium text-gray-600 transition hover:border-primary-300 hover:text-primary-600 dark:border-slate-700 dark:text-slate-300 dark:hover:border-primary-700 dark:hover:text-primary-300"
-              >
-                <Sparkles size={20} />
-                <span>Thông báo</span>
+        {/* Right Column */}
+        <div className="space-y-8 xl:col-span-4">
+          {/* Quick Actions */}
+          <div className="rounded-3xl border border-gray-100 bg-white p-8 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+            <h3 className="mb-6 flex items-center gap-2 text-lg font-bold text-gray-900 dark:text-white">
+              <Zap size={20} className="text-amber-500" /> Thao tác nhanh
+            </h3>
+            <div className="grid grid-cols-2 gap-4">
+              <QuickActionButton icon={<Mic size={24} />} label="Ghi âm" onClick={() => navigate('/upload')} />
+              <QuickActionButton icon={<Plus size={24} />} label="Nhóm mới" onClick={() => navigate("/groups/create")} />
+              <QuickActionButton icon={<FileText size={24} />} label="Dự án" onClick={() => navigate("/meetings")} />
+              <QuickActionButton icon={<Sparkles size={24} />} label="AI Chat" onClick={() => navigate("/notifications")} />
+            </div>
+            
+            {/* Promotion/Info Card */}
+            <div className="mt-8 overflow-hidden rounded-2xl bg-gradient-to-br from-slate-900 to-slate-800 p-6 text-white dark:from-primary-950 dark:to-slate-900">
+              <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-lg bg-white/10 backdrop-blur-md">
+                <Crown size={20} className="text-amber-400" />
+              </div>
+              <h4 className="mb-2 font-bold">Nâng cấp Pro</h4>
+              <p className="mb-4 text-xs text-slate-300 leading-relaxed">
+                Mở khóa tính năng phân tích cảm xúc và tóm tắt đa ngôn ngữ với gói Pro.
+              </p>
+              <button className="w-full rounded-xl bg-primary-500 py-2.5 text-sm font-bold transition-all hover:bg-primary-600 active:scale-[0.98]">
+                Nâng cấp ngay
               </button>
             </div>
           </div>
         </div>
-      </motion.section>
+      </div>
     </div>
   );
 };
+
+const QuickActionButton: React.FC<{ icon: React.ReactNode, label: string, onClick: () => void }> = ({ icon, label, onClick }) => (
+  <button
+    onClick={onClick}
+    className="flex flex-col items-center gap-3 rounded-xl border border-gray-100 dark:border-slate-800 p-4 text-xs font-medium text-gray-600 dark:text-slate-400 transition-all hover:bg-primary-50 hover:border-primary-100 hover:text-primary-700 dark:hover:bg-primary-900/10 dark:hover:border-primary-900/20 dark:hover:text-primary-300"
+  >
+    <div className="text-gray-400 dark:text-slate-500 transition-colors">
+      {icon}
+    </div>
+    <span>{label}</span>
+  </button>
+);
 
 export default Dashboard;
