@@ -1,9 +1,9 @@
 /**
- * MeetingRoom - Phòng họp trực tuyến kiểu Google Meet với AI ghi biên bản
- * Hỗ trợ: Camera, Micro, Chia sẻ màn hình, Chat, Transcript real-time, AI Summary
+ * MeetingRoom v3 - Scalable & Premium AI Meeting Experience
+ * Support for large numbers of participants with Spotlight & Grid modes
  */
-import React, { useState, useEffect, useRef, useCallback } from "react";
-import { useNavigate, useLocation, useParams } from "react-router-dom";
+import React, { useState, useEffect, useRef, useMemo } from "react";
+import { useNavigate, useParams } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Mic,
@@ -14,23 +14,23 @@ import {
   MonitorUp,
   MessageSquare,
   Users,
-  Settings,
-  Copy,
   Check,
-  Circle,
   UserPlus,
-  Hand,
   Send,
-  Bot,
   X,
   FileText,
   ListChecks,
   Target,
-  Key,
   Sparkles,
+  LayoutGrid,
+  Maximize2,
+  MoreVertical
 } from "lucide-react";
-import { Button, Tooltip, showToast } from "../components/ui";
+import { showToast } from "../components/ui";
 import { useWebSocket } from "../hooks";
+import { useAuth } from "../context/AuthContext";
+import { useAppStore } from "../stores";
+import { clsx } from "clsx";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -52,790 +52,549 @@ interface ChatMsg {
   timestamp: number;
 }
 
-interface ActionItem {
-  id: string;
-  task: string;
-  owner: string;
-  deadline: string;
-  status: "pending" | "done";
-}
-
 type SidePanel = "chat" | "participants" | "ai-notes" | null;
 
 // ─── Mock Data ───────────────────────────────────────────────────────────────
 
-const MOCK_PARTICIPANTS: Omit<Participant, "id">[] = [
-  { name: "Nguyễn Văn A", role: "organizer", micOn: true, cameraOn: true, handRaised: false, isSpeaking: false },
-  { name: "Trần Thị B", role: "presenter", micOn: true, cameraOn: true, handRaised: false, isSpeaking: false },
-  { name: "Phạm Văn C", role: "attendee", micOn: true, cameraOn: false, handRaised: false, isSpeaking: false },
-  { name: "Hoàng Thị D", role: "attendee", micOn: false, cameraOn: true, handRaised: false, isSpeaking: false },
-];
+const WAVEFORM_HEIGHTS = [0, 1, 2, 3, 4, 5, 4, 3, 2, 1, 0].map(() => Math.random() * 40 + 10);
+
+const MOCK_PARTICIPANTS: Omit<Participant, "id">[] = Array.from({ length: 12 }, (_, i) => ({
+  name: `Thành viên ${i + 1}`,
+  role: i === 0 ? "presenter" : "attendee",
+  micOn: Math.random() > 0.3,
+  cameraOn: Math.random() > 0.5,
+  handRaised: false,
+  isSpeaking: false,
+}));
 
 const MOCK_TRANSCRIPTS = [
-  { speaker: "Nguyễn Văn A", text: "Chào mọi người, hôm nay chúng ta sẽ review tiến độ sprint 2 và lên kế hoạch cho sprint 3." },
-  { speaker: "Trần Thị B", text: "Team đã hoàn thành 80% task trong sprint 2. Còn 3 task về API authentication đang chờ review." },
-  { speaker: "Phạm Văn C", text: "Em sẽ hoàn thành API auth trước thứ 6. Hiện tại đang test phần JWT token refresh." },
-  { speaker: "Nguyễn Văn A", text: "Tốt. Vậy chúng ta chốt deadline là thứ 6. Có ai có ý kiến gì không?" },
-  { speaker: "Hoàng Thị D", text: "Em đề xuất thêm phần unit test cho module auth, để đảm bảo coverage trên 80%." },
-  { speaker: "Trần Thị B", text: "Đồng ý. Em sẽ phân công task viết unit test cho bạn C." },
-  { speaker: "Nguyễn Văn A", text: "OK, chốt: 1) API auth xong trước thứ 6. 2) Thêm unit test coverage > 80%. 3) Sprint 3 bắt đầu thứ 2." },
-  { speaker: "Phạm Văn C", text: "Em cũng cần thêm người review phần database migration. Ai rảnh hỗ trợ em với?" },
-  { speaker: "Hoàng Thị D", text: "Em có thể review giúp anh C. Gửi em PR trước thứ 4 nhé." },
-  { speaker: "Nguyễn Văn A", text: "Tuyệt. Vậy chốt thêm: D review migration PR cho C trước thứ 4. Mọi người còn gì không?" },
+  { speaker: "Bạn", text: "Chào mọi người, chúng ta bắt đầu buổi review nhé." },
+  { speaker: "Thành viên 1", text: "Tôi đã hoàn thành phần thiết kế UI cho trang chủ." },
+  { speaker: "Thành viên 2", text: "Phần backend API cũng đã sẵn sàng để tích hợp." },
+  { speaker: "Thành viên 1", text: "Cần lưu ý về độ trễ khi load ảnh từ storage server." },
+  { speaker: "Bạn", text: "Đúng rồi, chúng ta cần tối ưu lại CDN." },
 ];
 
 const MOCK_AI_NOTES = {
   keyPoints: [
-    "Sprint 2 đã hoàn thành 80%, còn 3 task API authentication pending",
-    "Deadline hoàn thành API auth: thứ 6",
-    "Yêu cầu unit test coverage > 80% cho module auth",
-    "Sprint 3 bắt đầu từ thứ 2",
-    "Hoàng Thị D sẽ review database migration PR cho Phạm Văn C trước thứ 4",
+    "Thiết kế UI trang chủ đã hoàn tất",
+    "Backend API sẵn sàng tích hợp",
+    "Phát hiện vấn đề độ trễ khi tải ảnh",
+    "Cần tối ưu hóa CDN cho Storage"
   ],
   decisions: [
-    "API authentication phải hoàn thành trước thứ 6",
-    "Unit test coverage tối thiểu 80% cho module auth",
-    "Sprint 3 starts vào thứ 2 tuần tới",
-    "Hoàng Thị D được phân công review migration PR",
+    "Tích hợp API vào UI trong tuần này",
+    "Chốt sử dụng Cloudflare làm CDN chính"
   ],
   actionItems: [
-    { id: 'action-1', task: "Hoàn thành API authentication", owner: "Phạm Văn C", deadline: "Thứ 6", status: "pending" as const, meetingId: 'mock', groupId: 'mock', orgId: 'mock', title: 'Hoàn thành API authentication', assignedTo: 'user-c', assignedBy: 'user-a', dueDate: new Date(), createdAt: new Date(), updatedAt: new Date() },
-    { id: 'action-2', task: "Viết unit test coverage > 80%", owner: "Phạm Văn C", deadline: "Thứ 6", status: "pending" as const, meetingId: 'mock', groupId: 'mock', orgId: 'mock', title: 'Viết unit test coverage > 80%', assignedTo: 'user-c', assignedBy: 'user-a', dueDate: new Date(), createdAt: new Date(), updatedAt: new Date() },
-    { id: 'action-3', task: "Gửi PR database migration", owner: "Phạm Văn C", deadline: "Thứ 4", status: "pending" as const, meetingId: 'mock', groupId: 'mock', orgId: 'mock', title: 'Gửi PR database migration', assignedTo: 'user-c', assignedBy: 'user-a', dueDate: new Date(), createdAt: new Date(), updatedAt: new Date() },
-    { id: 'action-4', task: "Review migration PR", owner: "Hoàng Thị D", deadline: "Thứ 4", status: "pending" as const, meetingId: 'mock', groupId: 'mock', orgId: 'mock', title: 'Review migration PR', assignedTo: 'user-d', assignedBy: 'user-a', dueDate: new Date(), createdAt: new Date(), updatedAt: new Date() },
-    { id: 'action-5', task: "Phân công task unit test", owner: "Trần Thị B", deadline: "Thứ 2", status: "pending" as const, meetingId: 'mock', groupId: 'mock', orgId: 'mock', title: 'Phân công task unit test', assignedTo: 'user-b', assignedBy: 'user-a', dueDate: new Date(), createdAt: new Date(), updatedAt: new Date() },
+    { id: 'a1', task: "Tối ưu hóa CDN", owner: "Thành viên 2", deadline: "Thứ 5", status: "pending" as const },
+    { id: 'a2', task: "Kiểm tra độ trễ Storage", owner: "Bạn", deadline: "Thứ 4", status: "pending" as const }
   ],
-  summary: "Cuộc họp review sprint 2 với tiến độ 80% hoàn thành. Team chốt deadline API auth vào thứ 6, yêu cầu unit test coverage trên 80%. Sprint 3 bắt đầu thứ 2. Hoàng Thị D sẽ review database migration PR cho Phạm Văn C.",
+  summary: "Buổi họp tập trung vào việc review tiến độ UI/UX và Backend. Team quyết định tối ưu CDN để giải quyết vấn đề load ảnh.",
 };
 
 // ─── Component ───────────────────────────────────────────────────────────────
 
 const MeetingRoom: React.FC = () => {
   const navigate = useNavigate();
-  const location = useLocation();
   const { code } = useParams<{ code: string }>();
-  const meetingState = location.state as {
-    title?: string;
-    organizer?: string;
-    enableCamera?: boolean;
-    enableMic?: boolean;
-    enableRecord?: boolean;
-    participants?: { id: string; name: string; role: string }[];
-  } | null;
+  const { user } = useAuth();
+  const { meetings } = useAppStore();
+  
+  // Get meeting from code (code format: XXX-XXX-XXX)
+  const meeting = useMemo(() => {
+    if (!code) return null;
+    // Try to find meeting by code or id
+    return (meetings as any[]).find(m => m.code === code || m.id === code) || null;
+  }, [code, meetings]);
 
-  // ── State ────────────────────────────────────────────────────────────────
-  const [isRecording, setIsRecording] = useState(meetingState?.enableRecord ?? true);
-  const [micOn, setMicOn] = useState(meetingState?.enableMic ?? true);
-  const [cameraOn, setCameraOn] = useState(meetingState?.enableCamera ?? true);
+  const [isRecording] = useState(true);
+  const [micOn, setMicOn] = useState(true);
+  const [cameraOn, setCameraOn] = useState(true);
   const [screenSharing, setScreenSharing] = useState(false);
-  const [sidePanel, setSidePanel] = useState<SidePanel>(null);
+  const [screenStream, setScreenStream] = useState<MediaStream | null>(null);
+  const [, setRerenderKey] = useState(0);
+  const [sidePanel, setSidePanel] = useState<SidePanel>("ai-notes");
   const [recordingTime, setRecordingTime] = useState(0);
-  const [copied, setCopied] = useState(false);
-  const [chatMessages, setChatMessages] = useState<ChatMsg[]>([]);
+  const [, setChatMessages] = useState<ChatMsg[]>([]);
   const [chatInput, setChatInput] = useState("");
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
-  const [aiNotesVisible, setAiNotesVisible] = useState(false);
+  
+  // Participants management
+  const [participants] = useState<Participant[]>(() => [
+    { id: "me", name: "Bạn", role: "organizer", micOn: true, cameraOn: true, handRaised: false },
+    ...MOCK_PARTICIPANTS.map((p, i) => ({ ...p, id: `p-${i}` }))
+  ]);
 
-  // Build participants list: current user + mock participants
-  const [participants, setParticipants] = useState<Participant[]>(() => {
-    const organizerName = meetingState?.organizer || "Bạn";
-    const mockWithIds: Participant[] = MOCK_PARTICIPANTS.map((p, idx) => ({
-      ...p,
-      id: `mock-${idx + 2}`,
-      stream: null,
-    }));
-    return [
-      {
-        id: "1",
-        name: organizerName,
-        role: "organizer",
-        micOn,
-        cameraOn,
-        handRaised: false,
-        stream: null,
-      },
-      ...mockWithIds,
-    ];
-  });
-
-  // Mock AI data state
-  const [mockTranscriptIndex, setMockTranscriptIndex] = useState(0);
-  const [aiKeyPoints, setAiKeyPoints] = useState<string[]>([]);
-  const [aiDecisions, setAiDecisions] = useState<string[]>([]);
-  const [aiActionItems, setAiActionItems] = useState<ActionItem[]>([]);
-  const [aiSummary, setAiSummary] = useState("");
-
+  const [spotlightId, setSpotlightId] = useState<string>("me");
   const localVideoRef = useRef<HTMLVideoElement>(null);
-  const chatEndRef = useRef<HTMLDivElement>(null);
-  const transcriptEndRef = useRef<HTMLDivElement>(null);
-  const { transcript, status: wsStatus, connect, disconnect } = useWebSocket();
+  const floatingVideoRef = useRef<HTMLVideoElement>(null);
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const { status: wsStatus, connect, disconnect } = useWebSocket();
 
-  // ── Effects ──────────────────────────────────────────────────────────────
+  // Spotlight logic
+  const spotlightParticipant = useMemo(() => 
+    participants.find(p => p.id === spotlightId) || participants[0]
+  , [participants, spotlightId]);
 
-  // Start local camera
+  const galleryParticipants = useMemo(() => 
+    participants.filter(p => p.id !== spotlightId)
+  , [participants, spotlightId]);
+
+  // Effects
   useEffect(() => {
     let stream: MediaStream | null = null;
     const startCamera = async () => {
       try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: cameraOn,
-          audio: micOn,
+        stream = await navigator.mediaDevices.getUserMedia({ 
+          video: { width: 1280, height: 720, facingMode: 'user' }, 
+          audio: true 
         });
+        console.log("Camera started, tracks:", stream.getTracks().map(t => `${t.kind}:${t.enabled}`));
         setLocalStream(stream);
-        if (localVideoRef.current) {
-          localVideoRef.current.srcObject = stream;
-        }
+        setCameraOn(true);
+        setMicOn(true);
+        // Force re-render
+        setRerenderKey(k => k + 1);
+        showToast.success("Camera đã sẵn sàng!");
       } catch (err) {
-        console.error("Camera/mic error:", err);
-        showToast.error("Không thể truy cập camera/microphone");
+        console.error("Camera error:", err);
+        setCameraOn(false);
+        setMicOn(true);
+        showToast.error("Camera bị từ chối. Vui lòng cho phép truy cập camera.");
       }
     };
     startCamera();
     return () => {
-      stream?.getTracks().forEach((t) => t.stop());
+      if (stream) stream.getTracks().forEach(t => t.stop());
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Toggle camera
+  // Attach stream to video element
+  useEffect(() => {
+    console.log("Stream effect:", !!localStream, "videoRef:", !!localVideoRef.current);
+    if (localVideoRef.current && localStream) {
+      localVideoRef.current.srcObject = localStream;
+      localVideoRef.current.play().catch(e => console.log("Play error:", e));
+    }
+  }, [localStream]);
+
+  // Attach stream to floating video element
+  useEffect(() => {
+    if (floatingVideoRef.current && localStream) {
+      floatingVideoRef.current.srcObject = localStream;
+      floatingVideoRef.current.play().catch(e => console.log("Floating play error:", e));
+    }
+  }, [localStream, sidePanel]);
+
+  useEffect(() => {
+    if (isRecording) {
+      const interval = setInterval(() => setRecordingTime(prev => prev + 1), 1000);
+      return () => clearInterval(interval);
+    }
+  }, [isRecording]);
+
+  // Camera toggle: turn ON/OFF actual camera
   useEffect(() => {
     if (localStream) {
-      localStream.getVideoTracks().forEach((t) => (t.enabled = cameraOn));
+      const videoTrack = localStream.getVideoTracks()[0];
+      if (videoTrack) {
+        videoTrack.enabled = cameraOn;
+        console.log("Camera toggled:", cameraOn);
+      }
     }
   }, [cameraOn, localStream]);
 
-  // Toggle mic
+  // Mic toggle: turn ON/OFF actual microphone
   useEffect(() => {
     if (localStream) {
-      localStream.getAudioTracks().forEach((t) => (t.enabled = micOn));
+      const audioTrack = localStream.getAudioTracks()[0];
+      if (audioTrack) {
+        audioTrack.enabled = micOn;
+        console.log("Mic toggled:", micOn);
+      }
     }
   }, [micOn, localStream]);
 
-  // Recording timer
+  // Attach screen stream to video element when sharing
   useEffect(() => {
-    if (!isRecording) return;
-    const interval = setInterval(() => {
-      setRecordingTime((prev) => prev + 1);
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [isRecording]);
-
-  // Connect WebSocket for real-time transcript (if backend available)
-  useEffect(() => {
-    if (code && isRecording) {
-      connect(code);
+    if (screenStream && localVideoRef.current) {
+      localVideoRef.current.srcObject = screenStream;
     }
-    return () => {
-      disconnect();
-    };
-  }, [code, isRecording, connect, disconnect]);
+  }, [screenStream]);
 
-  // Auto-scroll chat
-  useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [chatMessages]);
-
-  // Auto-scroll transcript
-  useEffect(() => {
-    transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [transcript]);
-
-  // Mock transcript generation (simulates AI processing)
-  useEffect(() => {
-    if (!isRecording) return;
-    const interval = setInterval(() => {
-      if (mockTranscriptIndex < MOCK_TRANSCRIPTS.length) {
-        const next = MOCK_TRANSCRIPTS[mockTranscriptIndex];
-        // Update AI notes progressively
-        const idx = mockTranscriptIndex + 1;
-        setAiKeyPoints(MOCK_AI_NOTES.keyPoints.slice(0, Math.ceil(idx / 2)));
-        setAiDecisions(MOCK_AI_NOTES.decisions.slice(0, Math.floor(idx / 2)));
-        setAiActionItems(MOCK_AI_NOTES.actionItems.slice(0, Math.ceil(idx / 2)));
-        if (idx >= MOCK_TRANSCRIPTS.length) {
-          setAiSummary(MOCK_AI_NOTES.summary);
-          setAiNotesVisible(true);
-        }
-        setMockTranscriptIndex(idx);
-      }
-    }, 8000); // New transcript every 8 seconds
-    return () => clearInterval(interval);
-  }, [isRecording, mockTranscriptIndex]);
-
-  // ── Handlers ─────────────────────────────────────────────────────────────
-
-  const formatTime = (seconds: number) => {
-    const h = Math.floor(seconds / 3600);
-    const m = Math.floor((seconds % 3600) / 60);
-    const s = seconds % 60;
-    if (h > 0) return `${h}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
-    return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
-  };
-
-  const leaveMeeting = () => {
-    localStream?.getTracks().forEach((t) => t.stop());
-    disconnect();
-    showToast.info("Đã rời cuộc họp");
-    navigate("/meetings");
-  };
-
+  // Handlers
   const toggleScreenShare = async () => {
     if (screenSharing) {
+      // Stop screen sharing
+      screenStream?.getTracks().forEach(t => t.stop());
+      setScreenStream(null);
       setScreenSharing(false);
-      if (localStream && localVideoRef.current) {
-        localVideoRef.current.srcObject = localStream;
-      }
+      showToast.info("Đã dừng chia sẻ màn hình");
     } else {
       try {
-        const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
-        if (localVideoRef.current) {
-          localVideoRef.current.srcObject = screenStream;
-        }
-        screenStream.getVideoTracks()[0].onended = () => {
+        const stream = await navigator.mediaDevices.getDisplayMedia({ 
+          video: { cursor: "always" } as any,
+          audio: false 
+        });
+        console.log("Screen share started");
+        stream.getVideoTracks()[0].onended = () => {
+          setScreenStream(null);
           setScreenSharing(false);
-          if (localVideoRef.current && localStream) {
-            localVideoRef.current.srcObject = localStream;
-          }
         };
+        setScreenStream(stream);
         setScreenSharing(true);
-      } catch {
+        showToast.success("Đang chia sẻ màn hình");
+      } catch (err) {
+        console.error("Screen share error:", err);
         showToast.error("Không thể chia sẻ màn hình");
       }
     }
   };
 
-  const copyCode = async () => {
-    try {
-      await navigator.clipboard.writeText(code || "");
-      setCopied(true);
-      showToast.success("Đã sao chép mã tham gia!");
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      showToast.error("Không thể sao chép");
-    }
+  const leaveMeeting = () => {
+    localStream?.getTracks().forEach(t => t.stop());
+    screenStream?.getTracks().forEach(t => t.stop());
+    navigate("/meetings");
+  };
+
+  const formatTime = (s: number) => {
+    const m = Math.floor(s / 60);
+    const sec = s % 60;
+    return `${m.toString().padStart(2, '0')}:${sec.toString().padStart(2, '0')}`;
   };
 
   const sendChat = (e: React.FormEvent) => {
     e.preventDefault();
     if (!chatInput.trim()) return;
-    setChatMessages((prev) => [
-      ...prev,
-      { id: Date.now().toString(), sender: meetingState?.organizer || "Bạn", text: chatInput.trim(), timestamp: Date.now() },
-    ]);
+    setChatMessages(prev => [...prev, { id: Date.now().toString(), sender: "Bạn", text: chatInput, timestamp: Date.now() }]);
     setChatInput("");
   };
-
-  const toggleHand = () => {
-    setParticipants((prev) =>
-      prev.map((p) =>
-        p.id === "1" ? { ...p, handRaised: !p.handRaised } : p
-      )
-    );
-  };
-
-  const togglePanel = (panel: SidePanel) => {
-    setSidePanel((prev) => (prev === panel ? null : panel));
-  };
-
-  const myHandRaised = participants.find((p) => p.id === "1")?.handRaised;
-
-  // Merge real WebSocket transcripts with mock
-  const allTranscripts = transcript.length > 0
-    ? transcript.map((t) => ({ speaker: t.speaker, text: t.text, timestamp: t.timestamp }))
-    : MOCK_TRANSCRIPTS.slice(0, mockTranscriptIndex).map((t, idx) => ({
-        speaker: t.speaker,
-        text: t.text,
-        timestamp: Date.now() - (mockTranscriptIndex - idx) * 8000,
-      }));
-
-  // Video grid calculation
-  const activeParticipants = participants.filter((p) => p.cameraOn || p.id === "1");
-  const gridCols = activeParticipants.length <= 2 ? 2 : activeParticipants.length <= 4 ? 2 : 3;
 
   // ── Render ───────────────────────────────────────────────────────────────
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-slate-950 text-white">
-      {/* ═══════════ TOP BAR ═══════════ */}
-      <div className="flex items-center justify-between border-b border-slate-800 bg-slate-900 px-4 py-2.5">
-        {/* Left: Title + Code */}
-        <div className="flex items-center gap-3">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary-600 text-xs font-bold text-white">
-            MM
+    <div className="fixed inset-0 z-50 flex flex-col bg-[#020617] text-slate-100 overflow-hidden font-sans">
+      {/* Premium Header */}
+      <header className="h-16 flex items-center justify-between px-6 bg-[#020617]/80 backdrop-blur-md border-b border-slate-800/50 z-20">
+        <div className="flex items-center gap-4">
+          <div className="w-10 h-10 rounded-xl bg-indigo-600 flex items-center justify-center shadow-lg shadow-indigo-500/20">
+            <Sparkles className="text-white" size={20} />
           </div>
           <div>
-            <h1 className="text-sm font-semibold text-white">
-              {meetingState?.title || "Cuộc họp"}
-            </h1>
-            <div className="flex items-center gap-2 text-xs text-slate-400">
-              <span>Mã: {code}</span>
-              <button onClick={copyCode} className="inline-flex items-center gap-1 text-primary-400 hover:text-primary-300">
-                {copied ? <Check size={12} /> : <Copy size={12} />}
-              </button>
+            <h1 className="text-sm font-bold tracking-tight">{meeting?.title || 'Cuộc họp'}</h1>
+            <div className="flex items-center gap-2">
+              <span className={`text-[10px] font-bold ${localStream ? 'text-green-400' : 'text-red-400'}`}>
+                {localStream ? '● Camera sẵn sàng' : '○ Đang khởi camera...'}
+              </span>
+              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Mã: {code}</span>
+              <div className="h-1 w-1 rounded-full bg-slate-700" />
+              <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 text-[9px] font-black uppercase tracking-tighter">
+                <Users size={10} /> {participants.length} Người tham gia
+              </div>
             </div>
           </div>
         </div>
 
-        {/* Center: Recording indicator */}
-        <div className="flex items-center gap-3">
-          {isRecording && (
-            <motion.div
-              animate={{ opacity: [1, 0.5, 1] }}
-              transition={{ duration: 2, repeat: Infinity }}
-              className="flex items-center gap-2 rounded-full bg-red-900/40 px-3 py-1"
-            >
-              <Circle size={8} className="fill-red-500 text-red-500" />
-              <span className="font-mono text-xs font-medium text-red-400">
-                AI ghi âm {formatTime(recordingTime)}
-              </span>
-            </motion.div>
-          )}
-          <span className="text-xs text-slate-400">
-            {wsStatus === "streaming" ? "● WebSocket" : `${formatTime(recordingTime)}`}
-          </span>
+<div className="flex items-center gap-4">
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-green-900/30 border border-green-500/30">
+             <span className={`w-2 h-2 rounded-full ${localStream ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
+             <span className="text-xs font-bold text-green-400">{localStream ? 'LIVE' : 'OFFLINE'}</span>
+          </div>
+          <div className="flex items-center gap-3 px-4 py-2 rounded-2xl bg-slate-900 border border-slate-800">
+             <div className="flex items-center gap-2">
+                <span className="h-2 w-2 rounded-full bg-red-500 animate-pulse" />
+                <span className="text-xs font-black font-mono text-red-400">REC {formatTime(recordingTime)}</span>
+             </div>
+             <div className="h-4 w-px bg-slate-800" />
+             <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">AI Transcript Live</p>
+          </div>
+          <button onClick={() => { navigator.clipboard.writeText(window.location.href); showToast.success("Link đã sao chép!"); }} className="p-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 transition-all active:scale-95 shadow-lg shadow-indigo-500/20">
+            <UserPlus size={18} />
+          </button>
         </div>
+      </header>
 
-        {/* Right: Settings */}
-        <div className="flex items-center gap-2">
-          <Tooltip content="Mời người tham gia">
-            <button
-              onClick={() => { navigator.clipboard.writeText(`${window.location.origin}/join/${code}`); showToast.success("Đã sao chép link mời!"); }}
-              className="rounded-lg p-2 text-slate-300 hover:bg-slate-800 hover:text-white"
-            >
-              <UserPlus size={16} />
-            </button>
-          </Tooltip>
-          <Tooltip content="Cài đặt">
-            <button className="rounded-lg p-2 text-slate-300 hover:bg-slate-800 hover:text-white">
-              <Settings size={16} />
-            </button>
-          </Tooltip>
-        </div>
-      </div>
-
-      {/* ═══════════ MAIN CONTENT ═══════════ */}
-      <div className="flex flex-1 overflow-hidden">
-        {/* ── Video Area ─────────────────────────────────────────────────── */}
-        <div className="relative flex-1 overflow-hidden">
-          <div className={`grid h-full gap-2 p-2 ${
-            gridCols === 2 ? "grid-cols-1 sm:grid-cols-2" :
-            gridCols === 3 ? "grid-cols-2 lg:grid-cols-3" :
-            "grid-cols-2 lg:grid-cols-4"
-          }`}>
-            {activeParticipants.map((p) => {
-              const isLocal = p.id === "1";
-              return (
-                <div
-                  key={p.id}
-                  className="relative overflow-hidden rounded-xl bg-slate-800 ring-1 ring-slate-700"
-                >
-                  {isLocal ? (
-                    <video
-                      ref={localVideoRef}
-                      autoPlay
-                      playsInline
-                      muted
-                      className="h-full w-full object-cover"
-                    />
-                  ) : (
-                    <div className="flex h-full items-center justify-center bg-gradient-to-br from-slate-800 to-slate-700">
-                      <div className="flex h-16 w-16 items-center justify-center rounded-full bg-primary-600 text-xl font-bold text-white">
-                        {p.name[0]?.toUpperCase()}
-                      </div>
+      {/* Main Workspace */}
+      <div className="flex-1 flex overflow-hidden relative">
+        {/* Participants Gallery - Left (Scrollable) */}
+        <aside className="w-64 border-r border-slate-800/50 bg-[#020617]/50 flex flex-col hidden xl:flex">
+          <div className="p-4 border-b border-slate-800/50 flex items-center justify-between">
+            <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Thành viên khác</span>
+            <LayoutGrid size={14} className="text-slate-600" />
+          </div>
+          <div className="flex-1 overflow-y-auto p-3 space-y-3 custom-scrollbar">
+            {galleryParticipants.map(p => (
+              <div 
+                key={p.id} 
+                onClick={() => setSpotlightId(p.id)}
+                className="group relative aspect-video rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden cursor-pointer hover:border-indigo-500/50 transition-all"
+              >
+                {p.cameraOn ? (
+                   <div className="h-full w-full bg-slate-800" />
+                ) : (
+                  <div className="h-full w-full flex items-center justify-center bg-slate-800">
+                    <div className="w-10 h-10 rounded-full bg-indigo-600/20 border border-indigo-500/30 flex items-center justify-center text-xs font-bold text-indigo-400">
+                      {p.name[0]}
                     </div>
-                  )}
-
-                  {/* Camera off overlay */}
-                  {(!p.cameraOn || (!isLocal && !p.cameraOn)) && (
-                    <div className="absolute inset-0 flex items-center justify-center bg-slate-800">
-                      <div className="flex h-16 w-16 items-center justify-center rounded-full bg-primary-600 text-xl font-bold text-white">
-                        {p.name[0]?.toUpperCase()}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Name tag */}
-                  <div className="absolute bottom-2 left-2 flex items-center gap-1.5 rounded-lg bg-black/60 px-2 py-1">
-                    <span className="text-xs font-medium text-white">
-                      {p.name}{isLocal ? " (bạn)" : ""}
-                    </span>
-                    {p.handRaised && <Hand size={12} className="text-amber-400" />}
-                    {!p.micOn && <MicOff size={12} className="text-red-400" />}
                   </div>
-
-                  {/* Screen sharing badge */}
-                  {isLocal && screenSharing && (
-                    <div className="absolute top-2 left-2 rounded-lg bg-blue-600 px-2 py-1 text-xs font-medium text-white">
-                      Đang chia sẻ màn hình
-                    </div>
-                  )}
-
-                  {/* Speaking indicator */}
-                  {p.isSpeaking && (
-                    <div className="absolute top-2 right-2 flex gap-0.5">
-                      <div className="h-3 w-0.5 animate-pulse rounded-full bg-green-400" />
-                      <div className="h-4 w-0.5 animate-pulse rounded-full bg-green-400" style={{ animationDelay: "100ms" }} />
-                      <div className="h-2 w-0.5 animate-pulse rounded-full bg-green-400" style={{ animationDelay: "200ms" }} />
-                    </div>
-                  )}
+                )}
+                <div className="absolute bottom-2 left-2 px-2 py-1 rounded-lg bg-black/60 backdrop-blur-md border border-white/5 flex items-center gap-2">
+                   <span className="text-[9px] font-bold text-white truncate max-w-[80px]">{p.name}</span>
+                   {!p.micOn && <MicOff size={10} className="text-red-400" />}
                 </div>
-              );
-            })}
+              </div>
+            ))}
           </div>
+        </aside>
 
-          {/* Participant count badge */}
-          <div className="absolute top-4 right-4 rounded-full bg-black/60 px-3 py-1 text-xs font-medium text-white">
-            <Users size={12} className="mr-1 inline" />
-            {participants.length} người
+{/* Central Stage */}
+        <main className="flex-1 p-6 relative flex flex-col gap-4">
+          {/* Spotlight View */}
+          <div className="flex-1 relative rounded-[2.5rem] bg-slate-900 border border-slate-800 overflow-hidden shadow-2xl group">
+              {/* Screen sharing takes priority */}
+              {screenSharing && screenStream ? (
+                <video 
+                  ref={localVideoRef} 
+                  autoPlay 
+                  playsInline 
+                  muted 
+                  className="h-full w-full object-contain" 
+                />
+              ) : spotlightId === 'me' ? (
+                localStream ? (
+                  <div className="h-full w-full bg-black relative">
+                    {/* Main view: screen share OR camera based on toggle */}
+                    {screenSharing && screenStream ? (
+                      <video 
+                        ref={localVideoRef}
+                        autoPlay 
+                        playsInline 
+                        muted
+                        className="h-full w-full object-contain"
+                      />
+                    ) : (
+                      <video 
+                        ref={localVideoRef}
+                        autoPlay 
+                        playsInline 
+                        muted
+                        className="h-full w-full object-cover"
+                        style={{ transform: 'scaleX(-1)' }}
+                      />
+                    )}
+                    
+                    {/* PiP: Show camera in corner when screen sharing */}
+                    {screenSharing && localStream && (
+                      <div className="absolute bottom-4 right-4 w-48 h-36 rounded-xl overflow-hidden border-2 border-white/20 shadow-xl bg-black">
+                        <video 
+                          ref={(el) => {
+                            if (el && localStream) el.srcObject = localStream;
+                          }}
+                          autoPlay 
+                          playsInline 
+                          muted
+                          className="h-full w-full object-cover"
+                          style={{ transform: 'scaleX(-1)' }}
+                        />
+                        <div className="absolute bottom-1 left-1 px-1.5 py-0.5 bg-black/60 rounded text-[8px] text-white">
+                          Bạn
+                        </div>
+                      </div>
+                    )}
+                    
+                    <div className="absolute bottom-4 left-4 px-3 py-1 bg-black/50 rounded-lg text-white text-xs flex items-center gap-2">
+                      <span className={`w-2 h-2 rounded-full ${cameraOn ? 'bg-green-500' : 'bg-red-500 animate-pulse'}`} />
+                      {cameraOn ? 'Camera bật' : 'Camera tắt'}
+                    </div>
+                  </div>
+                ) : (
+                 <div className="h-full w-full flex flex-col items-center justify-center bg-gradient-to-br from-slate-900 via-slate-800 to-indigo-950">
+                    <div className="w-32 h-32 rounded-full bg-indigo-500/10 border-4 border-indigo-500/20 flex items-center justify-center mb-6 shadow-2xl">
+                       <span className="text-5xl font-black text-indigo-400">{(user?.displayName || user?.email || 'Bạn')[0].toUpperCase()}</span>
+                    </div>
+                    <h2 className="text-xl font-black tracking-tight text-white">{user?.displayName || user?.email || 'Bạn'}</h2>
+                    <p className="text-sm font-bold text-slate-500 mt-2">Camera đang tắt</p>
+                 </div>
+                )
+              ) : (
+               <div className="h-full w-full flex flex-col items-center justify-center bg-gradient-to-br from-slate-900 via-slate-800 to-indigo-950">
+                  <div className="w-32 h-32 rounded-full bg-indigo-500/10 border-4 border-indigo-500/20 flex items-center justify-center mb-6 shadow-2xl">
+                     <span className="text-5xl font-black text-indigo-400">{spotlightParticipant.name[0]}</span>
+                  </div>
+                  <h2 className="text-xl font-black tracking-tight text-white">{spotlightParticipant.name}</h2>
+                  <p className="text-sm font-bold text-slate-500 mt-2">Đang là diễn giả chính</p>
+                  
+                  {/* Speaking Waveform */}
+                  <div className="mt-8 flex items-end gap-1.5 h-12">
+                     {WAVEFORM_HEIGHTS.map((h, i) => (
+                       <motion.div 
+                         key={i}
+                         animate={{ height: [10, h, 10] }}
+                         transition={{ duration: 1, repeat: Infinity, delay: i * 0.1 }}
+                         className="w-1.5 bg-indigo-500 rounded-full"
+                       />
+                     ))}
+                  </div>
+               </div>
+             )}
+
+             {/* UI Overlays on Video */}
+             <div className="absolute top-6 left-6 flex items-center gap-3">
+                <div className="px-4 py-2 rounded-2xl bg-black/40 backdrop-blur-xl border border-white/10 flex items-center gap-2">
+                   <span className="text-xs font-black text-white">{spotlightParticipant.name}</span>
+                   {spotlightParticipant.role === 'organizer' && <span className="px-1.5 py-0.5 rounded-md bg-indigo-500 text-[8px] font-black uppercase">Host</span>}
+                </div>
+             </div>
+
+             <div className="absolute top-6 right-6 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                <button className="p-3 rounded-2xl bg-black/40 backdrop-blur-xl border border-white/10 hover:bg-white/10 transition-colors">
+                   <Maximize2 size={18} />
+                </button>
+                <button className="p-3 rounded-2xl bg-black/40 backdrop-blur-xl border border-white/10 hover:bg-white/10 transition-colors">
+                   <MoreVertical size={18} />
+                </button>
+             </div>
+
+             <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-2 p-1.5 rounded-full bg-black/40 backdrop-blur-2xl border border-white/10 shadow-2xl">
+                <button onClick={() => setMicOn(!micOn)} className={clsx("p-4 rounded-full transition-all duration-300", micOn ? "bg-slate-800 text-white hover:bg-slate-700" : "bg-red-500 text-white shadow-lg shadow-red-500/40")}>
+                  {micOn ? <Mic size={22} /> : <MicOff size={22} />}
+                </button>
+                <button onClick={() => setCameraOn(!cameraOn)} className={clsx("p-4 rounded-full transition-all duration-300", cameraOn ? "bg-green-600 text-white hover:bg-green-500" : "bg-slate-800 text-white hover:bg-slate-700")}>
+                  {cameraOn ? <Video size={22} /> : <VideoOff size={22} />}
+                </button>
+                <div className="w-px h-8 bg-white/10 mx-1" />
+<button onClick={toggleScreenShare} className={clsx("p-4 rounded-full transition-all", screenSharing ? "bg-indigo-500 text-white" : "bg-slate-800 text-white hover:bg-slate-700")}>
+                   <MonitorUp size={22} />
+                 </button>
+                <button onClick={() => setSidePanel(sidePanel === 'chat' ? null : 'chat')} className={clsx("p-4 rounded-full transition-all", sidePanel === 'chat' ? "bg-indigo-500 text-white" : "bg-slate-800 text-white hover:bg-slate-700")}>
+                   <MessageSquare size={22} />
+                </button>
+                <button onClick={() => setSidePanel(sidePanel === 'ai-notes' ? null : 'ai-notes')} className={clsx("p-4 rounded-full transition-all", sidePanel === 'ai-notes' ? "bg-indigo-500 text-white" : "bg-slate-800 text-white hover:bg-slate-700")}>
+                   <Sparkles size={22} />
+                </button>
+                <div className="w-px h-8 bg-white/10 mx-1" />
+                <button onClick={leaveMeeting} className="p-4 rounded-full bg-rose-600 text-white hover:bg-rose-700 shadow-lg shadow-rose-600/40 transition-all active:scale-95 group/leave">
+                   <PhoneOff size={22} className="group-hover/leave:-rotate-[135deg] transition-transform duration-500" />
+                </button>
+             </div>
           </div>
-        </div>
+        </main>
 
-        {/* ── Side Panel ─────────────────────────────────────────────────── */}
+        {/* AI Sidepanel - Right */}
         <AnimatePresence>
           {sidePanel && (
             <motion.aside
-              initial={{ width: 0, opacity: 0 }}
-              animate={{ width: 400, opacity: 1 }}
-              exit={{ width: 0, opacity: 0 }}
-              transition={{ duration: 0.2 }}
-              className="flex flex-col border-l border-slate-800 bg-slate-900 overflow-hidden"
+              initial={{ x: 400, opacity: 0 }}
+              animate={{ x: 0, opacity: 1 }}
+              exit={{ x: 400, opacity: 0 }}
+              className="w-96 border-l border-slate-800 bg-[#020617] flex flex-col z-30 shadow-2xl"
             >
-              {/* Panel Header */}
-              <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3">
-                <h3 className="text-sm font-semibold text-white flex items-center gap-2">
-                  {sidePanel === "chat" && <><MessageSquare size={16} /> Chat</>}
-                  {sidePanel === "participants" && <><Users size={16} /> Thành viên ({participants.length})</>}
-                  {sidePanel === "ai-notes" && <><Sparkles size={16} className="text-primary-400" /> AI Ghi chú</>}
-                </h3>
-                <button onClick={() => setSidePanel(null)} className="text-slate-400 hover:text-white">
-                  <X size={16} />
+              <div className="h-20 flex items-center justify-between px-6 border-b border-slate-800">
+                <div className="flex items-center gap-2">
+                   {sidePanel === 'ai-notes' ? (
+                      <><Sparkles className="text-indigo-400" size={18} /> <span className="text-sm font-black uppercase tracking-widest">AI Intelligent Notes</span></>
+                   ) : (
+                      <><MessageSquare className="text-indigo-400" size={18} /> <span className="text-sm font-black uppercase tracking-widest">Team Conversation</span></>
+                   )}
+                </div>
+                <button onClick={() => setSidePanel(null)} className="p-2 hover:bg-slate-800 rounded-xl transition-colors">
+                   <X size={18} />
                 </button>
               </div>
 
-              {/* ── Chat Panel ─────────────────────────────────────────── */}
-              {sidePanel === "chat" && (
-                <>
-                  <div className="custom-scrollbar flex-1 overflow-y-auto p-4 space-y-3">
-                    {/* Real-time Transcript Section */}
-                    {allTranscripts.length > 0 && (
-                      <div className="mb-4">
-                        <h4 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-primary-400">
-                          <Bot size={12} /> Transcript AI
-                        </h4>
-                        <div className="space-y-1.5">
-                          {allTranscripts.map((t, idx) => (
-                            <motion.div
-                              key={idx}
-                              initial={{ opacity: 0, y: 4 }}
-                              animate={{ opacity: 1, y: 0 }}
-                              className="rounded-lg bg-slate-800 px-3 py-2"
-                            >
-                              <span className="text-xs font-semibold text-primary-400">
-                                {t.speaker}
-                              </span>
-                              <p className="mt-0.5 text-xs text-slate-300">{t.text}</p>
-                            </motion.div>
-                          ))}
-                          <div ref={transcriptEndRef} />
-                        </div>
+              <div className="flex-1 overflow-y-auto p-6 custom-scrollbar space-y-8">
+                 {sidePanel === 'ai-notes' ? (
+                   <>
+                      {/* Summary Section */}
+                      <div className="space-y-4">
+                         <div className="flex items-center gap-2 text-indigo-400">
+                            <FileText size={16} />
+                            <span className="text-xs font-bold uppercase tracking-widest">Tóm tắt nội dung</span>
+                         </div>
+                         <div className="p-5 rounded-[1.5rem] bg-indigo-500/5 border border-indigo-500/10 text-slate-300 text-sm leading-relaxed">
+                            {MOCK_AI_NOTES.summary}
+                         </div>
                       </div>
-                    )}
 
-                    {/* Chat Messages */}
-                    {chatMessages.length > 0 && (
-                      <div>
-                        <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">
-                          Tin nhắn
-                        </h4>
-                        {chatMessages.map((msg) => (
-                          <div key={msg.id} className="mb-2 rounded-lg bg-slate-800 px-3 py-2">
-                            <span className="text-xs font-semibold text-slate-300">{msg.sender}</span>
-                            <p className="text-xs text-slate-400">{msg.text}</p>
-                          </div>
-                        ))}
+                      {/* Decisions Section */}
+                      <div className="space-y-4">
+                         <div className="flex items-center gap-2 text-emerald-400">
+                            <Target size={16} />
+                            <span className="text-xs font-bold uppercase tracking-widest">Quyết định chốt</span>
+                         </div>
+                         <div className="space-y-2">
+                            {MOCK_AI_NOTES.decisions.map((d, i) => (
+                               <div key={i} className="flex gap-3 items-start p-4 rounded-2xl bg-emerald-500/5 border border-emerald-500/10">
+                                  <Check className="text-emerald-500 flex-shrink-0 mt-0.5" size={16} />
+                                  <p className="text-sm text-slate-300">{d}</p>
+                               </div>
+                            ))}
+                         </div>
                       </div>
-                    )}
 
-                    {allTranscripts.length === 0 && chatMessages.length === 0 && (
-                      <div className="flex flex-col items-center justify-center py-12 text-center text-slate-500">
-                        <MessageSquare size={32} className="mb-2 opacity-50" />
-                        <p className="text-sm">Chưa có tin nhắn hoặc transcript</p>
-                        <p className="text-xs">AI sẽ tự động ghi nhận cuộc hội thoại</p>
+                      {/* Action Items */}
+                      <div className="space-y-4">
+                         <div className="flex items-center gap-2 text-amber-400">
+                            <ListChecks size={16} />
+                            <span className="text-xs font-bold uppercase tracking-widest">Việc cần làm</span>
+                         </div>
+                         <div className="space-y-3">
+                            {MOCK_AI_NOTES.actionItems.map((item, i) => (
+                               <div key={i} className="p-4 rounded-2xl bg-amber-500/5 border border-amber-500/10 flex flex-col gap-2">
+                                  <p className="text-sm font-bold text-slate-200">{item.task}</p>
+                                  <div className="flex items-center justify-between">
+                                     <span className="text-[10px] font-bold text-amber-500/80 uppercase">{item.owner}</span>
+                                     <span className="text-[10px] font-bold text-slate-500">{item.deadline}</span>
+                                  </div>
+                               </div>
+                            ))}
+                         </div>
                       </div>
-                    )}
-                    <div ref={chatEndRef} />
-                  </div>
-
-                  {/* Chat Input */}
-                  <form onSubmit={sendChat} className="border-t border-slate-800 p-3">
-                    <div className="relative">
-                      <input
-                        type="text"
-                        value={chatInput}
-                        onChange={(e) => setChatInput(e.target.value)}
-                        placeholder="Nhập tin nhắn..."
-                        className="h-9 w-full rounded-lg border border-slate-700 bg-slate-800 pl-3 pr-10 text-xs text-white placeholder-slate-500 outline-none focus:border-primary-500"
-                      />
-                      <button
-                        type="submit"
-                        className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-md bg-primary-500 p-1.5 text-white hover:bg-primary-600"
-                      >
-                        <Send size={12} />
-                      </button>
-                    </div>
-                  </form>
-                </>
-              )}
-
-              {/* ── Participants Panel ─────────────────────────────────── */}
-              {sidePanel === "participants" && (
-                <div className="flex-1 overflow-y-auto">
-                  <div className="space-y-1 p-3">
-                    {participants.map((p) => (
-                      <div key={p.id} className="flex items-center gap-3 rounded-lg px-3 py-2.5 hover:bg-slate-800">
-                        <div className="relative">
-                          <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary-600 text-xs font-bold text-white">
-                            {p.name[0]?.toUpperCase()}
-                          </div>
-                          {p.handRaised && (
-                            <Hand size={10} className="absolute -top-1 -right-1 text-amber-400" />
-                          )}
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate text-xs font-medium text-white">
-                            {p.name}
-                            {p.id === "1" && <span className="ml-1 text-slate-500">(bạn)</span>}
-                          </p>
-                          <p className="text-[10px] text-slate-500">
-                            {p.role === "organizer" ? "Tổ chức" : p.role === "presenter" ? "Trình bày" : "Tham dự"}
-                          </p>
-                        </div>
-                        <div className="flex items-center gap-1">
-                          {!p.micOn && <MicOff size={12} className="text-red-400" />}
-                          {!p.cameraOn && <VideoOff size={12} className="text-red-400" />}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="border-t border-slate-800 p-3">
-                    <div className="flex items-center gap-2 rounded-lg border border-dashed border-slate-700 px-3 py-2">
-                      <span className="font-mono text-xs text-primary-400">{code}</span>
-                      <button onClick={copyCode} className="ml-auto text-xs text-slate-400 hover:text-white">
-                        <Copy size={12} />
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* ── AI Notes Panel ─────────────────────────────────────── */}
-              {sidePanel === "ai-notes" && (
-                <div className="custom-scrollbar flex-1 overflow-y-auto">
-                  {/* AI Summary */}
-                  {aiSummary && (
-                    <div className="border-b border-slate-800 px-4 py-3">
-                      <h4 className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-primary-400">
-                        <FileText size={12} /> Tóm tắt AI
-                      </h4>
-                      <p className="text-xs leading-relaxed text-slate-300">{aiSummary}</p>
-                    </div>
-                  )}
-
-                  {/* Key Points */}
-                  {aiKeyPoints.length > 0 && (
-                    <div className="border-b border-slate-800 px-4 py-3">
-                      <h4 className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-blue-400">
-                        <Key size={12} /> Điểm chính ({aiKeyPoints.length})
-                      </h4>
-                      <div className="space-y-1.5">
-                        {aiKeyPoints.map((point, idx) => (
-                          <div key={idx} className="flex items-start gap-2 rounded-lg bg-slate-800 px-3 py-2">
-                            <span className="mt-0.5 flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full bg-blue-900/50 text-[10px] font-bold text-blue-300">
-                              {idx + 1}
-                            </span>
-                            <p className="text-xs text-slate-300">{point}</p>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Decisions */}
-                  {aiDecisions.length > 0 && (
-                    <div className="border-b border-slate-800 px-4 py-3">
-                      <h4 className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-green-400">
-                        <Target size={12} /> Quyết định ({aiDecisions.length})
-                      </h4>
-                      <div className="space-y-1.5">
-                        {aiDecisions.map((d, idx) => (
-                          <div key={idx} className="flex items-start gap-2 rounded-lg bg-slate-800 px-3 py-2">
-                            <Check size={12} className="mt-0.5 flex-shrink-0 text-green-400" />
-                            <p className="text-xs text-slate-300">{d}</p>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Action Items */}
-                  {aiActionItems.length > 0 && (
-                    <div className="px-4 py-3">
-                      <h4 className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-amber-400">
-                        <ListChecks size={12} /> Việc cần làm ({aiActionItems.length})
-                      </h4>
-                      <div className="space-y-2">
-                        {aiActionItems.map((item, idx) => (
-                          <div key={idx} className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2.5">
-                            <p className="text-xs font-medium text-slate-200">{item.task}</p>
-                            <div className="mt-1.5 flex items-center justify-between text-[10px] text-slate-500">
-                              <span className="rounded-full bg-primary-900/40 px-2 py-0.5 text-primary-300">
-                                {item.owner}
-                              </span>
-                              <span>{item.deadline}</span>
+                   </>
+                 ) : (
+                   <div className="flex flex-col h-full">
+                      <div className="flex-1 space-y-4">
+                         {MOCK_TRANSCRIPTS.map((t, i) => (
+                            <div key={i} className="flex flex-col gap-1">
+                               <span className="text-[10px] font-black text-indigo-400 uppercase tracking-tighter">{t.speaker}</span>
+                               <div className="px-4 py-2.5 rounded-2xl bg-slate-900 border border-slate-800 text-sm text-slate-300">
+                                  {t.text}
+                               </div>
                             </div>
-                          </div>
-                        ))}
+                         ))}
                       </div>
-                    </div>
-                  )}
-
-                  {/* Empty state */}
-                  {aiKeyPoints.length === 0 && aiDecisions.length === 0 && aiActionItems.length === 0 && (
-                    <div className="flex flex-col items-center justify-center py-12 text-center text-slate-500">
-                      <Sparkles size={32} className="mb-2 opacity-50" />
-                      <p className="text-sm">AI đang phân tích cuộc họp...</p>
-                      <p className="text-xs">Ghi chú và tóm tắt sẽ xuất hiện tự động</p>
-                    </div>
-                  )}
-                </div>
-              )}
+                      <div className="pt-6">
+                         <form onSubmit={sendChat} className="relative">
+                            <input 
+                              type="text" 
+                              value={chatInput}
+                              onChange={(e) => setChatInput(e.target.value)}
+                              placeholder="Gửi tin nhắn cho mọi người..."
+                              className="w-full bg-slate-900 border border-slate-800 rounded-2xl px-5 py-3.5 text-sm outline-none focus:border-indigo-500 transition-all"
+                            />
+                            <button className="absolute right-3 top-1/2 -translate-y-1/2 p-2 bg-indigo-600 text-white rounded-xl">
+                               <Send size={16} />
+                            </button>
+                         </form>
+                      </div>
+                   </div>
+                 )}
+              </div>
             </motion.aside>
           )}
         </AnimatePresence>
       </div>
 
-      {/* ═══════════ BOTTOM CONTROL BAR ═══════════ */}
-      <div className="flex items-center justify-center gap-2 sm:gap-3 border-t border-slate-800 bg-slate-900 px-2 py-3 sm:px-4">
-        {/* Mic */}
-        <Tooltip content={micOn ? "Tắt mic" : "Bật mic"} shortcut="M">
-          <button
-            onClick={() => setMicOn(!micOn)}
-            className={`flex h-11 w-11 items-center justify-center rounded-full transition sm:h-12 sm:w-12 ${
-              micOn ? "bg-slate-700 text-white hover:bg-slate-600" : "bg-red-600 text-white hover:bg-red-700"
-            }`}
-          >
-            {micOn ? <Mic size={18} /> : <MicOff size={18} />}
-          </button>
-        </Tooltip>
-
-        {/* Camera */}
-        <Tooltip content={cameraOn ? "Tắt camera" : "Bật camera"} shortcut="V">
-          <button
-            onClick={() => setCameraOn(!cameraOn)}
-            className={`flex h-11 w-11 items-center justify-center rounded-full transition sm:h-12 sm:w-12 ${
-              cameraOn ? "bg-slate-700 text-white hover:bg-slate-600" : "bg-red-600 text-white hover:bg-red-700"
-            }`}
-          >
-            {cameraOn ? <Video size={18} /> : <VideoOff size={18} />}
-          </button>
-        </Tooltip>
-
-        {/* Screen Share */}
-        <Tooltip content={screenSharing ? "Dừng chia sẻ" : "Chia sẻ màn hình"} shortcut="S">
-          <button
-            onClick={toggleScreenShare}
-            className={`flex h-11 w-11 items-center justify-center rounded-full transition sm:h-12 sm:w-12 ${
-              screenSharing ? "bg-blue-600 text-white hover:bg-blue-700" : "bg-slate-700 text-white hover:bg-slate-600"
-            }`}
-          >
-            <MonitorUp size={18} />
-          </button>
-        </Tooltip>
-
-        {/* AI Recording */}
-        <Tooltip content={isRecording ? "Dừng ghi âm AI" : "Bật ghi âm AI"}>
-          <button
-            onClick={() => setIsRecording(!isRecording)}
-            className={`flex h-11 w-11 items-center justify-center rounded-full transition sm:h-12 sm:w-12 ${
-              isRecording ? "bg-red-600 text-white hover:bg-red-700" : "bg-slate-700 text-white hover:bg-slate-600"
-            }`}
-          >
-            <Circle size={18} className={isRecording ? "animate-pulse" : ""} />
-          </button>
-        </Tooltip>
-
-        {/* Raise Hand */}
-        <Tooltip content="Giơ tay" shortcut="H">
-          <button
-            onClick={toggleHand}
-            className={`flex h-11 w-11 items-center justify-center rounded-full transition sm:h-12 sm:w-12 ${
-              myHandRaised ? "bg-amber-600 text-white hover:bg-amber-700" : "bg-slate-700 text-white hover:bg-slate-600"
-            }`}
-          >
-            <Hand size={18} />
-          </button>
-        </Tooltip>
-
-        <div className="mx-1 h-8 w-px bg-slate-700 sm:mx-2" />
-
-        {/* Chat & Transcript */}
-        <Tooltip content="Chat & Transcript" shortcut="C">
-          <button
-            onClick={() => togglePanel("chat")}
-            className={`relative flex h-11 w-11 items-center justify-center rounded-full transition sm:h-12 sm:w-12 ${
-              sidePanel === "chat" ? "bg-primary-600 text-white" : "bg-slate-700 text-white hover:bg-slate-600"
-            }`}
-          >
-            <MessageSquare size={18} />
-            {chatMessages.length > 0 && (
-              <span className="absolute -top-0.5 -right-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-[9px] font-bold">
-                {chatMessages.length}
-              </span>
-            )}
-          </button>
-        </Tooltip>
-
-        {/* AI Notes */}
-        <Tooltip content="AI Ghi chú">
-          <button
-            onClick={() => togglePanel("ai-notes")}
-            className={`relative flex h-11 w-11 items-center justify-center rounded-full transition sm:h-12 sm:w-12 ${
-              sidePanel === "ai-notes" ? "bg-primary-600 text-white" : "bg-slate-700 text-white hover:bg-slate-600"
-            }`}
-          >
-            <Sparkles size={18} />
-            {aiNotesVisible && (
-              <span className="absolute -top-0.5 -right-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-green-500 text-[9px] font-bold">
-                AI
-              </span>
-            )}
-          </button>
-        </Tooltip>
-
-        {/* Participants */}
-        <Tooltip content="Thành viên" shortcut="P">
-          <button
-            onClick={() => togglePanel("participants")}
-            className={`flex h-11 w-11 items-center justify-center rounded-full transition sm:h-12 sm:w-12 ${
-              sidePanel === "participants" ? "bg-primary-600 text-white" : "bg-slate-700 text-white hover:bg-slate-600"
-            }`}
-          >
-            <Users size={18} />
-          </button>
-        </Tooltip>
-
-        <div className="mx-1 h-8 w-px bg-slate-700 sm:mx-2" />
-
-        {/* Leave Meeting */}
-        <Tooltip content="Rời phòng">
-          <button
-            onClick={leaveMeeting}
-            className="flex h-11 items-center gap-2 rounded-full bg-red-600 px-4 text-sm font-semibold text-white transition hover:bg-red-700 sm:h-12 sm:px-5"
-          >
-            <PhoneOff size={16} />
-            <span className="hidden sm:inline">Rời phòng</span>
-          </button>
-        </Tooltip>
-      </div>
+      {/* Floating Local View - For mobile or small grid */}
+      {!sidePanel && (
+         <div className="absolute bottom-24 right-8 w-48 aspect-video rounded-3xl bg-slate-900 border border-slate-700 shadow-2xl overflow-hidden hidden lg:block z-10">
+            <video ref={floatingVideoRef} autoPlay playsInline muted className="h-full w-full object-cover scale-x-[-1]" />
+            <div className="absolute bottom-2 left-2 px-2 py-0.5 rounded-lg bg-black/60 text-[10px] font-bold">
+               Bạn
+            </div>
+         </div>
+      )}
     </div>
   );
 };

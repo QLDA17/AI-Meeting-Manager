@@ -115,6 +115,7 @@ export interface Meeting {
     endTime: Date;
     duration: number; // minutes
     status: MeetingStatus;
+    code?: string; // Short code for joining (e.g. XXX-XXX-XXX)
     recordingUrl?: string;
     transcriptUrl?: string;
     audioUrl?: string;
