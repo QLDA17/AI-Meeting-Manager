@@ -93,6 +93,69 @@ const MOCK_AI_NOTES = {
   summary: "Buổi họp tập trung vào việc review tiến độ UI/UX và Backend. Team quyết định tối ưu CDN để giải quyết vấn đề load ảnh.",
 };
 
+// ─── Helper Components ───────────────────────────────────────────────────────
+
+/**
+ * Specialized Video Component to prevent flickering/jitter
+ * Ensures srcObject is only assigned when the stream actually changes
+ */
+const VideoView: React.FC<{ 
+  stream: MediaStream | null; 
+  muted?: boolean; 
+  mirror?: boolean;
+  className?: string;
+  objectFit?: 'cover' | 'contain';
+}> = ({ stream, muted = false, mirror = false, className = "", objectFit = 'cover' }) => {
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  useEffect(() => {
+    if (videoRef.current && stream) {
+      if (videoRef.current.srcObject !== stream) {
+        videoRef.current.srcObject = stream;
+        videoRef.current.play().catch(e => console.log("Video play error:", e));
+      }
+    }
+  }, [stream]);
+
+  return (
+    <video
+      ref={videoRef}
+      autoPlay
+      playsInline
+      muted={muted}
+      className={clsx("h-full w-full", className, objectFit === 'cover' ? 'object-cover' : 'object-contain')}
+      style={mirror ? { transform: 'scaleX(-1)' } : undefined}
+    />
+  );
+};
+
+/**
+ * Isolated Timer component to prevent re-rendering the whole MeetingRoom
+ */
+const RecordingTimer: React.FC<{ isRecording: boolean }> = ({ isRecording }) => {
+  const [seconds, setSeconds] = useState(0);
+
+  useEffect(() => {
+    if (isRecording) {
+      const interval = setInterval(() => setSeconds(s => s + 1), 1000);
+      return () => clearInterval(interval);
+    }
+  }, [isRecording]);
+
+  const formatTime = (s: number) => {
+    const m = Math.floor(s / 60);
+    const sec = s % 60;
+    return `${m.toString().padStart(2, '0')}:${sec.toString().padStart(2, '0')}`;
+  };
+
+  return (
+    <div className="flex items-center gap-2">
+      <span className="h-2 w-2 rounded-full bg-red-500 animate-pulse" />
+      <span className="text-xs font-black font-mono text-red-400">REC {formatTime(seconds)}</span>
+    </div>
+  );
+};
+
 // ─── Component ───────────────────────────────────────────────────────────────
 
 const MeetingRoom: React.FC = () => {
@@ -101,10 +164,8 @@ const MeetingRoom: React.FC = () => {
   const { user } = useAuth();
   const { meetings } = useAppStore();
   
-  // Get meeting from code (code format: XXX-XXX-XXX)
   const meeting = useMemo(() => {
     if (!code) return null;
-    // Try to find meeting by code or id
     return (meetings as any[]).find(m => m.code === code || m.id === code) || null;
   }, [code, meetings]);
 
@@ -113,26 +174,21 @@ const MeetingRoom: React.FC = () => {
   const [cameraOn, setCameraOn] = useState(true);
   const [screenSharing, setScreenSharing] = useState(false);
   const [screenStream, setScreenStream] = useState<MediaStream | null>(null);
-  const [, setRerenderKey] = useState(0);
   const [sidePanel, setSidePanel] = useState<SidePanel>("ai-notes");
-  const [recordingTime, setRecordingTime] = useState(0);
   const [, setChatMessages] = useState<ChatMsg[]>([]);
   const [chatInput, setChatInput] = useState("");
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
+  const [mainView, setMainView] = useState<"camera" | "screen">("camera");
   
-  // Participants management
   const [participants] = useState<Participant[]>(() => [
-    { id: "me", name: "Bạn", role: "organizer", micOn: true, cameraOn: true, handRaised: false },
+    { id: "me", name: "", role: "organizer", micOn: true, cameraOn: true, handRaised: false },
     ...MOCK_PARTICIPANTS.map((p, i) => ({ ...p, id: `p-${i}` }))
   ]);
 
   const [spotlightId, setSpotlightId] = useState<string>("me");
-  const localVideoRef = useRef<HTMLVideoElement>(null);
-  const floatingVideoRef = useRef<HTMLVideoElement>(null);
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const { status: wsStatus, connect, disconnect } = useWebSocket();
 
-  // Spotlight logic
   const spotlightParticipant = useMemo(() => 
     participants.find(p => p.id === spotlightId) || participants[0]
   , [participants, spotlightId]);
@@ -141,7 +197,6 @@ const MeetingRoom: React.FC = () => {
     participants.filter(p => p.id !== spotlightId)
   , [participants, spotlightId]);
 
-  // Effects
   useEffect(() => {
     let stream: MediaStream | null = null;
     const startCamera = async () => {
@@ -150,18 +205,15 @@ const MeetingRoom: React.FC = () => {
           video: { width: 1280, height: 720, facingMode: 'user' }, 
           audio: true 
         });
-        console.log("Camera started, tracks:", stream.getTracks().map(t => `${t.kind}:${t.enabled}`));
         setLocalStream(stream);
         setCameraOn(true);
         setMicOn(true);
-        // Force re-render
-        setRerenderKey(k => k + 1);
         showToast.success("Camera đã sẵn sàng!");
       } catch (err) {
         console.error("Camera error:", err);
         setCameraOn(false);
         setMicOn(true);
-        showToast.error("Camera bị từ chối. Vui lòng cho phép truy cập camera.");
+        showToast.error("Camera bị từ chối.");
       }
     };
     startCamera();
@@ -170,66 +222,26 @@ const MeetingRoom: React.FC = () => {
     };
   }, []);
 
-  // Attach stream to video element
-  useEffect(() => {
-    console.log("Stream effect:", !!localStream, "videoRef:", !!localVideoRef.current);
-    if (localVideoRef.current && localStream) {
-      localVideoRef.current.srcObject = localStream;
-      localVideoRef.current.play().catch(e => console.log("Play error:", e));
-    }
-  }, [localStream]);
-
-  // Attach stream to floating video element
-  useEffect(() => {
-    if (floatingVideoRef.current && localStream) {
-      floatingVideoRef.current.srcObject = localStream;
-      floatingVideoRef.current.play().catch(e => console.log("Floating play error:", e));
-    }
-  }, [localStream, sidePanel]);
-
-  useEffect(() => {
-    if (isRecording) {
-      const interval = setInterval(() => setRecordingTime(prev => prev + 1), 1000);
-      return () => clearInterval(interval);
-    }
-  }, [isRecording]);
-
-  // Camera toggle: turn ON/OFF actual camera
   useEffect(() => {
     if (localStream) {
       const videoTrack = localStream.getVideoTracks()[0];
-      if (videoTrack) {
-        videoTrack.enabled = cameraOn;
-        console.log("Camera toggled:", cameraOn);
-      }
+      if (videoTrack) videoTrack.enabled = cameraOn;
     }
   }, [cameraOn, localStream]);
 
-  // Mic toggle: turn ON/OFF actual microphone
   useEffect(() => {
     if (localStream) {
       const audioTrack = localStream.getAudioTracks()[0];
-      if (audioTrack) {
-        audioTrack.enabled = micOn;
-        console.log("Mic toggled:", micOn);
-      }
+      if (audioTrack) audioTrack.enabled = micOn;
     }
   }, [micOn, localStream]);
 
-  // Attach screen stream to video element when sharing
-  useEffect(() => {
-    if (screenStream && localVideoRef.current) {
-      localVideoRef.current.srcObject = screenStream;
-    }
-  }, [screenStream]);
-
-  // Handlers
   const toggleScreenShare = async () => {
     if (screenSharing) {
-      // Stop screen sharing
       screenStream?.getTracks().forEach(t => t.stop());
       setScreenStream(null);
       setScreenSharing(false);
+      setMainView("camera");
       showToast.info("Đã dừng chia sẻ màn hình");
     } else {
       try {
@@ -237,13 +249,14 @@ const MeetingRoom: React.FC = () => {
           video: { cursor: "always" } as any,
           audio: false 
         });
-        console.log("Screen share started");
         stream.getVideoTracks()[0].onended = () => {
           setScreenStream(null);
           setScreenSharing(false);
+          setMainView("camera");
         };
         setScreenStream(stream);
         setScreenSharing(true);
+        setMainView("screen");
         showToast.success("Đang chia sẻ màn hình");
       } catch (err) {
         console.error("Screen share error:", err);
@@ -258,12 +271,6 @@ const MeetingRoom: React.FC = () => {
     navigate("/meetings");
   };
 
-  const formatTime = (s: number) => {
-    const m = Math.floor(s / 60);
-    const sec = s % 60;
-    return `${m.toString().padStart(2, '0')}:${sec.toString().padStart(2, '0')}`;
-  };
-
   const sendChat = (e: React.FormEvent) => {
     e.preventDefault();
     if (!chatInput.trim()) return;
@@ -271,11 +278,8 @@ const MeetingRoom: React.FC = () => {
     setChatInput("");
   };
 
-  // ── Render ───────────────────────────────────────────────────────────────
-
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-[#020617] text-slate-100 overflow-hidden font-sans">
-      {/* Premium Header */}
       <header className="h-16 flex items-center justify-between px-6 bg-[#020617]/80 backdrop-blur-md border-b border-slate-800/50 z-20">
         <div className="flex items-center gap-4">
           <div className="w-10 h-10 rounded-xl bg-indigo-600 flex items-center justify-center shadow-lg shadow-indigo-500/20">
@@ -296,16 +300,13 @@ const MeetingRoom: React.FC = () => {
           </div>
         </div>
 
-<div className="flex items-center gap-4">
+        <div className="flex items-center gap-4">
           <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-green-900/30 border border-green-500/30">
              <span className={`w-2 h-2 rounded-full ${localStream ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
              <span className="text-xs font-bold text-green-400">{localStream ? 'LIVE' : 'OFFLINE'}</span>
           </div>
           <div className="flex items-center gap-3 px-4 py-2 rounded-2xl bg-slate-900 border border-slate-800">
-             <div className="flex items-center gap-2">
-                <span className="h-2 w-2 rounded-full bg-red-500 animate-pulse" />
-                <span className="text-xs font-black font-mono text-red-400">REC {formatTime(recordingTime)}</span>
-             </div>
+             <RecordingTimer isRecording={isRecording} />
              <div className="h-4 w-px bg-slate-800" />
              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">AI Transcript Live</p>
           </div>
@@ -315,9 +316,7 @@ const MeetingRoom: React.FC = () => {
         </div>
       </header>
 
-      {/* Main Workspace */}
       <div className="flex-1 flex overflow-hidden relative">
-        {/* Participants Gallery - Left (Scrollable) */}
         <aside className="w-64 border-r border-slate-800/50 bg-[#020617]/50 flex flex-col hidden xl:flex">
           <div className="p-4 border-b border-slate-800/50 flex items-center justify-between">
             <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Thành viên khác</span>
@@ -348,57 +347,32 @@ const MeetingRoom: React.FC = () => {
           </div>
         </aside>
 
-{/* Central Stage */}
         <main className="flex-1 p-6 relative flex flex-col gap-4">
-          {/* Spotlight View */}
           <div className="flex-1 relative rounded-[2.5rem] bg-slate-900 border border-slate-800 overflow-hidden shadow-2xl group">
-              {/* Screen sharing takes priority */}
-              {screenSharing && screenStream ? (
-                <video 
-                  ref={localVideoRef} 
-                  autoPlay 
-                  playsInline 
-                  muted 
-                  className="h-full w-full object-contain" 
-                />
-              ) : spotlightId === 'me' ? (
+              {spotlightId === 'me' ? (
                 localStream ? (
                   <div className="h-full w-full bg-black relative">
-                    {/* Main view: screen share OR camera based on toggle */}
-                    {screenSharing && screenStream ? (
-                      <video 
-                        ref={localVideoRef}
-                        autoPlay 
-                        playsInline 
-                        muted
-                        className="h-full w-full object-contain"
-                      />
-                    ) : (
-                      <video 
-                        ref={localVideoRef}
-                        autoPlay 
-                        playsInline 
-                        muted
-                        className="h-full w-full object-cover"
-                        style={{ transform: 'scaleX(-1)' }}
-                      />
-                    )}
+                    <VideoView 
+                      stream={screenSharing && screenStream && mainView === "screen" ? screenStream : localStream}
+                      mirror={!(screenSharing && screenStream && mainView === "screen")}
+                      objectFit={screenSharing && screenStream && mainView === "screen" ? 'contain' : 'cover'}
+                    />
                     
-                    {/* PiP: Show camera in corner when screen sharing */}
-                    {screenSharing && localStream && (
-                      <div className="absolute bottom-4 right-4 w-48 h-36 rounded-xl overflow-hidden border-2 border-white/20 shadow-xl bg-black">
-                        <video 
-                          ref={(el) => {
-                            if (el && localStream) el.srcObject = localStream;
-                          }}
-                          autoPlay 
-                          playsInline 
-                          muted
-                          className="h-full w-full object-cover"
-                          style={{ transform: 'scaleX(-1)' }}
+                    {screenSharing && screenStream && localStream && (
+                      <div 
+                        onClick={() => setMainView(mainView === "camera" ? "screen" : "camera")}
+                        className="absolute bottom-4 right-4 w-48 h-36 rounded-xl overflow-hidden border-2 border-indigo-500/40 shadow-2xl bg-black cursor-pointer hover:border-indigo-500 transition-all z-10 group/pip"
+                      >
+                        <VideoView 
+                          stream={mainView === "screen" ? localStream : screenStream}
+                          mirror={mainView === "screen"}
+                          objectFit={mainView === "screen" ? 'cover' : 'contain'}
                         />
+                        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover/pip:opacity-100 flex items-center justify-center transition-opacity">
+                           <Maximize2 size={16} className="text-white" />
+                        </div>
                         <div className="absolute bottom-1 left-1 px-1.5 py-0.5 bg-black/60 rounded text-[8px] text-white">
-                          Bạn
+                          {mainView === "screen" ? "" : "Màn hình"}
                         </div>
                       </div>
                     )}
@@ -411,9 +385,9 @@ const MeetingRoom: React.FC = () => {
                 ) : (
                  <div className="h-full w-full flex flex-col items-center justify-center bg-gradient-to-br from-slate-900 via-slate-800 to-indigo-950">
                     <div className="w-32 h-32 rounded-full bg-indigo-500/10 border-4 border-indigo-500/20 flex items-center justify-center mb-6 shadow-2xl">
-                       <span className="text-5xl font-black text-indigo-400">{(user?.displayName || user?.email || 'Bạn')[0].toUpperCase()}</span>
+                       <span className="text-5xl font-black text-indigo-400">{(user?.displayName || user?.email || ' ')[0].toUpperCase()}</span>
                     </div>
-                    <h2 className="text-xl font-black tracking-tight text-white">{user?.displayName || user?.email || 'Bạn'}</h2>
+                    <h2 className="text-xl font-black tracking-tight text-white">{user?.displayName || user?.email || ''}</h2>
                     <p className="text-sm font-bold text-slate-500 mt-2">Camera đang tắt</p>
                  </div>
                 )
@@ -425,7 +399,6 @@ const MeetingRoom: React.FC = () => {
                   <h2 className="text-xl font-black tracking-tight text-white">{spotlightParticipant.name}</h2>
                   <p className="text-sm font-bold text-slate-500 mt-2">Đang là diễn giả chính</p>
                   
-                  {/* Speaking Waveform */}
                   <div className="mt-8 flex items-end gap-1.5 h-12">
                      {WAVEFORM_HEIGHTS.map((h, i) => (
                        <motion.div 
@@ -439,7 +412,6 @@ const MeetingRoom: React.FC = () => {
                </div>
              )}
 
-             {/* UI Overlays on Video */}
              <div className="absolute top-6 left-6 flex items-center gap-3">
                 <div className="px-4 py-2 rounded-2xl bg-black/40 backdrop-blur-xl border border-white/10 flex items-center gap-2">
                    <span className="text-xs font-black text-white">{spotlightParticipant.name}</span>
@@ -464,7 +436,7 @@ const MeetingRoom: React.FC = () => {
                   {cameraOn ? <Video size={22} /> : <VideoOff size={22} />}
                 </button>
                 <div className="w-px h-8 bg-white/10 mx-1" />
-<button onClick={toggleScreenShare} className={clsx("p-4 rounded-full transition-all", screenSharing ? "bg-indigo-500 text-white" : "bg-slate-800 text-white hover:bg-slate-700")}>
+                <button onClick={toggleScreenShare} className={clsx("p-4 rounded-full transition-all", screenSharing ? "bg-indigo-500 text-white" : "bg-slate-800 text-white hover:bg-slate-700")}>
                    <MonitorUp size={22} />
                  </button>
                 <button onClick={() => setSidePanel(sidePanel === 'chat' ? null : 'chat')} className={clsx("p-4 rounded-full transition-all", sidePanel === 'chat' ? "bg-indigo-500 text-white" : "bg-slate-800 text-white hover:bg-slate-700")}>
@@ -481,7 +453,6 @@ const MeetingRoom: React.FC = () => {
           </div>
         </main>
 
-        {/* AI Sidepanel - Right */}
         <AnimatePresence>
           {sidePanel && (
             <motion.aside
@@ -506,7 +477,6 @@ const MeetingRoom: React.FC = () => {
               <div className="flex-1 overflow-y-auto p-6 custom-scrollbar space-y-8">
                  {sidePanel === 'ai-notes' ? (
                    <>
-                      {/* Summary Section */}
                       <div className="space-y-4">
                          <div className="flex items-center gap-2 text-indigo-400">
                             <FileText size={16} />
@@ -516,8 +486,6 @@ const MeetingRoom: React.FC = () => {
                             {MOCK_AI_NOTES.summary}
                          </div>
                       </div>
-
-                      {/* Decisions Section */}
                       <div className="space-y-4">
                          <div className="flex items-center gap-2 text-emerald-400">
                             <Target size={16} />
@@ -532,8 +500,6 @@ const MeetingRoom: React.FC = () => {
                             ))}
                          </div>
                       </div>
-
-                      {/* Action Items */}
                       <div className="space-y-4">
                          <div className="flex items-center gap-2 text-amber-400">
                             <ListChecks size={16} />
@@ -586,13 +552,9 @@ const MeetingRoom: React.FC = () => {
         </AnimatePresence>
       </div>
 
-      {/* Floating Local View - For mobile or small grid */}
-      {!sidePanel && (
+      {!sidePanel && spotlightId !== 'me' && (
          <div className="absolute bottom-24 right-8 w-48 aspect-video rounded-3xl bg-slate-900 border border-slate-700 shadow-2xl overflow-hidden hidden lg:block z-10">
-            <video ref={floatingVideoRef} autoPlay playsInline muted className="h-full w-full object-cover scale-x-[-1]" />
-            <div className="absolute bottom-2 left-2 px-2 py-0.5 rounded-lg bg-black/60 text-[10px] font-bold">
-               Bạn
-            </div>
+            <VideoView stream={localStream} mirror={true} />
          </div>
       )}
     </div>
