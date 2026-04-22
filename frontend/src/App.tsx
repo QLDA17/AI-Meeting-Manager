@@ -15,6 +15,7 @@ const ForgotPassword = React.lazy(() => import('./pages/ForgotPassword'));
 const Dashboard = React.lazy(() => import('./pages/Dashboard'));
 const MeetingList = React.lazy(() => import('./pages/MeetingList'));
 const MeetingDetail = React.lazy(() => import('./pages/MeetingDetail'));
+const Calendar = React.lazy(() => import('./pages/meeting/Calendar'));
 const CreateMeeting = React.lazy(() => import('./pages/CreateMeeting'));
 const MeetingRoom = React.lazy(() => import('./pages/MeetingRoom'));
 const JoinMeeting = React.lazy(() => import('./pages/JoinMeeting'));
@@ -97,6 +98,7 @@ const AppRoutes: React.FC = () => {
       <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
         <Route path="/dashboard" element={<React.Suspense fallback={<PageLoader />}><Dashboard /></React.Suspense>} />
         <Route path="/meetings" element={<React.Suspense fallback={<PageLoader />}><MeetingList /></React.Suspense>} />
+        <Route path="/calendar" element={<React.Suspense fallback={<PageLoader />}><Calendar /></React.Suspense>} />
         <Route path="/meetings/:id" element={<React.Suspense fallback={<PageLoader />}><MeetingDetail /></React.Suspense>} />
         <Route path="/meetings/create" element={<React.Suspense fallback={<PageLoader />}><CreateMeeting /></React.Suspense>} />
         <Route path="/create" element={<React.Suspense fallback={<PageLoader />}><CreateMeeting /></React.Suspense>} />

@@ -14,9 +14,11 @@ import {
 import { useAuth } from '../../context/AuthContext';
 import { usePermission } from '../../hooks';
 import { useOrgStore } from '../../stores';
+import { Logo } from '../ui';
 import OrgSelector from './OrgSelector';
 import GroupNav from './GroupNav';
 import QuickAccess from './QuickAccess';
+import CreateGroupModal from '../group/CreateGroupModal';
 
 interface SidebarProps {
   mobileOpen: boolean;
@@ -28,6 +30,7 @@ const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onClose }) => {
   const { user, logout } = useAuth();
   const { isSystemAdmin, isOrgAdmin, isGroupAdmin, isViewer } = usePermission();
   const { currentOrg } = useOrgStore();
+  const [isCreateGroupOpen, setIsCreateGroupOpen] = React.useState(false);
 
   const handleLogout = () => {
     logout();
@@ -60,19 +63,11 @@ const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onClose }) => {
         <div className="flex h-full flex-col">
           {/* Logo & Close */}
           <div className="flex items-center justify-between border-b border-gray-100 px-4 py-4 dark:border-slate-800">
-            <Link to={isSystemAdmin ? '/admin/console' : '/dashboard'} className="flex items-center gap-3">
-              <div className="inline-flex h-10 w-10 items-center justify-center rounded-xl bg-primary-600 text-sm font-extrabold text-white shadow-lg">
-                MM
-              </div>
-              <div>
-                <p className="text-sm font-bold text-gray-900 dark:text-slate-100">
-                  MultiMinutes AI
-                </p>
-                <p className="text-xs text-primary-700 dark:text-primary-300">
-                  Ghi chép thông minh
-                </p>
-              </div>
-            </Link>
+            <Logo 
+              size="md" 
+              className="px-0" 
+              variant="light" 
+            />
             <button
               onClick={onClose}
               className="rounded-lg p-1.5 text-gray-500 hover:bg-gray-100 dark:text-slate-300 dark:hover:bg-slate-800 lg:hidden"
@@ -96,7 +91,10 @@ const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onClose }) => {
                   Nhóm
                 </p>
               </div>
-              <GroupNav onGroupSelect={handleGroupSelect} />
+              <GroupNav 
+                onGroupSelect={handleGroupSelect} 
+                onCreateGroup={() => setIsCreateGroupOpen(true)}
+              />
             </div>
 
             {/* Divider */}
@@ -188,6 +186,11 @@ const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onClose }) => {
           </div>
         </div>
       </aside>
+
+      <CreateGroupModal 
+        isOpen={isCreateGroupOpen} 
+        onClose={() => setIsCreateGroupOpen(false)} 
+      />
     </>
   );
 };

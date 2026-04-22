@@ -1,10 +1,31 @@
 /**
- * OrgSettingsTab - Cài đặt organization
+ * OrgSettingsTab - Cài đặt Organization (Tổ chức)
+ * Đã tối ưu hóa: Sửa lỗi import, fix lệch giao diện, loại bỏ header thừa.
  */
 import React, { useState } from 'react';
 import { motion } from 'framer-motion';
-import { Save, RotateCcw, AlertTriangle } from 'lucide-react';
+import {
+  Save,
+  RotateCcw,
+  Building2,
+  Globe,
+  Users,
+  FileText,
+  Bell,
+  Trash2,
+  ShieldAlert,
+  ArrowLeftRight,
+  Archive,
+  ShieldCheck,
+  Cpu,
+  Database,
+  UserCheck,
+  Key,
+  FolderOpen,
+} from 'lucide-react';
 import { getOrgById } from '../../data';
+import { Button, Card, Input, FloatingSaveBar } from '../../components/ui';
+import { toast } from '../../components/ui/Toast';
 
 interface OrgSettingsTabProps {
   orgId: string;
@@ -12,6 +33,7 @@ interface OrgSettingsTabProps {
 
 const OrgSettingsTab: React.FC<OrgSettingsTabProps> = ({ orgId }) => {
   const org = getOrgById(orgId);
+  const [isSaving, setIsSaving] = useState(false);
   const [formData, setFormData] = useState({
     name: org?.name || '',
     description: org?.description || '',
@@ -21,8 +43,10 @@ const OrgSettingsTab: React.FC<OrgSettingsTabProps> = ({ orgId }) => {
     allowCreateGroups: true,
     autoSummarize: true,
     requireApproval: false,
+    notifications: true,
     retention: '90',
     maxAudioSize: '50',
+    encryptData: true,
   });
 
   const handleChange = (field: string, value: any) => {
@@ -30,254 +54,202 @@ const OrgSettingsTab: React.FC<OrgSettingsTabProps> = ({ orgId }) => {
   };
 
   const handleSave = () => {
-    // Mock save
-    console.log('Saving org settings:', formData);
+    setIsSaving(true);
+    setTimeout(() => {
+      setIsSaving(false);
+      toast.success('Đã cập nhật cấu hình tổ chức thành công!');
+    }, 1200);
   };
 
+  const colorStyles: Record<string, string> = {
+    primary: 'bg-primary-50 text-primary-600 dark:bg-primary-900/20 dark:text-primary-400',
+    blue: 'bg-blue-50 text-blue-600 dark:bg-blue-900/20 dark:text-blue-400',
+    indigo: 'bg-indigo-50 text-indigo-600 dark:bg-indigo-900/20 dark:text-indigo-400',
+    amber: 'bg-amber-50 text-amber-600 dark:bg-amber-900/20 dark:text-amber-400',
+    rose: 'bg-rose-50 text-rose-600 dark:bg-rose-900/20 dark:text-rose-400',
+  };
+
+  const SettingToggle: React.FC<{ icon: React.ReactNode, title: string, desc: string, checked: boolean, onChange: (v: boolean) => void, color?: string }> = ({ icon, title, desc, checked, onChange, color = "primary" }) => (
+    <div className="flex items-center justify-between gap-4 py-4 first:pt-0 last:pb-0">
+      <div className="flex items-center gap-3 flex-1">
+        <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${colorStyles[color] || colorStyles.primary}`}>
+          {icon}
+        </div>
+        <div className="flex-1">
+          <p className="text-sm font-bold text-gray-900 dark:text-slate-100">{title}</p>
+          <p className="text-[11px] text-gray-500 dark:text-slate-400 mt-0.5 leading-tight">{desc}</p>
+        </div>
+      </div>
+      <label className="relative inline-flex cursor-pointer items-center shrink-0">
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={(e) => onChange(e.target.checked)}
+          className="peer sr-only"
+        />
+        <div className="peer h-6 w-11 rounded-full bg-gray-200 after:absolute after:start-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:border after:border-gray-300 after:bg-white after:transition-all after:content-[''] peer-checked:bg-primary-600 peer-checked:after:translate-x-full peer-checked:after:border-white dark:bg-slate-700"></div>
+      </label>
+    </div>
+  );
+
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div>
-        <h3 className="text-lg font-bold text-gray-900 dark:text-slate-100">
-          Organization Settings
-        </h3>
-        <p className="text-sm text-gray-600 dark:text-slate-400">
-          Configure organization preferences and policies
-        </p>
-      </div>
-
-      {/* General Settings */}
-      <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm dark:border-slate-700 dark:bg-slate-900">
-        <h4 className="mb-4 text-sm font-semibold text-gray-900 dark:text-slate-100">
-          General Information
-        </h4>
-        <div className="space-y-4">
-          <div>
-            <label className="mb-2 block text-sm font-medium text-gray-700 dark:text-slate-200">
-              Organization Name
-            </label>
-            <input
-              type="text"
-              value={formData.name}
-              onChange={(e) => handleChange('name', e.target.value)}
-              className="w-full rounded-lg border border-gray-200 bg-white px-4 py-2.5 text-sm outline-none transition focus:border-primary-400 focus:ring-2 focus:ring-primary-100 dark:border-slate-700 dark:bg-slate-800 dark:focus:ring-primary-900/30"
-            />
-          </div>
-          <div>
-            <label className="mb-2 block text-sm font-medium text-gray-700 dark:text-slate-200">
-              Description
-            </label>
-            <textarea
-              value={formData.description}
-              onChange={(e) => handleChange('description', e.target.value)}
-              rows={3}
-              className="w-full rounded-lg border border-gray-200 bg-white px-4 py-2.5 text-sm outline-none transition focus:border-primary-400 focus:ring-2 focus:ring-primary-100 dark:border-slate-700 dark:bg-slate-800 dark:focus:ring-primary-900/30"
-            />
-          </div>
-          <div>
-            <label className="mb-2 block text-sm font-medium text-gray-700 dark:text-slate-200">
-              Default Role for New Members
-            </label>
-            <select
-              value={formData.defaultRole}
-              onChange={(e) => handleChange('defaultRole', e.target.value)}
-              className="w-full rounded-lg border border-gray-200 bg-white px-4 py-2.5 text-sm outline-none transition focus:border-primary-400 dark:border-slate-700 dark:bg-slate-800"
-            >
-              <option value="member">Member (can create groups)</option>
-              <option value="viewer">Viewer (read-only)</option>
-            </select>
-          </div>
-        </div>
-      </div>
-
-      {/* AI Settings */}
-      <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm dark:border-slate-700 dark:bg-slate-900">
-        <h4 className="mb-4 text-sm font-semibold text-gray-900 dark:text-slate-100">
-          AI & Processing
-        </h4>
-        <div className="space-y-4">
-          <div>
-            <label className="mb-2 block text-sm font-medium text-gray-700 dark:text-slate-200">
-              STT Provider
-            </label>
-            <select
-              value={formData.sttProvider}
-              onChange={(e) => handleChange('sttProvider', e.target.value)}
-              className="w-full rounded-lg border border-gray-200 bg-white px-4 py-2.5 text-sm outline-none transition focus:border-primary-400 dark:border-slate-700 dark:bg-slate-800"
-            >
-              <option value="google">Google Gemini</option>
-              <option value="openai">OpenAI Whisper</option>
-              <option value="azure">Azure Speech</option>
-            </select>
-          </div>
-          <div>
-            <label className="mb-2 block text-sm font-medium text-gray-700 dark:text-slate-200">
-              Default Translation Language
-            </label>
-            <select
-              value={formData.translationLang}
-              onChange={(e) => handleChange('translationLang', e.target.value)}
-              className="w-full rounded-lg border border-gray-200 bg-white px-4 py-2.5 text-sm outline-none transition focus:border-primary-400 dark:border-slate-700 dark:bg-slate-800"
-            >
-              <option value="en">English</option>
-              <option value="ja">Japanese</option>
-              <option value="vi">Vietnamese</option>
-            </select>
-          </div>
-        </div>
-      </div>
-
-      {/* Policies */}
-      <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm dark:border-slate-700 dark:bg-slate-900">
-        <h4 className="mb-4 text-sm font-semibold text-gray-900 dark:text-slate-100">
-          Policies & Permissions
-        </h4>
-        <div className="space-y-4">
-          {/* Toggle: Allow Create Groups */}
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium text-gray-900 dark:text-slate-100">
-                Allow Members to Create Groups
-              </p>
-              <p className="text-xs text-gray-500 dark:text-slate-400">
-                Any member can create a new group and become its admin
-              </p>
+    <div className="space-y-8 animate-in fade-in duration-500">
+      <div className="grid grid-cols-1 gap-8 lg:grid-cols-2">
+        {/* Left Column */}
+        <div className="space-y-8">
+          {/* Identity Section */}
+          <section className="space-y-4">
+            <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-400">Thông tin Tổ chức</h4>
+            <div className="space-y-5 rounded-[2rem] border border-gray-100 bg-gray-50/30 p-6 dark:border-slate-800 dark:bg-slate-900/50">
+              <Input
+                label="Tên hiển thị"
+                value={formData.name}
+                onChange={(e) => handleChange('name', e.target.value)}
+              />
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium text-gray-700 dark:text-slate-200">Mô tả mục tiêu</label>
+                <textarea
+                  value={formData.description}
+                  onChange={(e) => handleChange('description', e.target.value)}
+                  rows={3}
+                  className="w-full rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm outline-none transition focus:border-primary-400 focus:ring-4 focus:ring-primary-500/5 dark:border-slate-800 dark:bg-slate-800"
+                />
+              </div>
             </div>
-            <label className="relative inline-flex cursor-pointer items-center">
-              <input
-                type="checkbox"
+          </section>
+
+          {/* AI Settings */}
+          <section className="space-y-4">
+            <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-400">Cấu hình AI & Xử lý</h4>
+            <Card className="rounded-[2rem] border-gray-100 p-6 shadow-sm dark:border-slate-800">
+              <div className="space-y-5">
+                <div className="flex items-center justify-between gap-4">
+                  <div className="flex items-center gap-3 flex-1">
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-indigo-50 text-indigo-600 dark:bg-indigo-900/20">
+                      <Cpu size={20} />
+                    </div>
+                    <div className="flex-1">
+                      <p className="text-sm font-bold text-gray-900 dark:text-slate-100">Mô hình STT</p>
+                      <p className="text-[11px] text-gray-500 dark:text-slate-400">Mặc định cho toàn bộ tổ chức</p>
+                    </div>
+                  </div>
+                  <select
+                    value={formData.sttProvider}
+                    onChange={(e) => handleChange('sttProvider', e.target.value)}
+                    className="h-10 rounded-xl border border-gray-200 bg-white px-3 text-xs font-bold outline-none transition focus:border-primary-400 dark:border-slate-700 dark:bg-slate-800"
+                  >
+                    <option value="google">Google Gemini</option>
+                    <option value="openai">OpenAI Whisper</option>
+                  </select>
+                </div>
+                <div className="flex items-center justify-between gap-4">
+                  <div className="flex items-center gap-3 flex-1">
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-50 text-emerald-600 dark:bg-emerald-900/20">
+                      <Globe size={20} />
+                    </div>
+                    <div className="flex-1">
+                      <p className="text-sm font-bold text-gray-900 dark:text-slate-100">Dịch thuật</p>
+                      <p className="text-[11px] text-gray-500 dark:text-slate-400">Ngôn ngữ đích mặc định</p>
+                    </div>
+                  </div>
+                  <select
+                    value={formData.translationLang}
+                    onChange={(e) => handleChange('translationLang', e.target.value)}
+                    className="h-10 rounded-xl border border-gray-200 bg-white px-3 text-xs font-bold outline-none transition focus:border-primary-400 dark:border-slate-700 dark:bg-slate-800"
+                  >
+                    <option value="en">English</option>
+                    <option value="vi">Tiếng Việt</option>
+                  </select>
+                </div>
+              </div>
+            </Card>
+          </section>
+        </div>
+
+        {/* Right Column */}
+        <div className="space-y-8">
+          {/* Policies Section */}
+          <section className="space-y-4">
+            <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-400">Chính sách & Bảo mật</h4>
+            <div className="divide-y divide-gray-50 rounded-[2rem] border border-gray-100 bg-white p-6 shadow-sm dark:divide-slate-800 dark:border-slate-800 dark:bg-slate-900">
+              <SettingToggle 
+                icon={<FolderOpen size={18} />}
+                title="Cho phép tạo Nhóm"
+                desc="Thành viên có thể tự tạo nhóm mới."
                 checked={formData.allowCreateGroups}
-                onChange={(e) => handleChange('allowCreateGroups', e.target.checked)}
-                className="peer sr-only"
+                onChange={(v) => handleChange('allowCreateGroups', v)}
+                color="blue"
               />
-              <div className="peer h-6 w-11 rounded-full bg-gray-200 after:absolute after:start-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:border after:border-gray-300 after:bg-white after:transition-all after:content-[''] peer-checked:bg-primary-600 peer-checked:after:translate-x-full peer-checked:after:border-white"></div>
-            </label>
-          </div>
-
-          {/* Toggle: Auto Summarize */}
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium text-gray-900 dark:text-slate-100">
-                Auto-summarize Meetings
-              </p>
-              <p className="text-xs text-gray-500 dark:text-slate-400">
-                Automatically generate AI summaries after processing
-              </p>
-            </div>
-            <label className="relative inline-flex cursor-pointer items-center">
-              <input
-                type="checkbox"
-                checked={formData.autoSummarize}
-                onChange={(e) => handleChange('autoSummarize', e.target.checked)}
-                className="peer sr-only"
+              <SettingToggle 
+                icon={<Key size={18} />}
+                title="Mã hóa dữ liệu"
+                desc="Bật mã hóa đầu cuối cho file ghi âm."
+                checked={formData.encryptData}
+                onChange={(v) => handleChange('encryptData', v)}
+                color="indigo"
               />
-              <div className="peer h-6 w-11 rounded-full bg-gray-200 after:absolute after:start-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:border after:border-gray-300 after:bg-white after:transition-all after:content-[''] peer-checked:bg-primary-600 peer-checked:after:translate-x-full peer-checked:after:border-white"></div>
-            </label>
-          </div>
-
-          {/* Toggle: Require Approval */}
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium text-gray-900 dark:text-slate-100">
-                Require Approval for External Sharing
-              </p>
-              <p className="text-xs text-gray-500 dark:text-slate-400">
-                Meetings shared outside org need admin approval
-              </p>
-            </div>
-            <label className="relative inline-flex cursor-pointer items-center">
-              <input
-                type="checkbox"
+              <SettingToggle 
+                icon={<UserCheck size={18} />}
+                title="Duyệt người mới"
+                desc="Admin cần phê duyệt thành viên mới."
                 checked={formData.requireApproval}
-                onChange={(e) => handleChange('requireApproval', e.target.checked)}
-                className="peer sr-only"
+                onChange={(v) => handleChange('requireApproval', v)}
+                color="amber"
               />
-              <div className="peer h-6 w-11 rounded-full bg-gray-200 after:absolute after:start-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:border after:border-gray-300 after:bg-white after:transition-all after:content-[''] peer-checked:bg-primary-600 peer-checked:after:translate-x-full peer-checked:after:border-white"></div>
-            </label>
-          </div>
-        </div>
-      </div>
-
-      {/* Retention & Limits */}
-      <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm dark:border-slate-700 dark:bg-slate-900">
-        <h4 className="mb-4 text-sm font-semibold text-gray-900 dark:text-slate-100">
-          Retention & Limits
-        </h4>
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <label className="mb-2 block text-sm font-medium text-gray-700 dark:text-slate-200">
-              Meeting Retention (days)
-            </label>
-            <select
-              value={formData.retention}
-              onChange={(e) => handleChange('retention', e.target.value)}
-              className="w-full rounded-lg border border-gray-200 bg-white px-4 py-2.5 text-sm outline-none transition focus:border-primary-400 dark:border-slate-700 dark:bg-slate-800"
-            >
-              <option value="30">30 days</option>
-              <option value="90">90 days</option>
-              <option value="180">180 days</option>
-              <option value="365">1 year</option>
-              <option value="forever">Forever</option>
-            </select>
-          </div>
-          <div>
-            <label className="mb-2 block text-sm font-medium text-gray-700 dark:text-slate-200">
-              Max Audio Size (MB)
-            </label>
-            <select
-              value={formData.maxAudioSize}
-              onChange={(e) => handleChange('maxAudioSize', e.target.value)}
-              className="w-full rounded-lg border border-gray-200 bg-white px-4 py-2.5 text-sm outline-none transition focus:border-primary-400 dark:border-slate-700 dark:bg-slate-800"
-            >
-              <option value="25">25 MB</option>
-              <option value="50">50 MB</option>
-              <option value="100">100 MB</option>
-              <option value="250">250 MB</option>
-            </select>
-          </div>
-        </div>
-      </div>
-
-      {/* Danger Zone */}
-      <div className="rounded-xl border border-red-200 bg-red-50 p-5 dark:border-red-900/40 dark:bg-red-900/20">
-        <div className="flex items-start gap-3">
-          <AlertTriangle size={20} className="mt-0.5 text-red-600 dark:text-red-400" />
-          <div className="flex-1">
-            <h4 className="text-sm font-semibold text-red-700 dark:text-red-300">
-              Danger Zone
-            </h4>
-            <p className="mt-1 text-xs text-red-600 dark:text-red-400">
-              These actions are irreversible. Proceed with caution.
-            </p>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <button className="rounded-lg border border-red-300 bg-white px-3 py-1.5 text-xs font-medium text-red-700 transition hover:bg-red-50 dark:border-red-800 dark:bg-red-900/30 dark:text-red-300 dark:hover:bg-red-900/40">
-                Transfer Ownership
-              </button>
-              <button className="rounded-lg border border-red-300 bg-white px-3 py-1.5 text-xs font-medium text-red-700 transition hover:bg-red-50 dark:border-red-800 dark:bg-red-900/30 dark:text-red-300 dark:hover:bg-red-900/40">
-                Archive Organization
-              </button>
-              <button className="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-red-700">
-                Delete Organization
-              </button>
+              <SettingToggle 
+                icon={<Bell size={18} />}
+                title="Thông báo hệ thống"
+                desc="Gửi thông báo khi có biên bản mới."
+                checked={formData.notifications}
+                onChange={(v) => handleChange('notifications', v)}
+                color="rose"
+              />
             </div>
-          </div>
+          </section>
+
+          {/* Danger Zone */}
+          <section className="space-y-4">
+            <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-rose-500">Khu vực rủi ro</h4>
+            <div className="rounded-[2rem] border border-rose-100 bg-rose-50/30 p-6 dark:border-rose-900/20 dark:bg-rose-900/5">
+              <div className="flex items-start gap-4">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-rose-100 text-rose-600 dark:bg-rose-900/40 dark:text-rose-400">
+                  <ShieldAlert size={20} />
+                </div>
+                <div className="flex-1">
+                  <h5 className="text-sm font-black text-rose-900 dark:text-rose-400">Các hành động vĩnh viễn</h5>
+                  <p className="mt-1 text-[11px] text-rose-800/60 dark:text-rose-400/60 leading-tight">
+                    Xóa tổ chức sẽ xóa toàn bộ dữ liệu của tất cả người dùng, bao gồm lịch sử họp và từ điển.
+                  </p>
+                  <div className="mt-5 flex flex-wrap gap-2">
+                    <Button 
+                      variant="secondary" 
+                      size="sm" 
+                      className="rounded-xl px-4 text-[10px] font-black"
+                    >
+                       Tạm dừng
+                    </Button>
+                    <Button 
+                      variant="danger" 
+                      size="sm" 
+                      className="rounded-xl px-4 text-[10px] font-black shadow-lg shadow-rose-600/20"
+                    >
+                       Xóa Tổ chức
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
         </div>
       </div>
 
-      {/* Save Actions */}
-      <div className="flex items-center justify-end gap-3">
-        <button className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-700 shadow-sm transition hover:bg-gray-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700">
-          <RotateCcw size={14} />
-          Reset to Default
-        </button>
-        <button
-          onClick={handleSave}
-          className="inline-flex items-center gap-2 rounded-lg bg-primary-600 px-6 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-primary-700"
-        >
-          <Save size={14} />
-          Save Changes
-        </button>
-      </div>
+      {/* Modern Floating Action Bar */}
+      <FloatingSaveBar
+        isVisible={true}
+        isSaving={isSaving}
+        onSave={handleSave}
+        onCancel={() => window.location.reload()}
+      />
     </div>
   );
 };

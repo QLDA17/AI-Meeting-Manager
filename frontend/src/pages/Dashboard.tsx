@@ -15,6 +15,9 @@ import {
   Plus,
   Zap,
   Crown,
+  Calendar as CalendarIcon,
+  ChevronLeft,
+  ChevronRight,
 } from "lucide-react";
 import { StatCard, Button, AnimatedCounter } from "../components/ui";
 import { useOrgStore } from "../stores";
@@ -30,6 +33,7 @@ const Dashboard: React.FC = () => {
   const { isOrgAdmin } = usePermission();
   const { meetings, getStats } = useAppStore();
   const [loading, setLoading] = useState(true);
+  const [weekOffset, setWeekOffset] = useState(0);
 
   useEffect(() => {
     const timer = setTimeout(() => setLoading(false), 400);
@@ -51,9 +55,37 @@ const Dashboard: React.FC = () => {
 
   const recentMeetings = useMemo(() => {
     return [...meetings]
+      .filter(m => m.status === 'completed')
       .sort((a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime())
       .slice(0, 4);
   }, [meetings]);
+
+  const upcomingMeetings = useMemo(() => {
+    return meetings
+      .filter((m) => m.status === "upcoming" || m.status === "live")
+      .sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime())
+      .slice(0, 3);
+  }, [meetings]);
+
+  const calendarDays = useMemo(() => {
+    const today = new Date();
+    const days = [];
+    const startOffset = -2 + (weekOffset * 7);
+    const endOffset = 4 + (weekOffset * 7);
+    
+    for (let i = startOffset; i <= endOffset; i++) {
+      const d = new Date();
+      d.setDate(today.getDate() + i);
+      days.push({
+        date: d.getDate(),
+        dayName: d.toLocaleDateString('vi-VN', { weekday: 'short' }),
+        fullDate: d.toISOString().split('T')[0],
+        isToday: i === 0,
+        hasMeeting: meetings.some(m => new Date(m.startTime).toISOString().split('T')[0] === d.toISOString().split('T')[0])
+      });
+    }
+    return days;
+  }, [meetings, weekOffset]);
 
   const hoursSaved = useMemo(() => {
     const estimatedHours = meetings.length * 2;
@@ -119,7 +151,7 @@ const Dashboard: React.FC = () => {
       <div className="grid grid-cols-1 gap-8 xl:grid-cols-12">
         {/* Main Column */}
         <div className="space-y-10 xl:col-span-8">
-          {/* Stats Summary - Fixed props */}
+          {/* Stats Summary */}
           <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
             <StatCard 
               label="Tổng cuộc họp" 
@@ -182,6 +214,99 @@ const Dashboard: React.FC = () => {
 
         {/* Right Column */}
         <div className="space-y-8 xl:col-span-4">
+          {/* visual Calendar Widget */}
+          <div className="rounded-[2rem] border border-gray-100 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+            <div className="mb-6 flex items-center justify-between">
+              <h3 className="flex items-center gap-2 text-lg font-bold text-gray-900 dark:text-white">
+                <CalendarIcon size={20} className="text-primary-500" /> Lịch biểu
+              </h3>
+              <div className="flex items-center gap-1">
+                <button 
+                  onClick={() => setWeekOffset(prev => prev - 1)}
+                  className="rounded-lg p-1 hover:bg-gray-100 dark:hover:bg-slate-800 transition-colors"
+                >
+                  <ChevronLeft size={16} />
+                </button>
+                <button 
+                  onClick={() => setWeekOffset(0)}
+                  className="px-2 py-0.5 text-[10px] font-bold text-primary-600 hover:bg-primary-50 rounded"
+                >
+                  Hôm nay
+                </button>
+                <button 
+                  onClick={() => setWeekOffset(prev => prev + 1)}
+                  className="rounded-lg p-1 hover:bg-gray-100 dark:hover:bg-slate-800 transition-colors"
+                >
+                  <ChevronRight size={16} />
+                </button>
+              </div>
+            </div>
+
+            {/* Mini Horizontal Calendar */}
+            <div className="mb-8 flex justify-between gap-1">
+              {calendarDays.map((day) => (
+                <div 
+                  key={day.fullDate}
+                  className={clsx(
+                    "flex flex-1 flex-col items-center gap-1 rounded-2xl py-3 transition-all",
+                    day.isToday ? "bg-primary-600 text-white shadow-lg shadow-primary-500/30" : "hover:bg-gray-50 dark:hover:bg-slate-800"
+                  )}
+                >
+                  <span className={clsx("text-[10px] font-bold uppercase", day.isToday ? "text-primary-100" : "text-gray-400")}>
+                    {day.dayName}
+                  </span>
+                  <span className="text-sm font-black">{day.date}</span>
+                  {day.hasMeeting && !day.isToday && (
+                    <span className="h-1 w-1 rounded-full bg-primary-500" />
+                  )}
+                </div>
+              ))}
+            </div>
+            
+            <div className="space-y-4">
+              <p className="text-[10px] font-black uppercase tracking-widest text-gray-400">Cuộc họp sắp tới</p>
+              {upcomingMeetings.length > 0 ? (
+                upcomingMeetings.map((m) => (
+                  <div key={m.id} className="group relative flex items-start gap-3 rounded-2xl border border-gray-50 p-3 transition-all hover:bg-gray-50 dark:border-slate-800 dark:hover:bg-slate-800/50">
+                    <div className={clsx(
+                      "flex h-10 w-10 shrink-0 flex-col items-center justify-center rounded-xl font-bold",
+                      m.status === 'live' ? "bg-red-50 text-red-600 dark:bg-red-900/20 dark:text-red-400 animate-pulse" : "bg-primary-50 text-primary-600 dark:bg-primary-900/20 dark:text-primary-400"
+                    )}>
+                      <span className="text-sm leading-none">{new Date(m.startTime).getDate()}</span>
+                      <span className="text-[8px] uppercase">{new Date(m.startTime).toLocaleDateString('vi-VN', { month: 'short' })}</span>
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-bold text-gray-900 dark:text-white group-hover:text-primary-600">{m.title}</p>
+                      <div className="mt-1 flex items-center gap-3 text-xs text-gray-500 dark:text-slate-400">
+                        <span className="flex items-center gap-1 font-medium">
+                          <Clock3 size={12} />
+                          {new Date(m.startTime).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', hour12: false })}
+                        </span>
+                        {m.status === 'live' && (
+                          <span className="flex items-center gap-1 font-black text-red-500">
+                            <span className="h-1 w-1 rounded-full bg-red-500 animate-pulse" />
+                            LIVE
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="py-6 text-center">
+                  <p className="text-xs text-gray-400">Tuyệt vời! Không có lịch họp nào.</p>
+                </div>
+              )}
+              <Button 
+                variant="secondary" 
+                className="w-full rounded-xl border-dashed py-2 text-xs"
+                onClick={() => navigate('/calendar')}
+              >
+                Mở lịch biểu đầy đủ
+              </Button>
+            </div>
+          </div>
+
           {/* Quick Actions */}
           <div className="rounded-3xl border border-gray-100 bg-white p-8 shadow-sm dark:border-slate-800 dark:bg-slate-900">
             <h3 className="mb-6 flex items-center gap-2 text-lg font-bold text-gray-900 dark:text-white">

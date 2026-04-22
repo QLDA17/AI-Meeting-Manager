@@ -24,8 +24,8 @@ class MultiMinutesAgents:
         openai_key = os.getenv("OPENAI_API_KEY")
         
         if self.provider == "google":
-            # Gemma 4 26B A4B IT - free, confirmed available via ListModels
-            model = "gemini/gemma-4-26b-a4b-it"
+            # Use provided model or default to gemma
+            model = model_name or "gemini/gemma-4-26b-a4b-it"
             
             logger.info(f"Setting up CrewAI LLM for Google AI Studio: {model}")
             return LLM(

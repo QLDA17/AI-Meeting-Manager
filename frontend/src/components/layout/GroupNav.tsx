@@ -17,9 +17,10 @@ import type { Group, PrivacyLevel } from '../../types';
 
 interface GroupNavProps {
   onGroupSelect?: (groupId: string) => void;
+  onCreateGroup?: () => void;
 }
 
-const GroupNav: React.FC<GroupNavProps> = ({ onGroupSelect }) => {
+const GroupNav: React.FC<GroupNavProps> = ({ onGroupSelect, onCreateGroup }) => {
   const location = useLocation();
   const { groups } = useOrgStore();
   const { hasPermission } = usePermission();
@@ -48,13 +49,13 @@ const GroupNav: React.FC<GroupNavProps> = ({ onGroupSelect }) => {
           Chưa có groups nào
         </p>
         {canCreateGroup && (
-          <Link
-            to="/groups/create"
+          <button
+            onClick={onCreateGroup}
             className="mt-2 flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium text-primary-600 hover:bg-primary-50 dark:text-primary-300 dark:hover:bg-primary-900/20"
           >
             <Plus size={12} />
             Tạo group đầu tiên
-          </Link>
+          </button>
         )}
       </div>
     );
@@ -101,13 +102,13 @@ const GroupNav: React.FC<GroupNavProps> = ({ onGroupSelect }) => {
       })}
 
       {canCreateGroup && (
-        <Link
-          to="/groups/create"
-          className="flex items-center justify-center gap-1.5 rounded-lg border-2 border-dashed border-gray-200 px-3 py-2 text-sm font-medium text-gray-500 transition hover:border-primary-300 hover:text-primary-600 dark:border-slate-700 dark:text-slate-400 dark:hover:border-primary-700 dark:hover:text-primary-300"
+        <button
+          onClick={onCreateGroup}
+          className="w-full flex items-center justify-center gap-1.5 rounded-lg border-2 border-dashed border-gray-200 px-3 py-2 text-sm font-medium text-gray-500 transition hover:border-primary-300 hover:text-primary-600 dark:border-slate-700 dark:text-slate-400 dark:hover:border-primary-700 dark:hover:text-primary-300"
         >
           <Plus size={14} />
           <span>New Group</span>
-        </Link>
+        </button>
       )}
     </div>
   );

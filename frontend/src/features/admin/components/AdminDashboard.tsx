@@ -1,4 +1,4 @@
-import React, { useMemo, useEffect, Component, ErrorInfo, ReactNode } from 'react';
+import React, { useMemo, useEffect, Component, type ErrorInfo, type ReactNode } from 'react';
 import { motion } from 'framer-motion';
 import {
   Building2,

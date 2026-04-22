@@ -18,8 +18,9 @@ import {
   Globe,
   FileText,
 } from 'lucide-react';
-import { useOrgStore, useAppStore } from '../../stores';
+import { useOrgStore, useAppStore, useGlossaryStore } from '../../stores';
 import { formatFileSize } from '../../utils';
+import { MultiSelect, Badge } from '../../components/ui';
 import type { Meeting } from '../../types';
 
 type UploadStep = 'context' | 'upload' | 'details' | 'processing' | 'success';
@@ -29,10 +30,16 @@ const UploadAudio: React.FC = () => {
   const [searchParams] = useSearchParams();
   const { currentOrg, groups, setCurrentGroup } = useOrgStore();
   const { addMeeting } = useAppStore();
+  const { glossaries, loadGlossaries } = useGlossaryStore();
 
   // State
   const [currentStep, setCurrentStep] = React.useState<UploadStep>('context');
   const [selectedGroupId, setSelectedGroupId] = React.useState('');
+
+  // Load glossaries on mount
+  React.useEffect(() => {
+    loadGlossaries();
+  }, [loadGlossaries]);
 
   // Set initial group from URL
   React.useEffect(() => {
@@ -58,6 +65,7 @@ const UploadAudio: React.FC = () => {
   const [sttProvider, setSttProvider] = useState('google');
   const [sourceLanguage, setSourceLanguage] = useState('vi');
   const [targetLanguage, setTargetLanguage] = useState('en');
+  const [selectedGlossaries, setSelectedGlossaries] = useState<string[]>([]);
 
   const orgGroups = currentOrg ? groups.filter((g) => g.orgId === currentOrg.id) : [];
 
@@ -387,7 +395,24 @@ const UploadAudio: React.FC = () => {
               </div>
 
               <div className="space-y-3 rounded-2xl bg-gray-50 p-4 dark:bg-slate-800">
-                <p className="text-xs font-black uppercase text-gray-400">Cấu hình AI nâng cao</p>
+                <div className="flex items-center justify-between">
+                  <p className="text-xs font-black uppercase text-gray-400">Cấu hình AI nâng cao</p>
+                  <Badge variant="primary" className="text-[10px]">Premium</Badge>
+                </div>
+
+                <div className="py-2">
+                   <MultiSelect
+                    label="Áp dụng Kho kiến thức (Glossary)"
+                    placeholder="Chọn từ điển chuyên ngành..."
+                    options={glossaries.map(g => ({ id: g.id, name: g.name }))}
+                    selectedIds={selectedGlossaries}
+                    onChange={setSelectedGlossaries}
+                  />
+                  <p className="mt-1 text-[10px] text-gray-500 italic">
+                    AI sẽ ưu tiên các thuật ngữ trong thư viện này khi xử lý tệp âm thanh.
+                  </p>
+                </div>
+
                 <label className="flex items-center gap-3">
                   <input
                     type="checkbox"

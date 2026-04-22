@@ -16,15 +16,17 @@ import {
   Building2,
   ArrowLeft,
   Clock,
+  BookOpen,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useOrgStore } from '../../stores';
 import { usePermission } from '../../hooks';
 import OrgUsersTab from './OrgUsersTab';
 import OrgGroupsTab from './OrgGroupsTab';
+import OrgGlossariesTab from './OrgGlossariesTab';
 import OrgSettingsTab from './OrgSettingsTab';
 
-type AdminTab = 'overview' | 'users' | 'groups' | 'settings';
+type AdminTab = 'overview' | 'users' | 'groups' | 'glossaries' | 'settings';
 
 const OrgAdminConsole: React.FC = () => {
   const navigate = useNavigate();
@@ -36,7 +38,7 @@ const OrgAdminConsole: React.FC = () => {
 
   // Sync URL tab parameter with local state
   React.useEffect(() => {
-    if (tab && ['overview', 'users', 'groups', 'settings'].includes(tab)) {
+    if (tab && ['overview', 'users', 'groups', 'glossaries', 'settings'].includes(tab)) {
       setActiveTab(tab as AdminTab);
     }
   }, [tab]);
@@ -73,6 +75,7 @@ const OrgAdminConsole: React.FC = () => {
     { key: 'overview', label: 'Tổng quan', icon: <BarChart3 size={16} /> },
     { key: 'users', label: 'Người dùng', icon: <Users size={16} /> },
     { key: 'groups', label: 'Nhóm', icon: <FolderOpen size={16} /> },
+    { key: 'glossaries', label: 'Từ điển', icon: <BookOpen size={16} /> },
     { key: 'settings', label: 'Cài đặt', icon: <Settings size={16} /> },
   ];
 
@@ -217,6 +220,7 @@ const OrgAdminConsole: React.FC = () => {
 
           {activeTab === 'users' && currentOrg && <OrgUsersTab orgId={currentOrg.id} />}
           {activeTab === 'groups' && currentOrg && <OrgGroupsTab orgId={currentOrg.id} />}
+          {activeTab === 'glossaries' && currentOrg && <OrgGlossariesTab orgId={currentOrg.id} />}
           {activeTab === 'settings' && currentOrg && <OrgSettingsTab orgId={currentOrg.id} />}
         </div>
       </div>

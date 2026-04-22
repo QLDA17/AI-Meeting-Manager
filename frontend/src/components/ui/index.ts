@@ -5,7 +5,9 @@ export { default as Input } from "./Input";
 export { default as Modal } from "./Modal";
 export { default as Progress } from "./Progress";
 export { default as Tooltip } from './Tooltip';
+export { default as MultiSelect } from './MultiSelect';
 export { default as Logo } from './Logo';
+export { default as FloatingSaveBar } from './FloatingSaveBar';
 
 export { showToast, toast } from "./Toast";
 

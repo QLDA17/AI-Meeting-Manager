@@ -6,6 +6,7 @@ import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import {
   FileText,
+  Calendar,
   Upload,
   Bell,
   CheckCircle2,
@@ -27,6 +28,11 @@ const QuickAccess: React.FC = () => {
       label: 'Tất cả cuộc họp',
       path: '/meetings',
       icon: <FileText size={16} />,
+    },
+    {
+      label: 'Lịch họp',
+      path: '/calendar',
+      icon: <Calendar size={16} />,
     },
     {
       label: 'Họp trực tuyến',

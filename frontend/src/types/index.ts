@@ -103,7 +103,7 @@ export interface GroupUser {
 // MEETING & ACTION ITEM TYPES
 // ============================================================================
 
-export type MeetingStatus = 'queued' | 'processing' | 'completed' | 'failed';
+export type MeetingStatus = 'queued' | 'processing' | 'completed' | 'failed' | 'live' | 'upcoming' | 'canceled';
 
 export interface Meeting {
     id: string;
@@ -127,6 +127,7 @@ export interface Meeting {
     keyPoints?: string[];
     decisions?: string[];
     isPinned?: boolean;
+    groupName?: string;
 }
 
 export interface ActionItem {

@@ -1,26 +1,53 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
+import { cn } from '../../lib/utils';
 
 interface LogoProps {
   className?: string;
   variant?: 'light' | 'dark';
+  size?: 'sm' | 'md' | 'lg';
+  showSubtext?: boolean;
 }
 
-const Logo: React.FC<LogoProps> = ({ className = '', variant = 'light' }) => {
+const Logo: React.FC<LogoProps> = ({ 
+  className = '', 
+  variant = 'light',
+  size = 'md',
+  showSubtext = true
+}) => {
+  const iconSizes = {
+    sm: 'h-8 w-8 text-xs rounded-lg',
+    md: 'h-10 w-10 text-sm rounded-xl',
+    lg: 'h-12 w-12 text-lg rounded-2xl',
+  };
+
+  const textSizes = {
+    sm: 'text-base',
+    md: 'text-lg',
+    lg: 'text-2xl',
+  };
+
   return (
-    <Link to="/" className={`flex items-center gap-2 group ${className}`}>
-      <div className="w-8 h-8 bg-primary-600 rounded-lg flex items-center justify-center shadow-lg shadow-primary-500/20 group-hover:scale-110 transition-transform">
-        <span className="text-white font-bold text-lg">M</span>
+    <Link to="/" className={cn("flex items-center gap-3 group", className)}>
+      <div className={cn(
+        "inline-flex items-center justify-center bg-primary-600 font-black text-white shadow-lg transition-transform group-hover:scale-105",
+        iconSizes[size]
+      )}>
+        MM
       </div>
-      <div className="flex flex-col leading-none">
-        <span className={`font-sans font-bold tracking-tight text-lg transition-colors ${
-          variant === 'light' ? 'text-gray-900' : 'text-white'
-        }`}>
-          MultiMinutes
+      <div className="flex flex-col leading-tight">
+        <span className={cn(
+          "font-black tracking-tight transition-colors",
+          variant === 'light' ? 'text-gray-900' : 'text-white',
+          textSizes[size]
+        )}>
+          MultiMinutes<span className="text-primary-600">AI</span>
         </span>
-        <span className="text-[10px] font-mono font-bold text-primary-600 tracking-widest uppercase">
-          AI Platform
-        </span>
+        {showSubtext && (
+          <span className="text-[10px] font-bold text-primary-700 dark:text-primary-400 uppercase tracking-widest">
+            Ghi chép thông minh
+          </span>
+        )}
       </div>
     </Link>
   );

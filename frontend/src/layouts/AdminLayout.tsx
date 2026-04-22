@@ -19,7 +19,8 @@ import {
   TerminalSquare,
   History,
   Sparkles,
-  LogOut
+  LogOut,
+  BookOpen
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
@@ -42,6 +43,7 @@ const AdminLayout: React.FC = () => {
     { label: 'Tổ chức', path: '/admin/organizations', icon: <Building2 size={20} /> },
     { label: 'Người dùng', path: '/admin/users', icon: <Users size={20} /> },
     { label: 'Dịch vụ AI', path: '/admin/ai-services', icon: <Cpu size={20} /> },
+    { label: 'Từ điển AI', path: '/admin/glossaries', icon: <BookOpen size={20} /> },
     { label: 'AI Prompts', path: '/admin/prompts', icon: <TerminalSquare size={20} /> },
     { label: 'Thông báo', path: '/admin/notifications', icon: <Bell size={20} /> },
     { label: 'Nhật ký', path: '/admin/audit-logs', icon: <History size={20} /> },

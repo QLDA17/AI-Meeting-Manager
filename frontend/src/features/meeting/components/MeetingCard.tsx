@@ -15,7 +15,7 @@ import {
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { clsx } from 'clsx';
-import type { Meeting } from '../../../../types';
+import type { Meeting } from '../../../types';
 
 interface MeetingCardProps {
   meeting: Meeting;

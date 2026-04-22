@@ -30,9 +30,9 @@ export default {
         },
       },
       fontFamily: {
-        sans:    ["DM Sans", "system-ui", "sans-serif"],
-        display: ["Cormorant Garamond", "Georgia", "serif"],
-        mono:    ["DM Mono", "JetBrains Mono", "ui-monospace", "monospace"],
+        sans:    ["Inter", "system-ui", "sans-serif"],
+        display: ["Inter", "system-ui", "sans-serif"],
+        mono:    ["JetBrains Mono", "ui-monospace", "monospace"],
       },
       fontSize: {
         // Japanese corporate scale

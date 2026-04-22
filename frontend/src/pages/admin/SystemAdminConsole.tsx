@@ -17,8 +17,9 @@ import AdminNotifications from './components/AdminNotifications';
 import AdminPrompts from './components/AdminPrompts';
 import AdminAuditLogs from './components/AdminAuditLogs';
 import AdminSettings from './components/AdminSettings';
+import GlossariesAdmin from './GlossariesAdmin';
 
-type AdminTab = 'dashboard' | 'organizations' | 'users' | 'ai-services' | 'notifications' | 'prompts' | 'audit-logs' | 'settings';
+type AdminTab = 'dashboard' | 'organizations' | 'users' | 'ai-services' | 'notifications' | 'prompts' | 'glossaries' | 'audit-logs' | 'settings';
 
 const SystemAdminConsole: React.FC = () => {
   const location = useLocation();
@@ -63,6 +64,7 @@ const SystemAdminConsole: React.FC = () => {
     if (path.includes('/ai-services')) return 'ai-services';
     if (path.includes('/notifications')) return 'notifications';
     if (path.includes('/prompts')) return 'prompts';
+    if (path.includes('/glossaries')) return 'glossaries';
     if (path.includes('/audit-logs')) return 'audit-logs';
     if (path.includes('/settings')) return 'settings';
     return 'dashboard';
@@ -98,6 +100,7 @@ const SystemAdminConsole: React.FC = () => {
           {activeTab === 'ai-services' && <AdminAIServices />}
           {activeTab === 'notifications' && <AdminNotifications />}
           {activeTab === 'prompts' && <AdminPrompts />}
+          {activeTab === 'glossaries' && <GlossariesAdmin />}
           {activeTab === 'audit-logs' && <AdminAuditLogs />}
           {activeTab === 'settings' && <AdminSettings />}
       </div>

@@ -222,10 +222,14 @@ const CreateGroupModal: React.FC<CreateGroupModalProps> = ({ isOpen, onClose }) 
 
           {/* Group Name */}
           <div className="mb-5">
-            <label className="mb-2 block text-sm font-semibold text-gray-700 dark:text-slate-200">
+            <label 
+              htmlFor="group-name"
+              className="mb-2 block text-sm font-semibold text-gray-700 dark:text-slate-200"
+            >
               Group Name <span className="text-red-500">*</span>
             </label>
             <input
+              id="group-name"
               type="text"
               value={formData.name}
               onChange={(e) => setFormData({ ...formData, name: e.target.value })}
@@ -237,10 +241,14 @@ const CreateGroupModal: React.FC<CreateGroupModalProps> = ({ isOpen, onClose }) 
 
           {/* Description */}
           <div className="mb-5">
-            <label className="mb-2 block text-sm font-semibold text-gray-700 dark:text-slate-200">
+            <label 
+              htmlFor="group-description"
+              className="mb-2 block text-sm font-semibold text-gray-700 dark:text-slate-200"
+            >
               Description
             </label>
             <textarea
+              id="group-description"
               value={formData.description}
               onChange={(e) => setFormData({ ...formData, description: e.target.value })}
               placeholder="Optional - what's this group for?"

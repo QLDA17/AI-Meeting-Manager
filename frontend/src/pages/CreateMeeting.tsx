@@ -19,9 +19,9 @@ import {
   Link2,
   ChevronDown,
 } from "lucide-react";
-import { Card, Button, Input, Tooltip, showToast } from "../components/ui";
+import { Card, Button, Input, Tooltip, showToast, MultiSelect, Badge } from "../components/ui";
 import { useAuth } from "../context/AuthContext";
-import { useOrgStore } from "../stores";
+import { useOrgStore, useGlossaryStore } from "../stores";
 
 const generateMeetingCode = (): string => {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -47,11 +47,15 @@ const CreateMeeting: React.FC = () => {
   const [searchParams] = useSearchParams();
   const { user } = useAuth();
   const { groups } = useOrgStore();
-  
+  const { glossaries, loadGlossaries } = useGlossaryStore();
+
   const [step, setStep] = useState<"setup" | "invite">("setup");
   const [title, setTitle] = useState("");
   const [selectedGroupId, setSelectedGroupId] = useState<string>("");
+  const [selectedGlossaries, setSelectedGlossaries] = useState<string[]>([]);
+  const [language, setLanguage] = useState("vi");
   const [meetingCode] = useState(generateMeetingCode());
+
   const [copied, setCopied] = useState(false);
   const [inviteEmail, setInviteEmail] = useState("");
   const [participants, setParticipants] = useState<Participant[]>([
@@ -67,6 +71,7 @@ const CreateMeeting: React.FC = () => {
 
   // Set initial group from URL
   useEffect(() => {
+    loadGlossaries();
     const groupId = searchParams.get("groupId");
     if (groupId) {
       setSelectedGroupId(groupId);
@@ -234,6 +239,42 @@ const CreateMeeting: React.FC = () => {
                       <Button variant="secondary" onClick={copyCode} icon={copied ? <Check size={16} /> : <Copy size={16} />} />
                     </Tooltip>
                   </div>
+                </div>
+              </div>
+            </Card>
+
+            {/* AI & Knowledge Base Settings */}
+            <Card>
+              <div className="mb-4 flex items-center justify-between">
+                <h2 className="text-h3 text-gray-900 dark:text-slate-100">Cấu hình AI & Kho kiến thức</h2>
+                <Badge variant="primary" className="text-[10px]">Premium</Badge>
+              </div>
+              
+              <div className="space-y-4">
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                  <div className="space-y-1.5">
+                    <label className="text-sm font-medium text-gray-700 dark:text-slate-200">
+                      Ngôn ngữ chính
+                    </label>
+                    <div className="relative group">
+                      <select
+                        value={language}
+                        onChange={(e) => setLanguage(e.target.value)}
+                        className="w-full h-11 pl-4 pr-10 appearance-none rounded-xl border border-gray-200 bg-white text-gray-900 focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20 transition-all dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                      >
+                        <option value="vi">Tiếng Việt</option>
+                        <option value="en">Tiếng Anh</option>
+                      </select>
+                      <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" size={18} />
+                    </div>
+                  </div>
+                  <MultiSelect
+                    label="Kho kiến thức áp dụng"
+                    placeholder="Chọn từ điển chuyên ngành..."
+                    options={glossaries.map(g => ({ id: g.id, name: g.name }))}
+                    selectedIds={selectedGlossaries}
+                    onChange={setSelectedGlossaries}
+                  />
                 </div>
               </div>
             </Card>

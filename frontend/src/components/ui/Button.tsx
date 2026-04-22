@@ -29,6 +29,7 @@ interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: keyof typeof variantStyles;
   size?: keyof typeof sizeStyles;
   loading?: boolean;
+  isLoading?: boolean;
   icon?: React.ReactNode;
 }
 
@@ -36,19 +37,22 @@ const Button: React.FC<ButtonProps> = ({
   variant = "primary",
   size = "md",
   loading = false,
+  isLoading = false,
   icon,
   children,
   disabled,
   className,
   ...props
 }) => {
+  const isCurrentlyLoading = loading || isLoading;
+
   return (
     <button
       className={cn(baseStyles, variantStyles[variant], sizeStyles[size], className)}
-      disabled={disabled || loading}
+      disabled={disabled || isCurrentlyLoading}
       {...props}
     >
-      {loading ? <Loader2 size={16} className="animate-spin" /> : icon}
+      {isCurrentlyLoading ? <Loader2 size={16} className="animate-spin" /> : icon}
       {children}
     </button>
   );
