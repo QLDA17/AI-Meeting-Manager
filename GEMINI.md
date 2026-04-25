@@ -11,8 +11,12 @@
 | Ngữ cảnh | Skill phối hợp |
 | :--- | :--- |
 | **Backend (Python/FastAPI)** | `python-patterns` + `python-testing` + `security-review` |
-| **Frontend (React/TS)** | `frontend-patterns` + `tdd-workflow` + `e2e-testing` |
+| **Frontend (React/TS)** | `frontend-architect` + `tdd-workflow` + `action-layer-architect` |
+| **Mock Data / Schema** | `mock-data-architect` + `db-schema-alignment` |
 | **AI & Prompt (CrewAI)** | `ai-first-engineering` + `prompt-optimizer` |
+
+> Skills mới (Phase 0 — FE Schema Alignment): xem `.gemini/skills/{tdd-workflow,action-layer-architect,mock-data-architect,db-schema-alignment}/SKILL.md`.
+> Kế hoạch tổng thể: `PLANS/PLAN_FE_SCHEMA_ALIGNMENT.md`. CSDL canonical: `database/canonical_schema.sql`.
 
 ## 📊 Trạng thái Dự án & Nhiệm vụ Hiện tại
 - **Giai đoạn hiện tại**: Phase 2 Frontend (Organization & Group UI).
@@ -25,6 +29,8 @@
 
 ## 📂 Tài liệu tham khảo quan trọng
 - Kế hoạch tổng thể: `docs/FE_IMPLEMENTATION_PLAN_v2.md`
+- Kế hoạch FE Schema Alignment (đang chạy): `PLANS/PLAN_FE_SCHEMA_ALIGNMENT.md`
+- CSDL canonical: `database/canonical_schema.sql`
 - Quy chuẩn code: `external_tools/everything-claude-code/.gemini/GEMINI.md`
 
 ---
