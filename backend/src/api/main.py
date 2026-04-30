@@ -17,7 +17,7 @@ import secrets
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 # Import our hardened modules
-from src.api.database import engine, get_db, health_check as db_health_check, close_db_connections, Base
+from src.api.database import engine, get_db, health_check as db_health_check, close_db_connections, Base, SessionLocal
 from src.api.config import get_config, ConfigError
 from src.api.logging_middleware import setup_logging, RequestLoggingMiddleware
 from src.api.rate_limiting import RateLimitMiddleware
@@ -109,6 +109,9 @@ async def startup_event():
     start_time = time.time()
     
     try:
+        # Ensure new lightweight runtime tables exist even without full migrations.
+        models.AuditLog.__table__.create(bind=engine, checkfirst=True)
+
         # 1. Validate database connection
         db_status = db_health_check()
         if db_status["status"] != "healthy":
@@ -194,11 +197,20 @@ ADMIN_SYSTEM_SETTINGS: Dict[str, Any] = {
 ADMIN_BROADCAST_HISTORY: List[Dict[str, Any]] = []
 
 
+def ensure_audit_log_table() -> None:
+    try:
+        models.AuditLog.__table__.create(bind=engine, checkfirst=True)
+    except Exception:
+        # Keep runtime alive even when DDL permissions are restricted.
+        pass
+
+
 def append_admin_audit_log(actor: str, action: str, target: str, ip: str = "system", role: str = "System Admin") -> None:
     actor_name = actor or "unknown"
+    timestamp = datetime.utcnow()
     entry = {
         "id": str(uuid.uuid4()),
-        "time": datetime.utcnow().isoformat(),
+        "time": timestamp.isoformat(),
         "user": actor_name,
         "role": role,
         "action": action,
@@ -206,6 +218,38 @@ def append_admin_audit_log(actor: str, action: str, target: str, ip: str = "syst
         "org": "System",
         "ip": ip,
     }
+
+    # Persist to DB first, keep memory copy as fallback and hot-cache for UI.
+    db = None
+    try:
+        ensure_audit_log_table()
+        db = SessionLocal()
+        db.add(
+            models.AuditLog(
+                id=entry["id"],
+                time=timestamp,
+                user=actor_name,
+                role=role,
+                action=action,
+                target=target,
+                org="System",
+                ip=ip,
+            )
+        )
+        db.commit()
+    except Exception:
+        try:
+            if db:
+                db.rollback()
+        except Exception:
+            pass
+    finally:
+        try:
+            if db:
+                db.close()
+        except Exception:
+            pass
+
     ADMIN_AUDIT_LOGS.append(entry)
     if len(ADMIN_AUDIT_LOGS) > MAX_ADMIN_AUDIT_LOGS:
         del ADMIN_AUDIT_LOGS[:-MAX_ADMIN_AUDIT_LOGS]
@@ -1941,6 +1985,31 @@ def admin_delete_broadcast(notification_id: str, current_user = Depends(auth.get
 @app.get("/api/admin/audit-logs")
 def admin_get_audit_logs(current_user = Depends(auth.get_current_user)):
     require_system_admin_user(current_user)
+    ensure_audit_log_table()
+    db = SessionLocal()
+    try:
+        db_logs = (
+            db.query(models.AuditLog)
+            .order_by(models.AuditLog.time.desc())
+            .limit(MAX_ADMIN_AUDIT_LOGS)
+            .all()
+        )
+    finally:
+        db.close()
+    if db_logs:
+        return [
+            {
+                "id": log.id,
+                "time": log.time.isoformat() if log.time else datetime.utcnow().isoformat(),
+                "user": log.user,
+                "role": log.role,
+                "action": log.action,
+                "target": log.target,
+                "org": log.org,
+                "ip": log.ip,
+            }
+            for log in db_logs
+        ]
     return list(reversed(ADMIN_AUDIT_LOGS))
 
 

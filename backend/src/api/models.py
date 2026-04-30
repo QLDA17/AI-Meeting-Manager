@@ -475,3 +475,21 @@ class GlossaryTerm(Base):
     # Relationships
     organization = relationship("Organization", back_populates="glossary_terms")
     created_by_user = relationship("User", back_populates="glossary_terms")
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    time: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+    user: Mapped[str] = mapped_column(String(255), nullable=False)
+    role: Mapped[str] = mapped_column(String(50), nullable=False, default="System Admin")
+    action: Mapped[str] = mapped_column(String(120), nullable=False)
+    target: Mapped[str] = mapped_column(String(500), nullable=False)
+    org: Mapped[str] = mapped_column(String(255), nullable=False, default="System")
+    ip: Mapped[str] = mapped_column(String(64), nullable=False, default="system")
+
+    __table_args__ = (
+        Index('idx_audit_logs_time', 'time'),
+        Index('idx_audit_logs_action', 'action'),
+    )
