@@ -1,0 +1,599 @@
+from pydantic import BaseModel, EmailStr, Field, ConfigDict
+from typing import Optional, List, Dict, Any
+from datetime import datetime, date
+
+
+# ==================== Base Schemas ====================
+
+class BaseSchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+
+class TimestampMixin(BaseModel):
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+# ==================== User Schemas ====================
+
+class UserBase(BaseSchema):
+    username: str = Field(..., min_length=3, max_length=50)
+    email: str
+    role: str = Field(default="member", pattern="^(system-admin|org-admin|group-admin|member|viewer)$")
+    first_name: Optional[str] = Field(None, max_length=100)
+    last_name: Optional[str] = Field(None, max_length=100)
+    avatar_url: Optional[str] = Field(None, max_length=500)
+    language: str = Field(default="vi", max_length=10)
+    timezone: str = Field(default="Asia/Ho_Chi_Minh", max_length=100)
+    notification_preferences: Optional[Dict[str, Any]] = None
+    is_active: bool = True
+    is_verified: bool = False
+
+
+class UserCreate(UserBase):
+    password: str = Field(..., min_length=8)
+
+
+class UserUpdate(BaseSchema):
+    username: Optional[str] = Field(None, min_length=3, max_length=50)
+    email: Optional[EmailStr] = None
+    role: Optional[str] = Field(None, pattern="^(system-admin|org-admin|group-admin|member|viewer)$")
+    first_name: Optional[str] = Field(None, max_length=100)
+    last_name: Optional[str] = Field(None, max_length=100)
+    avatar_url: Optional[str] = Field(None, max_length=500)
+    language: Optional[str] = Field(None, max_length=10)
+    timezone: Optional[str] = Field(None, max_length=100)
+    notification_preferences: Optional[Dict[str, Any]] = None
+    is_active: Optional[bool] = None
+    is_verified: Optional[bool] = None
+    password: Optional[str] = Field(None, min_length=8)
+
+
+class User(UserBase, TimestampMixin):
+    id: str
+    last_login: Optional[datetime] = None
+
+
+class UserLogin(BaseSchema):
+    username: str
+    password: str
+
+
+class RegisterRequest(BaseSchema):
+    username: Optional[str] = None
+    email: EmailStr
+    password: str = Field(..., min_length=8)
+    firstName: Optional[str] = Field(None, max_length=100)
+    lastName: Optional[str] = Field(None, max_length=100)
+    inviteToken: Optional[str] = None
+    orgName: Optional[str] = Field(None, max_length=255)
+
+
+class ForgotPasswordRequest(BaseSchema):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseSchema):
+    email: EmailStr
+    otp: str = Field(..., min_length=6, max_length=6)
+    newPassword: str = Field(..., min_length=8)
+
+
+class ProfileUpdate(BaseSchema):
+    first_name: Optional[str] = Field(None, max_length=100)
+    last_name: Optional[str] = Field(None, max_length=100)
+    avatar_url: Optional[str] = Field(None, max_length=500)
+    language: Optional[str] = Field(None, max_length=10)
+    timezone: Optional[str] = Field(None, max_length=100)
+    notification_preferences: Optional[Dict[str, Any]] = None
+
+
+class ChangePasswordRequest(BaseSchema):
+    current_password: str
+    new_password: str = Field(..., min_length=8)
+
+
+# ==================== Organization Schemas ====================
+
+class OrganizationBase(BaseSchema):
+    name: str = Field(..., max_length=255)
+    description: Optional[str] = None
+    domain: Optional[str] = Field(None, max_length=255)
+    logo_url: Optional[str] = Field(None, max_length=500)
+    settings: Optional[Dict[str, Any]] = None
+
+
+class OrganizationCreate(OrganizationBase):
+    pass
+
+
+class OrganizationUpdate(BaseSchema):
+    name: Optional[str] = Field(None, max_length=255)
+    description: Optional[str] = None
+    domain: Optional[str] = Field(None, max_length=255)
+    logo_url: Optional[str] = Field(None, max_length=500)
+    settings: Optional[Dict[str, Any]] = None
+
+
+class Organization(OrganizationBase, TimestampMixin):
+    id: str
+    member_count: int = 0
+    group_count: int = 0
+    meeting_count: int = 0
+    total_hours: float = 0
+    approval_status: str = "active"
+    requested_by_user_id: Optional[str] = None
+    approved_by_user_id: Optional[str] = None
+    approved_at: Optional[datetime] = None
+
+
+# ==================== User Organization Schemas ====================
+
+class UserOrganizationBase(BaseSchema):
+    role: str = Field(default="member", pattern="^(org-admin|member|viewer)$")
+
+
+class UserOrganizationCreate(UserOrganizationBase):
+    user_id: str
+    organization_id: str
+
+
+class UserOrganization(UserOrganizationBase, TimestampMixin):
+    id: str
+    user_id: str
+    organization_id: str
+    joined_at: datetime
+
+
+# ==================== Group Schemas ====================
+
+class GroupBase(BaseSchema):
+    name: str = Field(..., max_length=255)
+    description: Optional[str] = None
+    privacy_level: str = Field(default="internal", pattern="^(private|internal|public)$")
+    settings: Optional[Dict[str, Any]] = None
+
+
+class GroupCreate(GroupBase):
+    organization_id: str
+
+
+class GroupUpdate(BaseSchema):
+    name: Optional[str] = Field(None, max_length=255)
+    description: Optional[str] = None
+    privacy_level: Optional[str] = Field(None, pattern="^(private|internal|public)$")
+    settings: Optional[Dict[str, Any]] = None
+
+
+class Group(GroupBase, TimestampMixin):
+    id: str
+    organization_id: str
+    created_by: Optional[str] = None
+    member_count: int = 0
+    meeting_count: int = 0
+    total_hours: float = 0
+
+
+class GroupMessageBase(BaseSchema):
+    text: str
+    reactions: Optional[List[Dict[str, Any]]] = None
+    is_pinned: bool = False
+
+
+class GroupMessageCreate(BaseSchema):
+    text: str
+
+
+class GroupMessage(GroupMessageBase, TimestampMixin):
+    id: str
+    group_id: str
+    user_id: str
+    user: Optional['User'] = None
+
+
+class GroupMembershipBase(BaseSchema):
+    role: str = Field(default="member", pattern="^(group-admin|member|viewer)$")
+
+
+class GroupMembershipCreate(GroupMembershipBase):
+    user_id: str
+
+
+class GroupMembershipUpdate(BaseSchema):
+    role: str = Field(..., pattern="^(group-admin|member|viewer)$")
+
+
+class GroupMembership(GroupMembershipBase, TimestampMixin):
+    id: str
+    group_id: str
+    user_id: str
+    invited_by: Optional[str] = None
+    joined_at: datetime
+
+
+class GroupMember(User):
+    groupMemberships: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class InvitationCreate(BaseSchema):
+    email: EmailStr
+    organization_id: str
+    group_id: Optional[str] = None
+    role: str = Field(default="member", pattern="^(org-admin|member|viewer)$")
+
+
+class InvitationCreateResponse(BaseSchema):
+    message: str
+    email: EmailStr
+    organization_id: str
+    expires_at: datetime
+
+
+class InvitationPreview(BaseSchema):
+    email: EmailStr
+    organization_id: str
+    organization_name: Optional[str] = None
+    role: str
+    status: str
+    expires_at: datetime
+
+
+class InvitationAccept(BaseSchema):
+    token: str
+
+
+class InvitationAcceptResponse(BaseSchema):
+    message: str
+    organization_id: str
+
+
+class Invitation(BaseSchema):
+    id: str
+    email: EmailStr
+    organization_id: str
+    group_id: Optional[str] = None
+    role: str
+    status: str
+    expires_at: datetime
+    invited_by: str
+    accepted_by: Optional[str] = None
+    accepted_at: Optional[datetime] = None
+    created_at: Optional[datetime] = None
+
+
+# ==================== Meeting Schemas ====================
+
+class MeetingBase(BaseSchema):
+    title: str = Field(..., max_length=500)
+    description: Optional[str] = None
+    scheduled_start: Optional[datetime] = None
+    scheduled_end: Optional[datetime] = None
+    actual_start: Optional[datetime] = None
+    actual_end: Optional[datetime] = None
+    duration: int = 0
+    location: Optional[str] = Field(None, max_length=255)
+    meeting_type: str = Field(default="MEETING", pattern="^(MEETING|INTERVIEW|TRAINING|REVIEW)$")
+    status: str = Field(default="upcoming", pattern="^(queued|processing|completed|failed|live|upcoming|canceled)$")
+    code: Optional[str] = None
+    recording_url: Optional[str] = None
+    transcript_url: Optional[str] = None
+    audio_url: Optional[str] = None
+    is_pinned: bool = False
+
+
+class MeetingCreate(MeetingBase):
+    organization_id: str
+    group_id: Optional[str] = None
+
+
+class MeetingUpdate(BaseSchema):
+    title: Optional[str] = Field(None, max_length=500)
+    description: Optional[str] = None
+    scheduled_start: Optional[datetime] = None
+    scheduled_end: Optional[datetime] = None
+    actual_start: Optional[datetime] = None
+    actual_end: Optional[datetime] = None
+    duration: Optional[int] = None
+    location: Optional[str] = Field(None, max_length=255)
+    meeting_type: Optional[str] = Field(None, pattern="^(MEETING|INTERVIEW|TRAINING|REVIEW)$")
+    status: Optional[str] = Field(None, pattern="^(queued|processing|completed|failed|live|upcoming|canceled)$")
+    code: Optional[str] = None
+    recording_url: Optional[str] = None
+    transcript_url: Optional[str] = None
+    audio_url: Optional[str] = None
+    group_id: Optional[str] = None
+    is_pinned: Optional[bool] = None
+
+
+class Meeting(MeetingBase, TimestampMixin):
+    id: str
+    organization_id: str
+    group_id: Optional[str] = None
+    created_by: str
+
+
+# ==================== Meeting Participant Schemas ====================
+
+class MeetingParticipantBase(BaseSchema):
+    user_id: Optional[str] = None
+    speaker_label: Optional[str] = Field(None, max_length=50)
+    email: Optional[EmailStr] = None
+    name: Optional[str] = Field(None, max_length=255)
+    role: str = Field(default="PARTICIPANT", max_length=50)
+    is_required: bool = False
+    attended: bool = False
+    joined_at: Optional[datetime] = None
+    left_at: Optional[datetime] = None
+
+
+class MeetingParticipantCreate(MeetingParticipantBase):
+    meeting_id: str
+
+
+class MeetingParticipantUpdate(BaseSchema):
+    speaker_label: Optional[str] = Field(None, max_length=50)
+    role: Optional[str] = Field(None, max_length=50)
+    is_required: Optional[bool] = None
+    attended: Optional[bool] = None
+    joined_at: Optional[datetime] = None
+    left_at: Optional[datetime] = None
+
+
+class MeetingParticipant(MeetingParticipantBase, TimestampMixin):
+    id: str
+    meeting_id: str
+
+
+# ==================== Audio File Schemas ====================
+
+class AudioFileBase(BaseSchema):
+    filename: str = Field(..., max_length=255)
+    original_filename: str = Field(..., max_length=255)
+    file_path: str = Field(..., max_length=500)
+    file_size: int
+    duration_seconds: Optional[int] = None
+    format: str = Field(..., max_length=20)
+    sample_rate: Optional[int] = None
+    channels: Optional[int] = None
+    upload_status: str = Field(default="UPLOADING", pattern="^(UPLOADING|UPLOADED|PROCESSING|PROCESSED|FAILED)$")
+
+
+class AudioFileCreate(AudioFileBase):
+    meeting_id: str
+
+
+class AudioFileUpdate(BaseSchema):
+    upload_status: Optional[str] = Field(None, pattern="^(UPLOADING|UPLOADED|PROCESSING|PROCESSED|FAILED)$")
+    duration_seconds: Optional[int] = None
+
+
+class AudioFile(AudioFileBase, TimestampMixin):
+    id: str
+    meeting_id: str
+
+
+# ==================== Transcript Schemas ====================
+
+class TranscriptBase(BaseSchema):
+    content: str
+    language: str = Field(default="vi", max_length=10)
+    word_count: int = 0
+    processing_status: str = Field(default="PENDING", pattern="^(PENDING|PROCESSING|COMPLETED|FAILED)$")
+    stt_provider: str = Field(default="whisper", max_length=50)
+    confidence_score: Optional[float] = None
+
+
+class TranscriptCreate(TranscriptBase):
+    meeting_id: str
+    audio_file_id: Optional[str] = None
+
+
+class TranscriptUpdate(BaseSchema):
+    content: Optional[str] = None
+    language: Optional[str] = Field(None, max_length=10)
+    word_count: Optional[int] = None
+    processing_status: Optional[str] = Field(None, pattern="^(PENDING|PROCESSING|COMPLETED|FAILED)$")
+    confidence_score: Optional[float] = None
+
+
+class Transcript(TranscriptBase, TimestampMixin):
+    id: str
+    meeting_id: str
+    audio_file_id: Optional[str] = None
+
+
+# ==================== Transcript Segment Schemas ====================
+
+class TranscriptSegmentBase(BaseSchema):
+    speaker_label: str = Field(..., max_length=50)
+    start_time: float
+    end_time: float
+    text: str
+    confidence_score: Optional[float] = None
+    word_count: int = 0
+
+
+class TranscriptSegmentCreate(TranscriptSegmentBase):
+    transcript_id: str
+
+
+class TranscriptSegment(TranscriptSegmentBase, TimestampMixin):
+    id: str
+    transcript_id: str
+
+
+# ==================== Meeting Summary Schemas ====================
+
+class MeetingSummaryBase(BaseSchema):
+    language: str = Field(default="vi", max_length=10)
+    key_points: Optional[List[Dict[str, Any]]] = None
+    decisions: Optional[List[Dict[str, Any]]] = None
+    action_items: Optional[List[Dict[str, Any]]] = None
+    meeting_summary: Optional[str] = None
+    ai_provider: str = Field(default="openai", max_length=50)
+    model_name: Optional[str] = Field(None, max_length=100)
+    processing_status: str = Field(default="PENDING", pattern="^(PENDING|PROCESSING|COMPLETED|FAILED)$")
+
+
+class MeetingSummaryCreate(MeetingSummaryBase):
+    meeting_id: str
+
+
+class MeetingSummaryUpdate(BaseSchema):
+    key_points: Optional[List[Dict[str, Any]]] = None
+    decisions: Optional[List[Dict[str, Any]]] = None
+    action_items: Optional[List[Dict[str, Any]]] = None
+    meeting_summary: Optional[str] = None
+    processing_status: Optional[str] = Field(None, pattern="^(PENDING|PROCESSING|COMPLETED|FAILED)$")
+
+
+class MeetingSummary(MeetingSummaryBase, TimestampMixin):
+    id: str
+    meeting_id: str
+
+
+# ==================== Action Item Schemas ====================
+
+class ActionItemBase(BaseSchema):
+    title: str = Field(..., max_length=500)
+    description: Optional[str] = None
+    assigned_to: Optional[str] = None
+    assigned_email: Optional[EmailStr] = None
+    status: str = Field(default="PENDING", pattern="^(PENDING|IN_PROGRESS|COMPLETED|CANCELLED)$")
+    priority: str = Field(default="MEDIUM", pattern="^(LOW|MEDIUM|HIGH|URGENT)$")
+    due_date: Optional[date] = None
+
+
+class ActionItemCreate(ActionItemBase):
+    meeting_id: Optional[str] = None
+    summary_id: Optional[str] = None
+
+
+class ActionItemUpdate(BaseSchema):
+    title: Optional[str] = Field(None, max_length=500)
+    description: Optional[str] = None
+    assigned_to: Optional[str] = None
+    assigned_email: Optional[EmailStr] = None
+    status: Optional[str] = Field(None, pattern="^(PENDING|IN_PROGRESS|COMPLETED|CANCELLED)$")
+    priority: Optional[str] = Field(None, pattern="^(LOW|MEDIUM|HIGH|URGENT)$")
+    due_date: Optional[date] = None
+
+
+class ActionItem(ActionItemBase, TimestampMixin):
+    id: str
+    meeting_id: Optional[str] = None
+    summary_id: Optional[str] = None
+    created_by: str
+    completed_at: Optional[datetime] = None
+
+
+# ==================== Export File Schemas ====================
+
+class ExportFileBase(BaseSchema):
+    filename: str = Field(..., max_length=255)
+    file_path: str = Field(..., max_length=500)
+    format: str = Field(..., pattern="^(PDF|DOCX|TXT)$")
+    file_size: Optional[int] = None
+    template_type: str = Field(default="STANDARD", max_length=50)
+    include_transcript: bool = True
+    include_summary: bool = True
+    include_action_items: bool = True
+
+
+class ExportFileCreate(ExportFileBase):
+    meeting_id: str
+    expires_at: Optional[datetime] = None
+
+
+class ExportFile(ExportFileBase, TimestampMixin):
+    id: str
+    meeting_id: str
+    generated_by: str
+    download_count: int = 0
+    expires_at: Optional[datetime] = None
+
+
+# ==================== Cost Tracking Schemas ====================
+
+class CostTrackingBase(BaseSchema):
+    service: str = Field(..., max_length=50)
+    api_endpoint: Optional[str] = Field(None, max_length=255)
+    model_name: Optional[str] = Field(None, max_length=100)
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cost_usd: float
+    currency: str = Field(default="USD", max_length=3)
+
+
+class CostTrackingCreate(CostTrackingBase):
+    meeting_id: Optional[str] = None
+
+
+class CostTracking(CostTrackingBase, TimestampMixin):
+    id: str
+    meeting_id: Optional[str] = None
+
+
+# ==================== Glossary Term Schemas ====================
+
+class GlossaryTermBase(BaseSchema):
+    term: str = Field(..., max_length=255)
+    translation_vi: Optional[str] = Field(None, max_length=255)
+    translation_en: Optional[str] = Field(None, max_length=255)
+    translation_ja: Optional[str] = Field(None, max_length=255)
+    translation_zh: Optional[str] = Field(None, max_length=255)
+    translation_ko: Optional[str] = Field(None, max_length=255)
+    category: Optional[str] = Field(None, max_length=100)
+    is_active: bool = True
+
+
+class GlossaryTermCreate(GlossaryTermBase):
+    organization_id: Optional[str] = None
+
+
+class GlossaryTermUpdate(BaseSchema):
+    term: Optional[str] = Field(None, max_length=255)
+    translation_vi: Optional[str] = Field(None, max_length=255)
+    translation_en: Optional[str] = Field(None, max_length=255)
+    translation_ja: Optional[str] = Field(None, max_length=255)
+    translation_zh: Optional[str] = Field(None, max_length=255)
+    translation_ko: Optional[str] = Field(None, max_length=255)
+    category: Optional[str] = Field(None, max_length=100)
+    is_active: Optional[bool] = None
+
+
+class GlossaryTerm(GlossaryTermBase, TimestampMixin):
+    id: str
+    organization_id: Optional[str] = None
+    created_by: str
+
+
+# ==================== Response Schemas ====================
+
+class MessageResponse(BaseSchema):
+    message: str
+
+
+class PaginatedResponse(BaseSchema):
+    items: List[Any]
+    total: int
+    skip: int
+    limit: int
+
+
+# ==================== Meeting Detail Response ====================
+
+class MeetingDetailResponse(Meeting):
+    organization: Optional[Organization] = None
+    group: Optional[Group] = None
+    created_by_user: Optional[User] = None
+    participants: List[MeetingParticipant] = Field(default_factory=list)
+    audio_files: List[AudioFile] = Field(default_factory=list)
+    transcripts: List[Transcript] = Field(default_factory=list)
+    summaries: List[MeetingSummary] = Field(default_factory=list)
+    action_items: List[ActionItem] = Field(default_factory=list)
+    transcript_content: Optional[str] = None
+    transcript_language: Optional[str] = None
+    meeting_summary_text: Optional[str] = None
+    key_points_text: List[str] = Field(default_factory=list)
+    decisions_text: List[str] = Field(default_factory=list)

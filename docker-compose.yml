@@ -4,7 +4,7 @@ services:
   # Backend API
   backend:
     build:
-      context: .
+      context: ./backend
       dockerfile: Dockerfile
     container_name: multiminutes-backend
     ports:
@@ -22,10 +22,10 @@ services:
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
       - HUGGINGFACE_API_KEY=${HUGGINGFACE_API_KEY}
     volumes:
-      - ./data:/app/data
-      - ./logs:/app/logs
-      - ./uploads:/app/uploads
-      - ./exports:/app/exports
+      - ./backend/data:/app/data
+      - ./backend/logs:/app/logs
+      - ./backend/uploads:/app/uploads
+      - ./backend/exports:/app/exports
     depends_on:
       - db
       - redis
@@ -50,7 +50,7 @@ services:
       - MYSQL_ROOT_PASSWORD=root_password
     volumes:
       - mysql-data:/var/lib/mysql
-      - ./database/mysql_schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+      - ./backend/database/mysql_schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
     ports:
       - "3307:3306"
     networks:

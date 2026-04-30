@@ -1,28 +1,23 @@
 /**
- * Thông báo - Thông báo page
+ * Trang Thông báo - kết nối với API thật
  */
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Bell,
   CheckCheck,
   AlertCircle,
-  Calendar,
   FileText,
   MessageSquare,
-
   UserPlus,
-  CheckCircle2,
   Clock,
   X,
-  Eye,
-  Download,
   Settings,
-  Trash2,
   FolderOpen,
-  Building2,
-  User,
+  Loader2,
 } from 'lucide-react';
+import { useAuth } from '../context/AuthContext';
 
 type NotificationType = 'meeting' | 'mention' | 'system' | 'user';
 type NotificationPriority = 'urgent' | 'today' | 'recent';
@@ -35,99 +30,60 @@ interface Notification {
   message: string;
   timestamp: Date;
   isRead: boolean;
-  actions?: Array<{ label: string; variant: 'primary' | 'secondary' }>;
+  actions?: Array<{ label: string; variant: 'primary' | 'secondary'; onClick?: () => void }>;
   metadata?: {
     group?: string;
     org?: string;
     dueDate?: string;
     assignedBy?: string;
+    meeting_id?: string;
+    meetingId?: string;
   };
 }
 
 const Notifications: React.FC = () => {
-  // Mock notifications
-  const [notifications, setNotifications] = useState<Notification[]>([
-    // URGENT
-    {
-      id: 'notif-001',
-      type: 'meeting',
-      priority: 'urgent',
-      title: 'Cuộc họp đang chờ xử lý',
-      message: '"Q1 Planning" đang được AI phân tích, sẽ hoàn thành trong vài phút.',
-      timestamp: new Date(Date.now() - 3600000 * 2),
-      isRead: false,
-      actions: [{ label: 'Xem chi tiết', variant: 'primary' }],
-      metadata: { group: 'Phòng Kinh Doanh', org: 'ABC Company' },
-    },
+  const navigate = useNavigate();
+  const { session } = useAuth();
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-    // TODAY
-    {
-      id: 'notif-003',
-      type: 'meeting',
-      priority: 'today',
-      title: 'Cuộc họp mới được tạo',
-      message: '"Sprint Review #26" đã được lên lịch bởi Hoàng Hữu D',
-      timestamp: new Date(Date.now() - 3600000 * 5),
-      isRead: false,
-      actions: [{ label: 'Xem cuộc họp', variant: 'primary' }],
-      metadata: { group: 'Phòng Kỹ Thuật', org: 'ABC Company' },
-    },
-    {
-      id: 'notif-004',
-      type: 'meeting',
-      priority: 'today',
-      title: 'Meeting Summary Ready',
-      message: '"Sprint Review #25" has been processed. AI summary is available for review.',
-      timestamp: new Date(Date.now() - 3600000 * 6),
-      isRead: false,
-      actions: [{ label: 'View Summary', variant: 'primary' }, { label: 'Export', variant: 'secondary' }],
-      metadata: { group: 'Phòng Kỹ Thuật', org: 'ABC Company' },
-    },
-    {
-      id: 'notif-005',
-      type: 'mention',
-      priority: 'today',
-      title: 'Mentioned in Group Chat',
-      message: 'Trần Thị B mentioned you: "@Nguyễn Văn A can you review the Q1 planning notes?"',
-      timestamp: new Date(Date.now() - 3600000 * 8),
-      isRead: false,
-      actions: [{ label: 'View Message', variant: 'primary' }],
-      metadata: { group: 'Phòng Kinh Doanh' },
-    },
+  useEffect(() => {
+    if (!session?.token) {
+      setLoading(false);
+      return;
+    }
+    const fetchNotifications = async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const res = await fetch('/api/notifications', {
+          headers: { Authorization: `Bearer ${session.token}` },
+        });
+        if (!res.ok) throw new Error(`Lỗi ${res.status}: Không thể tải thông báo`);
+        const data = await res.json();
+        const mapped: Notification[] = data.map((n: any) => ({
+          ...n,
+          timestamp: new Date(n.timestamp),
+          actions: n.type === 'meeting' ? [{
+            label: 'Xem cuộc họp',
+            variant: 'primary' as const,
+            onClick: () => {
+              const meetingId = n?.metadata?.meeting_id || n?.metadata?.meetingId;
+              if (meetingId) navigate(`/meetings/${meetingId}`);
+            },
+          }] : [],
+        }));
+        setNotifications(mapped);
+      } catch (err: any) {
+        setError(err.message || 'Lỗi không xác định');
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchNotifications();
+  }, [session?.token]);
 
-    // RECENT
-    {
-      id: 'notif-006',
-      type: 'meeting',
-      priority: 'recent',
-      title: 'Meeting Processed Successfully',
-      message: '"Weekly Sync" has been processed with 94% STT accuracy.',
-      timestamp: new Date(Date.now() - 3600000 * 24),
-      isRead: true,
-      actions: [{ label: 'View Meeting', variant: 'secondary' }],
-      metadata: { group: 'Phòng Kinh Doanh', org: 'ABC Company' },
-    },
-    {
-      id: 'notif-007',
-      type: 'user',
-      priority: 'recent',
-      title: 'New Member Joined',
-      message: 'Phạm Văn C has joined group "Phòng Kinh Doanh".',
-      timestamp: new Date(Date.now() - 3600000 * 26),
-      isRead: true,
-      actions: [{ label: 'View Profile', variant: 'secondary' }],
-      metadata: { group: 'Phòng Kinh Doanh' },
-    },
-    {
-      id: 'notif-008',
-      type: 'system',
-      priority: 'recent',
-      title: 'System Update',
-      message: 'New AI model deployed with improved STT accuracy. Average accuracy increased to 96%.',
-      timestamp: new Date(Date.now() - 3600000 * 48),
-      isRead: true,
-    },
-  ]);
 
   const [filterType, setFilterType] = useState<string>('all');
   const [showSettings, setShowSettings] = useState(false);
@@ -180,18 +136,28 @@ const Notifications: React.FC = () => {
     const diffHours = Math.floor(diffMs / 3600000);
     const diffDays = Math.floor(diffHours / 24);
 
-    if (diffHours < 1) return 'Just now';
-    if (diffHours < 24) return `${diffHours}h ago`;
-    if (diffDays === 1) return 'Yesterday';
-    return `${diffDays} days ago`;
+    if (diffHours < 1) return 'Vừa xong';
+    if (diffHours < 24) return `${diffHours} giờ trước`;
+    if (diffDays === 1) return 'Hôm qua';
+    return `${diffDays} ngày trước`;
   };
 
   const NotificationItem: React.FC<{ notification: Notification }> = ({ notification }) => (
+    (() => {
+      const normalizedTitle = (notification.title || '').toLowerCase();
+      const normalizedMessage = (notification.message || '').toLowerCase();
+      const isDeleteRequest =
+        normalizedTitle.includes('yeu cau xoa') || normalizedMessage.includes('yeu cau xoa');
+
+      return (
     <motion.div
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, x: -100 }}
       className={`group rounded-xl border p-4 transition hover:border-gray-300 dark:hover:border-slate-600 ${
+        isDeleteRequest
+          ? 'border-red-300 bg-red-500/10 dark:border-red-800/70 dark:bg-red-900/20'
+          :
         notification.isRead
           ? 'border-gray-200 bg-white dark:border-slate-700 dark:bg-slate-900'
           : 'border-primary-200 bg-primary-50/50 dark:border-primary-900/40 dark:bg-primary-900/10'
@@ -201,7 +167,11 @@ const Notifications: React.FC = () => {
       <div className="flex items-start gap-3">
         {/* Icon */}
         <div className="flex-shrink-0">
-          {getNotificationIcon(notification.type)}
+          {isDeleteRequest ? (
+            <AlertCircle size={18} className="text-red-600 dark:text-red-400" />
+          ) : (
+            getNotificationIcon(notification.type)
+          )}
         </div>
 
         {/* Content */}
@@ -209,6 +179,9 @@ const Notifications: React.FC = () => {
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0 flex-1">
               <p className={`text-sm font-semibold ${
+                isDeleteRequest
+                  ? 'text-red-700 dark:text-red-300'
+                  :
                 notification.isRead 
                   ? 'text-gray-900 dark:text-slate-100' 
                   : 'text-primary-700 dark:text-primary-300'
@@ -225,17 +198,11 @@ const Notifications: React.FC = () => {
                   {notification.metadata.group && (
                     <span className="flex items-center gap-1"><FolderOpen size={10} /> {notification.metadata.group}</span>
                   )}
-                  {notification.metadata.org && (
-                    <span className="flex items-center gap-1"><Building2 size={10} /> {notification.metadata.org}</span>
-                  )}
                   {notification.metadata.dueDate && (
                     <span className="flex items-center gap-1">
                       <Clock size={10} />
-                      Due: {notification.metadata.dueDate}
+                      Hạn: {notification.metadata.dueDate}
                     </span>
-                  )}
-                  {notification.metadata.assignedBy && (
-                    <span className="flex items-center gap-1"><User size={10} /> {notification.metadata.assignedBy}</span>
                   )}
                 </div>
               )}
@@ -264,9 +231,14 @@ const Notifications: React.FC = () => {
               {notification.actions.map((action, idx) => (
                 <button
                   key={idx}
-                  onClick={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    action.onClick?.();
+                  }}
                   className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
-                    action.variant === 'primary'
+                    isDeleteRequest
+                      ? 'bg-red-600 text-white hover:bg-red-700'
+                      : action.variant === 'primary'
                       ? 'bg-primary-600 text-white hover:bg-primary-700'
                       : 'border border-gray-200 text-gray-700 hover:bg-gray-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800'
                   }`}
@@ -279,6 +251,8 @@ const Notifications: React.FC = () => {
         </div>
       </div>
     </motion.div>
+      );
+    })()
   );
 
   const NotificationSection: React.FC<{
@@ -306,6 +280,19 @@ const Notifications: React.FC = () => {
     );
   };
 
+  if (loading) return (
+    <div className="flex items-center justify-center py-24">
+      <Loader2 size={32} className="animate-spin text-primary-500" />
+    </div>
+  );
+
+  if (error) return (
+    <div className="rounded-xl border border-red-200 bg-red-50 p-8 text-center dark:border-red-900/40 dark:bg-red-900/10">
+      <AlertCircle size={32} className="mx-auto mb-3 text-red-500" />
+      <p className="text-sm font-semibold text-red-700 dark:text-red-400">{error}</p>
+    </div>
+  );
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -315,8 +302,8 @@ const Notifications: React.FC = () => {
             Thông báo
           </h1>
           <p className="mt-1 text-gray-600 dark:text-slate-400">
-            {unreadCount > 0 
-              ? `You have ${unreadCount} unread notifications` 
+            {unreadCount > 0
+              ? `Bạn có ${unreadCount} thông báo chưa đọc`
               : 'Bạn đã xem hết thông báo!'}
           </p>
         </div>

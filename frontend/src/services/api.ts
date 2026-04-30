@@ -13,9 +13,22 @@ const api = axios.create({
 // Request interceptor to add the auth token to headers
 api.interceptors.request.use(
   (config) => {
-    const token = localStorage.getItem("token");
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
+    const normalizedBase = (config.baseURL || "").replace(/\/+$/, "");
+    const hasApiSuffix = /\/api$/i.test(normalizedBase);
+    if (hasApiSuffix && typeof config.url === "string" && config.url.startsWith("/api/")) {
+      config.url = config.url.replace(/^\/api/, "");
+    }
+
+    const sessionStr = localStorage.getItem("session");
+    if (sessionStr) {
+      try {
+        const session = JSON.parse(sessionStr);
+        if (session.token) {
+          config.headers.Authorization = `Bearer ${session.token}`;
+        }
+      } catch (e) {
+        console.error("Failed to parse session from localStorage", e);
+      }
     }
     return config;
   },

@@ -1,108 +1,27 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { useLocation } from 'react-router-dom';
-import {
-  Activity,
-  AlertTriangle
-} from 'lucide-react';
-import { useAdminStore } from '../../features/admin/stores/adminStore';
-import { useAppStore, useOrgStore } from '../../stores';
-import { mockOrganizations, mockUsers } from '../../data';
-
-// New Modular Components - Ensure DEFAULT imports match their files
-import AdminDashboard from '../../features/admin/components/AdminDashboard';
-import AdminOrganizations from './components/AdminOrganizations';
-import AdminUsers from './components/AdminUsers';
-import AdminAIServices from './components/AdminAIServices';
-import AdminNotifications from './components/AdminNotifications';
-import AdminPrompts from './components/AdminPrompts';
-import AdminAuditLogs from './components/AdminAuditLogs';
-import AdminSettings from './components/AdminSettings';
-import GlossariesAdmin from './GlossariesAdmin';
-
-type AdminTab = 'dashboard' | 'organizations' | 'users' | 'ai-services' | 'notifications' | 'prompts' | 'glossaries' | 'audit-logs' | 'settings';
+import React from 'react';
+import { AlertTriangle, ShieldCheck } from 'lucide-react';
 
 const SystemAdminConsole: React.FC = () => {
-  const location = useLocation();
-  const { setStats } = useAdminStore();
-  const { meetings } = useAppStore();
-  const { orgs } = useOrgStore();
-  const [hasCrash, setHasCrash] = useState(false);
-  
-  // Safe Stats Calculation
-  useEffect(() => {
-    try {
-      const safeMeetings = Array.isArray(meetings) ? meetings : [];
-      const safeOrgs = Array.isArray(orgs) ? orgs : [];
-      
-      const totalHours = safeMeetings.reduce((sum, m) => {
-        const duration = (m as any)?.duration || 0;
-        return sum + (typeof duration === 'number' ? duration : 0);
-      }, 0) / 60;
-
-      const processingNow = safeMeetings.filter(m => {
-        const status = (m as any)?.status;
-        return status === 'processing' || status === 'queued';
-      }).length;
-
-      setStats({
-        totalOrgs: safeOrgs.length || (mockOrganizations?.length || 0),
-        totalUsers: mockUsers?.length || 0,
-        totalMeetings: safeMeetings.length,
-        totalHours: totalHours,
-        processingNow: processingNow,
-      });
-    } catch (err) {
-      console.error("SystemAdminConsole: Stats Calculation Crash", err);
-      // setHasCrash(true); // Don't crash the whole UI for stats
-    }
-  }, [setStats, meetings, orgs]);
-
-  const activeTab = useMemo<AdminTab>(() => {
-    const path = location.pathname;
-    if (path.includes('/organizations')) return 'organizations';
-    if (path.includes('/users')) return 'users';
-    if (path.includes('/ai-services')) return 'ai-services';
-    if (path.includes('/notifications')) return 'notifications';
-    if (path.includes('/prompts')) return 'prompts';
-    if (path.includes('/glossaries')) return 'glossaries';
-    if (path.includes('/audit-logs')) return 'audit-logs';
-    if (path.includes('/settings')) return 'settings';
-    return 'dashboard';
-  }, [location.pathname]);
-
-  if (hasCrash) {
-    return (
-      <div className="p-12 text-center bg-white dark:bg-slate-900 rounded-[2rem] border-2 border-dashed border-red-200">
-         <AlertTriangle className="mx-auto text-red-500 mb-4" size={48} />
-         <h1 className="text-2xl font-black text-gray-900 dark:text-white mb-2">Hệ thống Console gặp sự cố</h1>
-         <p className="text-gray-500 mb-6">Một lỗi nghiêm trọng đã xảy ra khi xử lý dữ liệu quản trị.</p>
-         <button onClick={() => window.location.reload()} className="px-8 py-3 bg-indigo-600 text-white rounded-2xl font-bold shadow-lg shadow-indigo-500/20">
-           Thử tải lại trang
-         </button>
-      </div>
-    );
-  }
-
   return (
-    <div className="space-y-8">
-      {/* System Status Banner (Minimal) */}
-      <div className="flex items-center gap-2 mb-2">
-        <Activity size={14} className="text-green-500 animate-pulse" />
-        <span className="text-[10px] font-bold text-gray-400 dark:text-slate-500 uppercase tracking-widest">
-          Hệ thống đang ổn định • Real-time Monitoring
-        </span>
+    <div className="space-y-6">
+      <div className="rounded-3xl border border-amber-200 bg-amber-50 p-6 dark:border-amber-900/30 dark:bg-amber-900/10">
+        <div className="flex items-start gap-3">
+          <ShieldCheck className="mt-1 text-amber-600 dark:text-amber-400" size={22} />
+          <div>
+            <h1 className="text-2xl font-bold text-gray-900 dark:text-slate-100">System Admin Console</h1>
+            <p className="mt-2 text-sm text-gray-700 dark:text-slate-300">
+              Phần quản trị hệ thống tổng đang được chuyển sang phase 2. Core release hiện ưu tiên luồng người dùng chính: auth, organization, group, meeting, action items và notifications.
+            </p>
+          </div>
+        </div>
       </div>
 
-      <div className="min-h-[60vh]">
-          {activeTab === 'dashboard' && <AdminDashboard />}
-          {activeTab === 'organizations' && <AdminOrganizations />}
-          {activeTab === 'users' && <AdminUsers />}
-          {activeTab === 'ai-services' && <AdminAIServices />}
-          {activeTab === 'notifications' && <AdminNotifications />}
-          {activeTab === 'prompts' && <AdminPrompts />}
-          {activeTab === 'glossaries' && <GlossariesAdmin />}
-          {activeTab === 'audit-logs' && <AdminAuditLogs />}
-          {activeTab === 'settings' && <AdminSettings />}
+      <div className="rounded-3xl border border-dashed border-gray-300 bg-white p-10 text-center dark:border-slate-700 dark:bg-slate-900">
+        <AlertTriangle className="mx-auto mb-4 text-gray-400" size={40} />
+        <h2 className="text-xl font-bold text-gray-900 dark:text-slate-100">Chưa bật trong release core</h2>
+        <p className="mt-2 text-sm text-gray-500 dark:text-slate-400">
+          Các màn như quản trị người dùng toàn hệ thống, prompts, audit logs và AI services sẽ được nối backend thật ở đợt tiếp theo.
+        </p>
       </div>
     </div>
   );

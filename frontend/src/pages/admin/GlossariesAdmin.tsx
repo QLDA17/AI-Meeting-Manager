@@ -60,7 +60,7 @@ const GlossariesAdmin: React.FC = () => {
             <div>
               <p className="text-xs text-gray-500 uppercase font-bold">Tổng số thuật ngữ</p>
               <p className="text-2xl font-bold text-gray-900 dark:text-slate-100">
-                {glossaries.reduce((acc, curr) => acc + curr.termCount, 0).toLocaleString()}
+                {glossaries.length.toLocaleString()}
               </p>
             </div>
           </div>

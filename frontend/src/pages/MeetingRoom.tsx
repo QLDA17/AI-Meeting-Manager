@@ -61,39 +61,15 @@ type SidePanel = "chat" | "participants" | "ai-notes" | null;
 
 const WAVEFORM_HEIGHTS = [0, 1, 2, 3, 4, 5, 4, 3, 2, 1, 0].map(() => Math.random() * 40 + 10);
 
-const MOCK_PARTICIPANTS: Omit<Participant, "id">[] = Array.from({ length: 12 }, (_, i) => ({
-  name: `Thành viên ${i + 1}`,
-  role: i === 0 ? "presenter" : "attendee",
-  micOn: Math.random() > 0.3,
-  cameraOn: Math.random() > 0.5,
-  handRaised: false,
-  isSpeaking: false,
-}));
+const MOCK_PARTICIPANTS: Omit<Participant, "id">[] = [];
 
-const MOCK_TRANSCRIPTS = [
-  { speaker: "Bạn", text: "Chào mọi người, chúng ta bắt đầu buổi review nhé." },
-  { speaker: "Thành viên 1", text: "Tôi đã hoàn thành phần thiết kế UI cho trang chủ." },
-  { speaker: "Thành viên 2", text: "Phần backend API cũng đã sẵn sàng để tích hợp." },
-  { speaker: "Thành viên 1", text: "Cần lưu ý về độ trễ khi load ảnh từ storage server." },
-  { speaker: "Bạn", text: "Đúng rồi, chúng ta cần tối ưu lại CDN." },
-];
+const MOCK_TRANSCRIPTS: any[] = [];
 
 const MOCK_AI_NOTES = {
-  keyPoints: [
-    "Thiết kế UI trang chủ đã hoàn tất",
-    "Backend API sẵn sàng tích hợp",
-    "Phát hiện vấn đề độ trễ khi tải ảnh",
-    "Cần tối ưu hóa CDN cho Storage"
-  ],
-  decisions: [
-    "Tích hợp API vào UI trong tuần này",
-    "Chốt sử dụng Cloudflare làm CDN chính"
-  ],
-  actionItems: [
-    { id: 'a1', task: "Tối ưu hóa CDN", owner: "Thành viên 2", deadline: "Thứ 5", status: "pending" as const },
-    { id: 'a2', task: "Kiểm tra độ trễ Storage", owner: "Bạn", deadline: "Thứ 4", status: "pending" as const }
-  ],
-  summary: "Buổi họp tập trung vào việc review tiến độ UI/UX và Backend. Team quyết định tối ưu CDN để giải quyết vấn đề load ảnh.",
+  keyPoints: [],
+  decisions: [],
+  actionItems: [],
+  summary: "Đang lắng nghe và tóm tắt cuộc họp...",
 };
 
 // ─── Helper Components ───────────────────────────────────────────────────────
@@ -188,8 +164,7 @@ const MeetingRoom: React.FC = () => {
   const [mainView, setMainView] = useState<"camera" | "screen">("camera");
   
   const [participants] = useState<Participant[]>(() => [
-    { id: "me", name: "", role: "organizer", micOn: true, cameraOn: true, handRaised: false },
-    ...MOCK_PARTICIPANTS.map((p, i) => ({ ...p, id: `p-${i}` }))
+    { id: "me", name: user?.displayName || user?.email?.split('@')[0] || "Bạn", role: "organizer", micOn: true, cameraOn: true, handRaised: false },
   ]);
 
   const [spotlightId, setSpotlightId] = useState<string>("me");

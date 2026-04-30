@@ -18,7 +18,7 @@ import {
   Edit,
   Check,
 } from 'lucide-react';
-import { mockOrganizations } from '../../data';
+import { useOrgStore } from '../../stores';
 import type { Organization } from '../../types';
 
 type ProfileTab = 'profile' | 'organizations' | 'notifications' | 'security';
@@ -26,6 +26,7 @@ type ProfileTab = 'profile' | 'organizations' | 'notifications' | 'security';
 const Profile: React.FC = () => {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+  const { orgs, setCurrentOrg } = useOrgStore();
   const [activeTab, setActiveTab] = useState<ProfileTab>('profile');
   const [isEditing, setIsEditing] = useState(false);
 
@@ -40,11 +41,11 @@ const Profile: React.FC = () => {
     if (!user?.orgMemberships) return [];
     return user.orgMemberships
       .map((membership) => ({
-        org: mockOrganizations.find((o) => o.id === membership.orgId)!,
+        org: orgs.find((o) => o.id === membership.orgId),
         role: membership.role,
       }))
-      .filter((item) => item.org);
-  }, [user]);
+      .filter((item) => Boolean(item.org)) as Array<{ org: Organization; role: string }>;
+  }, [orgs, user]);
 
   const handleLogout = () => {
     logout();
@@ -217,7 +218,10 @@ const Profile: React.FC = () => {
                           </div>
                         </div>
                         <button
-                          onClick={() => navigate('/')}
+                          onClick={() => {
+                            setCurrentOrg(org.id);
+                            navigate('/dashboard');
+                          }}
                           className="rounded-lg bg-primary-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-primary-700"
                         >
                           Switch to Org

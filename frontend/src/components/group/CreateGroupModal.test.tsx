@@ -1,60 +1,110 @@
-import { render, screen, fireEvent } from '@testing-library/react';
-import { describe, it, expect, vi } from 'vitest';
-import CreateGroupModal from './CreateGroupModal';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { BrowserRouter } from 'react-router-dom';
+import CreateGroupModal from './CreateGroupModal';
 
-// Mock các store và context
-vi.mock('../../context/AuthContext', () => ({
-  useAuth: () => ({
-    user: { id: 'user-1', email: 'test@example.com', displayName: 'Test User', orgMemberships: [{ orgId: 'org-1' }] },
-  }),
+const useOrgStoreMock = vi.fn();
+const usePermissionMock = vi.fn();
+const postMock = vi.fn();
+
+vi.mock('../../services/api', () => ({
+  default: {
+    post: (...args: unknown[]) => postMock(...args),
+  },
 }));
 
 vi.mock('../../stores', () => ({
-  useOrgStore: () => ({
-    currentOrg: { id: 'org-1', name: 'ABC Company' },
-    loadGroups: vi.fn(),
-  }),
+  useOrgStore: () => useOrgStoreMock(),
 }));
 
-const renderModal = (isOpen: boolean = true, onClose = vi.fn()) => {
-  return render(
+vi.mock('../../hooks/usePermission', () => ({
+  usePermission: () => usePermissionMock(),
+}));
+
+const renderModal = (isOpen = true, onClose = vi.fn()) =>
+  render(
     <BrowserRouter>
       <CreateGroupModal isOpen={isOpen} onClose={onClose} />
     </BrowserRouter>
   );
-};
 
 describe('CreateGroupModal Component', () => {
-  it('nên hiển thị đúng tiêu đề và các trường nhập liệu', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useOrgStoreMock.mockReturnValue({
+      currentOrg: { id: 'org-1', name: 'ABC Company' },
+      members: [],
+      loadGroups: vi.fn(),
+    });
+    usePermissionMock.mockReturnValue({
+      hasPermission: vi.fn(() => true),
+      isOrgAdmin: true,
+      isSystemAdmin: false,
+    });
+  });
+
+  it('renders the main fields', () => {
     renderModal();
-    
+
     expect(screen.getByText(/Create New Group/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/Group Name/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/Description/i)).toBeInTheDocument();
     expect(screen.getByText(/Privacy Level/i)).toBeInTheDocument();
   });
 
-  it('nên gọi hàm onClose khi nhấn nút Cancel', () => {
+  it('calls onClose when cancel is clicked', () => {
     const onClose = vi.fn();
     renderModal(true, onClose);
-    
-    const cancelButton = screen.getByRole('button', { name: /Cancel/i });
-    fireEvent.click(cancelButton);
-    
+
+    fireEvent.click(screen.getByRole('button', { name: /Cancel/i }));
+
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it('nên cho phép nhập tên nhóm và mô tả', () => {
+  it('allows editing name and description', () => {
     renderModal();
-    
+
     const nameInput = screen.getByLabelText(/Group Name/i) as HTMLInputElement;
     const descInput = screen.getByLabelText(/Description/i) as HTMLTextAreaElement;
-    
-    fireEvent.change(nameInput, { target: { value: 'Dự án AI Mới' } });
-    fireEvent.change(descInput, { target: { value: 'Nhóm phát triển tính năng AI' } });
-    
-    expect(nameInput.value).toBe('Dự án AI Mới');
-    expect(descInput.value).toBe('Nhóm phát triển tính năng AI');
+
+    fireEvent.change(nameInput, { target: { value: 'New AI Project' } });
+    fireEvent.change(descInput, { target: { value: 'Team for AI features' } });
+
+    expect(nameInput.value).toBe('New AI Project');
+    expect(descInput.value).toBe('Team for AI features');
+  });
+
+  it('blocks submit when the user lacks permission', () => {
+    usePermissionMock.mockReturnValue({
+      hasPermission: vi.fn(() => false),
+      isOrgAdmin: false,
+      isSystemAdmin: false,
+    });
+
+    renderModal();
+
+    expect(screen.getByText(/Ban can quyen quan tri to chuc/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Create Group/i })).toBeDisabled();
+    expect(postMock).not.toHaveBeenCalled();
+  });
+
+  it('shows a friendly 403 error from backend', async () => {
+    postMock.mockRejectedValue({
+      response: {
+        status: 403,
+        data: { detail: 'Forbidden' },
+      },
+    });
+
+    renderModal();
+
+    fireEvent.change(screen.getByLabelText(/Group Name/i), {
+      target: { value: 'New Team' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Create Group/i }));
+
+    await waitFor(() => {
+      expect(screen.getAllByText(/Ban can quyen quan tri to chuc/i).length).toBeGreaterThan(0);
+    });
   });
 });

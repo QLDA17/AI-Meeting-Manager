@@ -43,13 +43,13 @@ const Modal: React.FC<ModalProps> = ({
             exit={{ opacity: 0, scale: 0.95, y: 10 }}
             transition={{ duration: 0.2, ease: "easeOut" }}
             className={cn(
-              "relative w-full rounded-3xl border border-gray-200 bg-white shadow-modal",
+              "relative w-full rounded-3xl border border-gray-200 bg-white shadow-modal flex flex-col max-h-[calc(100vh-2rem)]",
               "dark:border-slate-700 dark:bg-slate-900",
               sizeStyles[size]
             )}
           >
             {(title || subtitle) && (
-              <div className="flex items-center justify-between border-b border-gray-100 px-6 py-4 dark:border-slate-800">
+              <div className="flex shrink-0 items-center justify-between border-b border-gray-100 px-6 py-4 dark:border-slate-800">
                 <div>
                   {title && <h2 className="text-h3 text-gray-900 dark:text-slate-100">{title}</h2>}
                   {subtitle && <p className="text-caption text-gray-500">{subtitle}</p>}
@@ -63,7 +63,7 @@ const Modal: React.FC<ModalProps> = ({
                 </button>
               </div>
             )}
-            <div className="p-6">{children}</div>
+            <div className="p-6 overflow-y-auto flex-1 custom-scrollbar">{children}</div>
           </motion.div>
         </div>
       )}

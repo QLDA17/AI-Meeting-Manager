@@ -3,14 +3,17 @@
  * Single source of truth for all meeting data across the app
  */
 import { create } from 'zustand';
-import type { Meeting, Group } from '../types';
-import { mockMeetings, mockGroups } from '../data';
+import type { Meeting, Group, DashboardStats, FeatureFlags } from '../types';
+import api from '../services/api';
+import { normalizeDashboardStats, normalizeMeeting } from '../services/mappers';
 
 interface AppState {
   meetings: Meeting[];
   groups: Group[];
   unreadCount: number;
   isModalOpen: boolean;
+  stats: DashboardStats;
+  features: FeatureFlags;
 
   // Actions
   addMeeting: (meeting: Meeting) => void;
@@ -23,6 +26,8 @@ interface AppState {
   incrementUnread: () => void;
   resetUnread: () => void;
   setModalOpen: (open: boolean) => void;
+  fetchStats: () => Promise<DashboardStats>;
+  loadMeetings: (orgId: string) => Promise<void>;
 
   // Computed selectors
   getStats: () => {
@@ -36,10 +41,33 @@ interface AppState {
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
-  meetings: [...mockMeetings],
-  groups: [...mockGroups],
-  unreadCount: 5,
+  meetings: [],
+  groups: [],
+  unreadCount: 0,
   isModalOpen: false,
+  stats: { totalMeetings: 0, totalHours: 0, processingCount: 0, features: { uploadEnabled: false, jobTrackingEnabled: false, systemAdminEnabled: false } },
+  features: { uploadEnabled: false, jobTrackingEnabled: false, systemAdminEnabled: false },
+
+  fetchStats: async () => {
+    try {
+      const response = await api.get('/api/dashboard/stats');
+      const normalized = normalizeDashboardStats(response.data);
+      set({ stats: normalized, features: normalized.features });
+      return normalized;
+    } catch (err) {
+      console.error('Failed to fetch stats', err);
+      return get().stats;
+    }
+  },
+
+  loadMeetings: async (orgId: string) => {
+    try {
+      const response = await api.get(`/api/meetings?organization_id=${orgId}`);
+      set({ meetings: Array.isArray(response.data) ? response.data.map(normalizeMeeting) : [] });
+    } catch (err) {
+      console.error('Failed to load meetings', err);
+    }
+  },
 
   addMeeting: (meeting) => set((state) => ({ meetings: [meeting, ...state.meetings] })),
   updateMeeting: (id, data) => set((state) => ({

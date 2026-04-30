@@ -8,18 +8,23 @@ import {
   Clock,
   Plus,
 } from 'lucide-react';
-import { getGroupById } from '../data';
 import { useAppStore, useOrgStore } from '../stores';
 import { AnimatedCounter } from '../components/ui';
 import MeetingCard from '../components/meeting/MeetingCard';
 import MeetingFilters from '../components/meeting/MeetingFilters';
+import api from '../services/api';
+import { useAuth } from '../context/AuthContext';
+import { usePermission } from '../hooks/usePermission';
 
 type SortOption = 'newest' | 'oldest' | 'longest' | 'most-attendees';
 
 const MeetingList: React.FC = () => {
   const navigate = useNavigate();
+  const { user } = useAuth();
+  const { isSystemAdmin, isOrgAdmin, isGroupAdmin, isViewer } = usePermission();
   const { meetings } = useAppStore();
-  const { currentOrg } = useOrgStore();
+  const { currentOrg, groups } = useOrgStore();
+  const { loadMeetings } = useAppStore();
   const [searchTerm, setSearchTerm] = useState('');
   const [sortBy, setSortBy] = useState<SortOption>('newest');
   const [groupFilter, setGroupFilter] = useState<string>('all');
@@ -33,8 +38,10 @@ const MeetingList: React.FC = () => {
   // Get unique groups from meetings of current org
   const uniqueGroups = useMemo(() => {
     const groupIds = [...new Set(orgMeetings.map((m) => m.groupId))];
-    return groupIds.map((id) => getGroupById(id)).filter(Boolean);
-  }, [orgMeetings]);
+    return groupIds
+      .map((id) => groups.find((group) => group.id === id))
+      .filter(Boolean);
+  }, [groups, orgMeetings]);
 
   // Filter and sort meetings
   const filteredMeetings = useMemo(() => {
@@ -77,11 +84,50 @@ const MeetingList: React.FC = () => {
   // Stats
   const stats = useMemo(() => {
     const total = orgMeetings.length;
-    const completed = orgMeetings.length; // Mock all completed
+    const completed = orgMeetings.filter((meeting) => meeting.status === 'completed').length;
     const totalHours = orgMeetings.reduce((sum, m) => sum + m.duration, 0) / 60;
 
     return { total, completed, totalHours };
   }, [orgMeetings]);
+
+  const handleEditMeeting = async (meeting: any) => {
+    const nextTitle = window.prompt('Nhập tiêu đề mới cho cuộc họp', meeting.title);
+    if (!nextTitle || !nextTitle.trim()) return;
+    try {
+      await api.put(`/api/meetings/${meeting.id}`, { title: nextTitle.trim() });
+      if (currentOrg?.id) {
+        await loadMeetings(currentOrg.id);
+      }
+    } catch (err: any) {
+      window.alert(err?.response?.data?.detail || 'Không thể cập nhật cuộc họp');
+    }
+  };
+
+  const canDeleteMeeting = (meeting: any) =>
+    Boolean(
+      user &&
+        (isSystemAdmin ||
+          isOrgAdmin ||
+          isGroupAdmin ||
+          meeting.createdBy === user.id),
+    );
+
+  const handleDeleteMeeting = async (meeting: any) => {
+    if (!canDeleteMeeting(meeting)) {
+      window.alert('Bạn không có quyền xóa cuộc họp này.');
+      return;
+    }
+    const confirmed = window.confirm(`Xóa cuộc họp "${meeting.title}"?`);
+    if (!confirmed) return;
+    try {
+      await api.delete(`/api/meetings/${meeting.id}`);
+      if (currentOrg?.id) {
+        await loadMeetings(currentOrg.id);
+      }
+    } catch (err: any) {
+      window.alert(err?.response?.data?.detail || 'Không thể xóa cuộc họp');
+    }
+  };
 
   return (
     <div className="space-y-8">
@@ -197,7 +243,14 @@ const MeetingList: React.FC = () => {
             className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3"
           >
             {filteredMeetings.map((meeting, idx) => (
-              <MeetingCard key={meeting.id} meeting={meeting} index={idx} />
+              <MeetingCard
+                key={meeting.id}
+                meeting={meeting}
+                index={idx}
+                canManage={!isViewer}
+                onEdit={handleEditMeeting}
+                onDelete={handleDeleteMeeting}
+              />
             ))}
           </motion.div>
         )}

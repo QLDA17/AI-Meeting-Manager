@@ -1,85 +1,127 @@
 import React from 'react';
-import { Lock, Save, Database, ShieldAlert, Globe, Server } from 'lucide-react';
+import { Save } from 'lucide-react';
+import api from '../../../services/api';
+import { toast } from '../../../components/ui/Toast';
+
+type SystemSettings = {
+  require_2fa_admin: boolean;
+  public_registration_enabled: boolean;
+  storage_limit_gb_per_org: number;
+  transcript_retention_policy: string;
+  maintenance_mode: boolean;
+};
 
 const AdminSettings: React.FC = () => {
+  const [settings, setSettings] = React.useState<SystemSettings | null>(null);
+  const [loading, setLoading] = React.useState(true);
+  const [saving, setSaving] = React.useState(false);
+  const [error, setError] = React.useState('');
+
+  const load = React.useCallback(async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const response = await api.get('/api/admin/settings');
+      setSettings(response.data);
+    } catch (err: any) {
+      setError(err?.response?.data?.detail || 'Khong tai duoc system settings');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    load();
+  }, [load]);
+
+  const updateField = (key: keyof SystemSettings, value: string | number | boolean) => {
+    setSettings((current) => (current ? { ...current, [key]: value } : current));
+  };
+
+  const handleSave = async () => {
+    if (!settings) return;
+    setSaving(true);
+    try {
+      const response = await api.patch('/api/admin/settings', settings);
+      setSettings(response.data);
+      toast.success('Da cap nhat system settings');
+    } catch (err: any) {
+      toast.error(err?.response?.data?.detail || 'Khong cap nhat duoc settings');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) return <p className="text-sm text-gray-500">Dang tai cau hinh he thong...</p>;
+  if (!settings) return <p className="text-sm text-red-500">{error || 'Khong co du lieu settings'}</p>;
+
   return (
-    <div className="mx-auto max-w-4xl rounded-3xl border border-gray-200 bg-white p-10 dark:border-slate-800 dark:bg-slate-900">
-      <h3 className="mb-8 text-2xl font-black text-gray-900 dark:text-slate-100">Cấu hình Hệ thống (Global)</h3>
-      
-      <div className="space-y-10">
-        {/* Security Section */}
-        <section>
-          <div className="mb-6 flex items-center gap-3">
-             <div className="rounded-xl bg-red-50 p-2 text-red-600 dark:bg-red-900/20">
-                <Lock size={20} />
-             </div>
-             <h4 className="text-sm font-black uppercase tracking-widest text-gray-400">Bảo mật & Xác thực</h4>
-          </div>
-          <div className="space-y-6 pl-11">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm font-bold text-gray-900 dark:text-slate-100">Bắt buộc 2FA cho Admin</p>
-                <p className="text-xs text-gray-500">Yêu cầu xác thực 2 lớp cho tất cả tài khoản quản trị viên.</p>
-              </div>
-              <input type="checkbox" className="h-5 w-5 rounded-md text-red-600 focus:ring-red-500" defaultChecked />
-            </div>
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm font-bold text-gray-900 dark:text-slate-100">Đăng ký mới công khai</p>
-                <p className="text-xs text-gray-500">Cho phép người dùng mới tự đăng ký tài khoản từ trang login.</p>
-              </div>
-              <input type="checkbox" className="h-5 w-5 rounded-md text-red-600 focus:ring-red-500" defaultChecked />
-            </div>
-          </div>
-        </section>
+    <div className="mx-auto max-w-4xl rounded-3xl border border-gray-200 bg-white p-8 dark:border-slate-800 dark:bg-slate-900">
+      <h3 className="mb-6 text-2xl font-black text-gray-900 dark:text-slate-100">Cau hinh he thong</h3>
+      {error && <p className="mb-4 text-sm font-semibold text-red-500">{error}</p>}
 
-        {/* Database Section */}
-        <section>
-          <div className="mb-6 flex items-center gap-3">
-             <div className="rounded-xl bg-blue-50 p-2 text-blue-600 dark:bg-blue-900/20">
-                <Database size={20} />
-             </div>
-             <h4 className="text-sm font-black uppercase tracking-widest text-gray-400">Lưu trữ & Database</h4>
-          </div>
-          <div className="space-y-6 pl-11">
-             <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
-                <div>
-                   <label className="mb-2 block text-[10px] font-black uppercase text-gray-400">Dung lượng tối đa / Org</label>
-                   <div className="flex items-center gap-2">
-                      <input type="number" defaultValue={50} className="w-24 rounded-xl border border-gray-200 bg-gray-50 px-4 py-2 text-sm font-bold outline-none dark:border-slate-700 dark:bg-slate-800" />
-                      <span className="text-xs font-bold text-gray-500">GB</span>
-                   </div>
-                </div>
-                <div>
-                   <label className="mb-2 block text-[10px] font-black uppercase text-gray-400">Thời gian lưu bản ghi</label>
-                   <select className="w-full rounded-xl border border-gray-200 bg-gray-50 px-4 py-2 text-sm font-bold outline-none dark:border-slate-700 dark:bg-slate-800">
-                      <option>Vĩnh viễn</option>
-                      <option>1 năm</option>
-                      <option>6 tháng</option>
-                   </select>
-                </div>
-             </div>
-          </div>
-        </section>
+      <div className="space-y-6">
+        <label className="flex items-center justify-between gap-3 text-sm font-semibold text-gray-800 dark:text-slate-200">
+          Bat buoc 2FA cho admin
+          <input
+            type="checkbox"
+            checked={settings.require_2fa_admin}
+            onChange={(e) => updateField('require_2fa_admin', e.target.checked)}
+          />
+        </label>
 
-        {/* Maintenance Section */}
-        <section className="rounded-2xl border-2 border-dashed border-red-200 bg-red-50/30 p-6 dark:border-red-900/30 dark:bg-red-900/10">
-           <div className="flex items-start gap-4">
-              <ShieldAlert className="mt-1 text-red-600" />
-              <div className="flex-1">
-                 <p className="text-sm font-black text-red-700 dark:text-red-400">Chế độ Bảo trì (Maintenance Mode)</p>
-                 <p className="mt-1 text-xs text-red-600/70">Khi kích hoạt, toàn bộ hệ thống sẽ ngừng phục vụ người dùng ngoại trừ Admin.</p>
-                 <button className="mt-4 rounded-xl bg-red-600 px-6 py-2 text-xs font-black text-white shadow-lg shadow-red-500/20 transition hover:bg-red-700">Kích hoạt ngay</button>
-              </div>
-           </div>
-        </section>
+        <label className="flex items-center justify-between gap-3 text-sm font-semibold text-gray-800 dark:text-slate-200">
+          Cho phep dang ky cong khai
+          <input
+            type="checkbox"
+            checked={settings.public_registration_enabled}
+            onChange={(e) => updateField('public_registration_enabled', e.target.checked)}
+          />
+        </label>
 
-        <div className="flex justify-end pt-6">
-          <button className="flex items-center gap-2 rounded-2xl bg-gray-900 px-10 py-4 font-black text-white shadow-xl shadow-gray-900/20 transition hover:bg-black dark:bg-slate-100 dark:text-slate-900">
-            <Save size={20} />
-            Lưu tất cả thay đổi
-          </button>
-        </div>
+        <label className="block text-sm font-semibold text-gray-800 dark:text-slate-200">
+          Dung luong toi da moi to chuc (GB)
+          <input
+            type="number"
+            value={settings.storage_limit_gb_per_org}
+            onChange={(e) => updateField('storage_limit_gb_per_org', Number(e.target.value))}
+            className="mt-1 w-full rounded-xl border border-gray-200 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-800"
+          />
+        </label>
+
+        <label className="block text-sm font-semibold text-gray-800 dark:text-slate-200">
+          Chinh sach luu transcript
+          <select
+            value={settings.transcript_retention_policy}
+            onChange={(e) => updateField('transcript_retention_policy', e.target.value)}
+            className="mt-1 w-full rounded-xl border border-gray-200 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-800"
+          >
+            <option value="forever">Vinh vien</option>
+            <option value="1-year">1 nam</option>
+            <option value="6-months">6 thang</option>
+          </select>
+        </label>
+
+        <label className="flex items-center justify-between gap-3 text-sm font-semibold text-red-700 dark:text-red-400">
+          Maintenance mode
+          <input
+            type="checkbox"
+            checked={settings.maintenance_mode}
+            onChange={(e) => updateField('maintenance_mode', e.target.checked)}
+          />
+        </label>
+      </div>
+
+      <div className="mt-8 flex justify-end">
+        <button
+          type="button"
+          onClick={handleSave}
+          disabled={saving}
+          className="inline-flex items-center gap-2 rounded-xl bg-gray-900 px-5 py-2.5 text-sm font-black text-white hover:bg-black disabled:opacity-60 dark:bg-slate-100 dark:text-slate-900"
+        >
+          <Save size={16} />
+          {saving ? 'Dang luu...' : 'Luu tat ca'}
+        </button>
       </div>
     </div>
   );

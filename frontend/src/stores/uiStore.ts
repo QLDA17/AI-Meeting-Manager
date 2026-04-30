@@ -37,7 +37,7 @@ export const useUIStore = create<UIState>()(
   persist(
     (set) => ({
       // Theme & Layout
-      isDarkMode: localStorage.getItem('theme') === 'dark',
+      isDarkMode: false,
       sidebarOpen: true,
       mobileSidebarOpen: false,
 
@@ -47,20 +47,9 @@ export const useUIStore = create<UIState>()(
       isSettingsOpen: false,
 
       // Theme Actions
-      setDarkMode: (value) => {
-        set({ isDarkMode: value });
-        localStorage.setItem('theme', value ? 'dark' : 'light');
-        document.documentElement.classList.toggle('dark', value);
-      },
+      setDarkMode: (value) => set({ isDarkMode: value }),
 
-      toggleDarkMode: () => {
-        set((state) => {
-          const newValue = !state.isDarkMode;
-          localStorage.setItem('theme', newValue ? 'dark' : 'light');
-          document.documentElement.classList.toggle('dark', newValue);
-          return { isDarkMode: newValue };
-        });
-      },
+      toggleDarkMode: () => set((state) => ({ isDarkMode: !state.isDarkMode })),
 
       // Sidebar Actions
       setSidebarOpen: (value) => set({ sidebarOpen: value }),

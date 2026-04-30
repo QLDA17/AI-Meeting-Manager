@@ -12,14 +12,15 @@ import {
   Zap
 } from 'lucide-react';
 import { Modal, Button, Input, MultiSelect, Badge } from '../ui';
-import { useCalendarStore, useGlossaryStore, useOrgStore } from '../../stores';
+import { useCalendarStore, useGlossaryStore, useOrgStore, useAppStore } from '../../stores';
+import api from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
 import { toast } from '../ui/Toast';
 
 const ScheduleMeetingModal: React.FC = () => {
   const { isScheduleModalOpen, toggleScheduleModal, selectedDate } = useCalendarStore();
   const { glossaries, loadGlossaries } = useGlossaryStore();
-  const { currentOrgId, groups, loadGroups } = useOrgStore();
+  const { currentOrgId, groups, loadGroups, members, loadMembers } = useOrgStore();
   const { user } = useAuth();
 
   const [title, setTitle] = React.useState('');
@@ -39,10 +40,13 @@ const ScheduleMeetingModal: React.FC = () => {
   React.useEffect(() => {
     if (isScheduleModalOpen) {
       loadGlossaries(currentOrgId || undefined);
-      if (currentOrgId) loadGroups(currentOrgId);
+      if (currentOrgId) {
+        loadGroups(currentOrgId);
+        loadMembers(currentOrgId);
+      }
       setDate(selectedDate.toISOString().split('T')[0]);
     }
-  }, [isScheduleModalOpen, currentOrgId, loadGlossaries, loadGroups, selectedDate]);
+  }, [isScheduleModalOpen, currentOrgId, loadGlossaries, loadGroups, loadMembers, selectedDate]);
 
   React.useEffect(() => {
     if (groups.length > 0 && !selectedGroupId) {
@@ -50,25 +54,50 @@ const ScheduleMeetingModal: React.FC = () => {
     }
   }, [groups, selectedGroupId]);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const { loadMeetings } = useAppStore();
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!title) {
       toast.error('Vui lòng nhập tiêu đề cuộc họp');
       return;
     }
-    if (!selectedGroupId) {
-      toast.error('Vui lòng chọn nhóm cho cuộc họp');
+    if (!selectedGroupId || !currentOrgId) {
+      toast.error('Vui lòng chọn nhóm và tổ chức cho cuộc họp');
       return;
     }
 
     setIsSubmitting(true);
-    // Simulate API call
-    setTimeout(() => {
+    try {
+      // Calculate start and end times
+      const start = new Date(`${date}T${time}`);
+      const end = new Date(start.getTime() + parseInt(duration) * 60 * 1000);
+
+      const meetingData = {
+        title,
+        organization_id: currentOrgId,
+        group_id: selectedGroupId,
+        scheduled_start: start.toISOString(),
+        scheduled_end: end.toISOString(),
+        status: 'upcoming',
+        description: `Cuộc họp lên lịch trong nhóm ${groups.find(g => g.id === selectedGroupId)?.name || selectedGroupId}`,
+      };
+
+      await api.post('/api/meetings', meetingData);
+      
       toast.success('📅 Đã lên lịch cuộc họp và lưu vào lịch biểu!');
-      setIsSubmitting(false);
+      
+      // Refresh meetings list to show on calendar
+      await loadMeetings(currentOrgId);
+      
       toggleScheduleModal(false);
       resetForm();
-    }, 1000);
+    } catch (err: any) {
+      console.error('Failed to schedule meeting:', err);
+      toast.error(err.response?.data?.detail || 'Lỗi khi lên lịch cuộc họp');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const resetForm = () => {
@@ -225,7 +254,7 @@ const ScheduleMeetingModal: React.FC = () => {
           </div>
           
           <div className="mt-4 flex items-start gap-2 rounded-lg bg-white/50 p-3 text-xs text-blue-700 dark:bg-slate-800/50 dark:text-blue-300">
-            <BookOpen size={14} className="mt-0.5 shrink-0" />
+            < BookOpen size={14} className="mt-0.5 shrink-0" />
             <p>
               Hệ thống sẽ sử dụng các thuật ngữ từ **{selectedGlossaries.length || "0"} thư viện kiến thức** đã chọn để cải thiện độ chính xác khi nhận diện giọng nói và viết biên bản.
             </p>
@@ -237,12 +266,10 @@ const ScheduleMeetingModal: React.FC = () => {
            <MultiSelect
             label="Mời thành viên tham gia"
             placeholder="Tìm kiếm theo tên hoặc email..."
-            options={[
-              { id: 'u1', name: 'Nguyễn Văn A (Quản lý)' },
-              { id: 'u2', name: 'Trần Thị B (Kỹ thuật)' },
-              { id: 'u3', name: 'Lê Văn C (Đối tác)' },
-              { id: 'u4', name: 'Phạm Thị D (Thư ký)' },
-            ]}
+            options={members.map(m => ({
+              id: m.id,
+              name: m.displayName || `${m.firstName} ${m.lastName}`
+            }))}
             selectedIds={selectedParticipants}
             onChange={setSelectedParticipants}
           />

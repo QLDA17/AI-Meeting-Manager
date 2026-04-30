@@ -11,63 +11,53 @@ import {
   ThumbsUp,
   MessageSquare,
   CheckCheck,
-  MoreHorizontal,
   Trash2,
   Reply,
   X,
-  ChevronDown,
 } from 'lucide-react';
-import { getGroupById, mockUsers } from '../../data';
-import { Button, Badge } from '../ui';
+import { useGroupStore } from '../../stores';
+import { useAuth } from '../../context/AuthContext';
+import { Button } from '../ui';
 import { toast } from '../ui/Toast';
+import api from '../../services/api';
+import type { GroupMessage, User } from '../../types';
+import { normalizeGroupMessage } from '../../services/mappers';
 
 interface GroupChatTabProps {
   groupId: string;
 }
 
-interface Message {
-  id: string;
-  userId: string;
-  text: string;
-  timestamp: Date;
-  reactions: { emoji: string; count: number }[];
-  isPinned?: boolean;
-  isEdited?: boolean;
-  replyToId?: string;
-}
-
 const GroupChatTab: React.FC<GroupChatTabProps> = ({ groupId }) => {
-  const group = getGroupById(groupId);
+  const { members } = useGroupStore();
+  const { user: currentUser } = useAuth();
   const [messageText, setMessageText] = useState('');
-  const [replyingTo, setReplyingTo] = useState<Message | null>(null);
+  const [replyingTo, setReplyingTo] = useState<GroupMessage | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: 'msg-001',
-      userId: 'user-002',
-      text: 'Mọi người đã xem bản tóm tắt cuộc họp Chiến lược Q2 chưa? Có một số điểm cần lưu ý về STT latency.',
-      timestamp: new Date(Date.now() - 3600000 * 24),
-      reactions: [{ emoji: '👀', count: 3 }],
-    },
-    {
-      id: 'msg-002',
-      userId: 'user-001',
-      text: 'Tôi đang review lại. Các Action Items đã được gán cho team kỹ thuật xử lý rồi nhé.',
-      timestamp: new Date(Date.now() - 3600000 * 20),
-      reactions: [{ emoji: '✅', count: 2 }],
-      isPinned: true,
-    },
-    {
-      id: 'msg-003',
-      userId: 'user-003',
-      text: 'Về phần giao diện Lịch, mình cần bổ sung thêm view theo tháng cho dashboard.',
-      timestamp: new Date(Date.now() - 1800000),
-      reactions: [{ emoji: '👍', count: 1 }],
-    },
-  ]);
+  const [messages, setMessages] = useState<GroupMessage[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
 
-  const currentUserId = 'user-001';
+  const currentUserId = currentUser?.id;
+  const chatReadKey = `group_chat_last_read_by_user_${currentUserId || 'anonymous'}`;
+
+  // Load messages from API
+  useEffect(() => {
+    const fetchMessages = async () => {
+      setIsLoading(true);
+      try {
+        const response = await api.get(`/api/groups/${groupId}/messages`);
+        setMessages(Array.isArray(response.data) ? response.data.map(normalizeGroupMessage) : []);
+      } catch (error) {
+        toast.error('Không thể tải tin nhắn');
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    if (groupId) {
+      fetchMessages();
+    }
+  }, [groupId]);
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -75,52 +65,85 @@ const GroupChatTab: React.FC<GroupChatTabProps> = ({ groupId }) => {
     }
   }, [messages]);
 
-  const handleSendMessage = () => {
+  useEffect(() => {
+    if (!groupId || !currentUserId) return;
+    const latest = messages[messages.length - 1];
+    const raw = localStorage.getItem(chatReadKey);
+    const readMap = raw ? JSON.parse(raw) : {};
+    readMap[groupId] = latest?.created_at || latest?.createdAt || new Date().toISOString();
+    localStorage.setItem(chatReadKey, JSON.stringify(readMap));
+  }, [chatReadKey, currentUserId, groupId, messages]);
+
+  const handleSendMessage = async () => {
     if (!messageText.trim()) return;
 
-    const newMessage: Message = {
-      id: `msg-${Date.now()}`,
-      userId: currentUserId,
-      text: messageText.trim(),
-      timestamp: new Date(),
-      reactions: [],
-      replyToId: replyingTo?.id,
-    };
-
-    setMessages((prev) => [...prev, newMessage]);
-    setMessageText('');
-    setReplyingTo(null);
+    try {
+      const response = await api.post(`/api/groups/${groupId}/messages`, {
+        text: messageText.trim(),
+      });
+      
+      const newMessage = normalizeGroupMessage(response.data);
+      setMessages((prev) => [...prev, newMessage]);
+      setMessageText('');
+      setReplyingTo(null);
+    } catch (error) {
+      toast.error('Không thể gửi tin nhắn');
+    }
   };
 
-  const handleLike = (messageId: string) => {
-    setMessages(prev => prev.map(msg => {
-      if (msg.id === messageId) {
-        const thumbsUp = msg.reactions.find(r => r.emoji === '👍');
-        if (thumbsUp) {
-          return { ...msg, reactions: msg.reactions.map(r => r.emoji === '👍' ? { ...r, count: r.count + 1 } : r) };
-        } else {
-          return { ...msg, reactions: [...msg.reactions, { emoji: '👍', count: 1 }] };
-        }
-      }
-      return msg;
-    }));
+  const handleLike = async (messageId: string) => {
+    const msg = messages.find(m => m.id === messageId);
+    if (!msg) return;
+
+    const reactions = msg.reactions || [];
+    const thumbsUpIndex = reactions.findIndex(r => r.emoji === '👍');
+    
+    let newReactions;
+    if (thumbsUpIndex > -1) {
+      newReactions = [...reactions];
+      newReactions[thumbsUpIndex] = { ...newReactions[thumbsUpIndex], count: newReactions[thumbsUpIndex].count + 1 };
+    } else {
+      newReactions = [...reactions, { emoji: '👍', count: 1 }];
+    }
+
+    try {
+      const response = await api.patch(`/api/groups/messages/${messageId}`, {
+        reactions: newReactions
+      });
+      setMessages(prev => prev.map(m => m.id === messageId ? normalizeGroupMessage(response.data) : m));
+    } catch (error) {
+      toast.error('Không thể cập nhật cảm xúc');
+    }
   };
 
-  const handlePin = (messageId: string) => {
-    setMessages(prev => prev.map(msg => {
-      if (msg.id === messageId) {
-        const newStatus = !msg.isPinned;
-        if (newStatus) toast.success('Đã ghim tin nhắn');
-        return { ...msg, isPinned: newStatus };
-      }
-      return msg;
-    }));
+  const handlePin = async (messageId: string) => {
+    const msg = messages.find(m => m.id === messageId);
+    if (!msg) return;
+
+    const newPinnedStatus = !msg.is_pinned;
+
+    try {
+      const response = await api.patch(`/api/groups/messages/${messageId}`, {
+        is_pinned: newPinnedStatus
+      });
+      
+      setMessages(prev => prev.map(m => m.id === messageId ? normalizeGroupMessage(response.data) : m));
+      if (newPinnedStatus) toast.success('Đã ghim tin nhắn');
+      else toast.success('Đã bỏ ghim tin nhắn');
+    } catch (error) {
+      toast.error('Không thể thực hiện thao tác ghim');
+    }
   };
 
-  const handleDelete = (messageId: string) => {
+  const handleDelete = async (messageId: string) => {
     if (window.confirm('Bạn có chắc muốn xóa tin nhắn này?')) {
-      setMessages(prev => prev.filter(msg => msg.id !== messageId));
-      toast.error('Đã xóa tin nhắn');
+      try {
+        await api.delete(`/api/groups/messages/${messageId}`);
+        setMessages(prev => prev.filter(msg => msg.id !== messageId));
+        toast.success('Đã xóa tin nhắn');
+      } catch (error) {
+        toast.error('Không thể xóa tin nhắn');
+      }
     }
   };
 
@@ -134,15 +157,17 @@ const GroupChatTab: React.FC<GroupChatTabProps> = ({ groupId }) => {
     }
   };
 
-  const getUserById = (userId: string) => {
-    return mockUsers.find((u) => u.id === userId);
+  const getUserById = (userId: string): Partial<User> => {
+    return members.find((u) => u.id === userId) || { id: userId, displayName: 'Thành viên', email: '' };
   };
 
-  const formatTime = (date: Date) => {
+  const formatTime = (dateStr: string) => {
+    const date = new Date(dateStr);
     return date.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' });
   };
 
-  const formatDateLabel = (date: Date) => {
+  const formatDateLabel = (dateStr: string) => {
+    const date = new Date(dateStr);
     const today = new Date();
     const yesterday = new Date(today);
     yesterday.setDate(yesterday.getDate() - 1);
@@ -153,13 +178,21 @@ const GroupChatTab: React.FC<GroupChatTabProps> = ({ groupId }) => {
   };
 
   const groupedMessages = messages.reduce((acc, msg) => {
-    const dateLabel = formatDateLabel(msg.timestamp);
+    const dateLabel = formatDateLabel(msg.created_at || new Date().toISOString());
     if (!acc[dateLabel]) acc[dateLabel] = [];
     acc[dateLabel].push(msg);
     return acc;
-  }, {} as Record<string, Message[]>);
+  }, {} as Record<string, GroupMessage[]>);
 
-  const pinnedMessages = messages.filter((m) => m.isPinned);
+  const pinnedMessages = messages.filter((m) => m.is_pinned);
+
+  if (isLoading) {
+    return (
+      <div className="flex h-[400px] items-center justify-center">
+        <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary-500 border-t-transparent" />
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col h-[650px]">
@@ -197,133 +230,130 @@ const GroupChatTab: React.FC<GroupChatTabProps> = ({ groupId }) => {
         ref={scrollRef}
         className="flex-1 overflow-y-auto space-y-8 pr-4 custom-scrollbar scroll-smooth"
       >
-        {Object.entries(groupedMessages).map(([dateLabel, msgs]) => (
-          <div key={dateLabel} className="space-y-6">
-            {/* Date Divider */}
-            <div className="flex items-center gap-4">
-              <div className="h-px flex-1 bg-gradient-to-r from-transparent to-gray-200 dark:to-slate-800" />
-              <span className="text-[10px] font-black uppercase tracking-widest text-gray-400">
-                {dateLabel}
-              </span>
-              <div className="h-px flex-1 bg-gradient-to-l from-transparent to-gray-200 dark:to-slate-800" />
+        {messages.length === 0 ? (
+          <div className="flex h-full flex-col items-center justify-center text-center">
+            <div className="mb-4 rounded-full bg-gray-50 p-6 dark:bg-slate-800">
+              <MessageSquare size={48} className="text-gray-300" />
             </div>
-
-            {msgs.map((msg) => {
-              const user = getUserById(msg.userId);
-              const isCurrentUser = msg.userId === currentUserId;
-              const replyMsg = msg.replyToId ? messages.find(m => m.id === msg.replyToId) : null;
-              const replyUser = replyMsg ? getUserById(replyMsg.userId) : null;
-
-              return (
-                <motion.div
-                  key={msg.id}
-                  initial={{ opacity: 0, y: 10, scale: 0.95 }}
-                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                  className={`flex items-start gap-3 ${isCurrentUser ? 'flex-row-reverse' : ''}`}
-                >
-                  {/* Avatar */}
-                  <div className="shrink-0 mt-1">
-                    <div className={`flex h-9 w-9 items-center justify-center rounded-2xl text-xs font-black shadow-sm ${
-                      isCurrentUser ? 'bg-primary-600 text-white' : 'bg-white dark:bg-slate-800 text-primary-600'
-                    }`}>
-                      {(user?.displayName?.[0] || 'U').toUpperCase()}
-                    </div>
-                  </div>
-
-                  {/* Bubble Container */}
-                  <div className={`group flex flex-col max-w-[75%] ${isCurrentUser ? 'items-end' : 'items-start'}`}>
-                    {!isCurrentUser && (
-                      <span className="mb-1 ml-1 text-xs font-bold text-gray-500 dark:text-slate-400">
-                        {user?.displayName || 'Thành viên'}
-                      </span>
-                    )}
-
-                    {/* Reply Context */}
-                    {replyMsg && (
-                       <div className={`mb-1 flex max-w-full items-center gap-2 rounded-xl bg-gray-50 px-3 py-1.5 dark:bg-slate-800/50 border-l-4 border-primary-400 opacity-60 scale-95 origin-left ${isCurrentUser ? 'origin-right' : ''}`}>
-                          <Reply size={10} className="text-primary-500 shrink-0" />
-                          <div className="min-w-0">
-                            <p className="text-[10px] font-bold text-primary-600 truncate">{replyUser?.displayName || 'Thành viên'}</p>
-                            <p className="text-[10px] text-gray-500 truncate">{replyMsg.text}</p>
-                          </div>
-                       </div>
-                    )}
-
-                    <div className="relative">
-                      <div
-                        className={`rounded-3xl px-5 py-3 text-sm leading-relaxed shadow-sm transition-all ${
-                          isCurrentUser
-                            ? 'bg-primary-600 text-white rounded-tr-none'
-                            : 'bg-white text-gray-900 dark:bg-slate-800 dark:text-slate-100 rounded-tl-none border border-gray-100 dark:border-slate-700'
-                        }`}
-                      >
-                        {msg.text}
-                      </div>
-                      
-                      {/* Message Actions */}
-                      <div className={`absolute top-0 flex gap-1 transition-all opacity-0 group-hover:opacity-100 ${
-                        isCurrentUser ? 'right-full mr-2' : 'left-full ml-2'
-                      }`}>
-                         <button 
-                            onClick={() => handleLike(msg.id)}
-                            className="p-1.5 rounded-lg bg-white dark:bg-slate-800 text-gray-400 hover:text-primary-600 shadow-sm border border-gray-100 dark:border-slate-700"
-                          >
-                            <ThumbsUp size={14} />
-                          </button>
-                         <button 
-                            onClick={() => setReplyingTo(msg)}
-                            className="p-1.5 rounded-lg bg-white dark:bg-slate-800 text-gray-400 hover:text-blue-500 shadow-sm border border-gray-100 dark:border-slate-700"
-                          >
-                            <Reply size={14} />
-                          </button>
-                         <button 
-                            onClick={() => handlePin(msg.id)}
-                            className={clsx(
-                              "p-1.5 rounded-lg bg-white dark:bg-slate-800 shadow-sm border border-gray-100 dark:border-slate-700 transition-colors",
-                              msg.isPinned ? "text-amber-500" : "text-gray-400 hover:text-amber-500"
-                            )}
-                          >
-                            <Pin size={14} />
-                          </button>
-                         {isCurrentUser && (
-                            <button 
-                              onClick={() => handleDelete(msg.id)}
-                              className="p-1.5 rounded-lg bg-white dark:bg-slate-800 text-gray-400 hover:text-red-500 shadow-sm border border-gray-100 dark:border-slate-700"
-                            >
-                              <Trash2 size={14} />
-                            </button>
-                         )}
-                      </div>
-                    </div>
-
-                    {/* Metadata */}
-                    <div className={`mt-1.5 flex items-center gap-2 px-1 text-[10px] font-bold text-gray-400 uppercase tracking-tighter`}>
-                      {msg.isPinned && <Pin size={10} className="text-amber-500 fill-current" />}
-                      <span>{formatTime(msg.timestamp)}</span>
-                      {isCurrentUser && <CheckCheck size={12} className="text-primary-500" />}
-                    </div>
-
-                    {/* Reactions Bar */}
-                    {msg.reactions.length > 0 && (
-                      <div className="mt-1 flex gap-1">
-                        {msg.reactions.map((r, i) => (
-                          <button 
-                            key={i} 
-                            onClick={() => r.emoji === '👍' && handleLike(msg.id)}
-                            className="flex items-center gap-1 rounded-full border border-gray-100 bg-white px-2 py-0.5 text-[10px] dark:border-slate-700 dark:bg-slate-800 hover:bg-primary-50 transition-colors"
-                          >
-                            <span>{r.emoji}</span>
-                            <span className="font-bold">{r.count}</span>
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </motion.div>
-              );
-            })}
+            <h3 className="text-lg font-bold text-gray-900 dark:text-white">Chưa có thảo luận</h3>
+            <p className="max-w-xs text-sm text-gray-500">Hãy bắt đầu cuộc hội thoại đầu tiên trong nhóm này.</p>
           </div>
-        ))}
+        ) : (
+          Object.entries(groupedMessages).map(([dateLabel, msgs]) => (
+            <div key={dateLabel} className="space-y-6">
+              {/* Date Divider */}
+              <div className="flex items-center gap-4">
+                <div className="h-px flex-1 bg-gradient-to-r from-transparent to-gray-200 dark:to-slate-800" />
+                <span className="text-[10px] font-black uppercase tracking-widest text-gray-400">
+                  {dateLabel}
+                </span>
+                <div className="h-px flex-1 bg-gradient-to-l from-transparent to-gray-200 dark:to-slate-800" />
+              </div>
+
+              {msgs.map((msg) => {
+                const user = msg.user || getUserById(msg.user_id || '');
+                const isCurrentUser = msg.user_id === currentUserId;
+
+                return (
+                  <motion.div
+                    key={msg.id}
+                    initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    className={`flex items-start gap-3 ${isCurrentUser ? 'flex-row-reverse' : ''}`}
+                  >
+                    {/* Avatar */}
+                    <div className="shrink-0 mt-1">
+                      <div className={`flex h-9 w-9 items-center justify-center rounded-2xl text-xs font-black shadow-sm ${
+                        isCurrentUser ? 'bg-primary-600 text-white' : 'bg-white dark:bg-slate-800 text-primary-600'
+                      }`}>
+                        {(user?.displayName?.[0] || user?.username?.[0] || 'U').toUpperCase()}
+                      </div>
+                    </div>
+
+                    {/* Bubble Container */}
+                    <div className={`group flex flex-col max-w-[75%] ${isCurrentUser ? 'items-end' : 'items-start'}`}>
+                      {!isCurrentUser && (
+                        <span className="mb-1 ml-1 text-xs font-bold text-gray-500 dark:text-slate-400">
+                          {user?.displayName || user?.username || 'Thành viên'}
+                        </span>
+                      )}
+
+                      <div className="relative">
+                        <div
+                          className={`rounded-3xl px-5 py-3 text-sm leading-relaxed shadow-sm transition-all ${
+                            isCurrentUser
+                              ? 'bg-primary-600 text-white rounded-tr-none'
+                              : 'bg-white text-gray-900 dark:bg-slate-800 dark:text-slate-100 rounded-tl-none border border-gray-100 dark:border-slate-700'
+                          }`}
+                        >
+                          {msg.text}
+                        </div>
+                        
+                        {/* Message Actions */}
+                        <div className={`absolute top-0 flex gap-1 transition-all opacity-0 group-hover:opacity-100 ${
+                          isCurrentUser ? 'right-full mr-2' : 'left-full ml-2'
+                        }`}>
+                           <button 
+                              onClick={() => handleLike(msg.id)}
+                              className="p-1.5 rounded-lg bg-white dark:bg-slate-800 text-gray-400 hover:text-primary-600 shadow-sm border border-gray-100 dark:border-slate-700"
+                            >
+                              <ThumbsUp size={14} />
+                            </button>
+                           <button 
+                              onClick={() => setReplyingTo(msg)}
+                              className="p-1.5 rounded-lg bg-white dark:bg-slate-800 text-gray-400 hover:text-blue-500 shadow-sm border border-gray-100 dark:border-slate-700"
+                            >
+                              <Reply size={14} />
+                            </button>
+                           <button 
+                              onClick={() => handlePin(msg.id)}
+                              className={clsx(
+                                "p-1.5 rounded-lg bg-white dark:bg-slate-800 shadow-sm border border-gray-100 dark:border-slate-700 transition-colors",
+                                msg.is_pinned ? "text-amber-500" : "text-gray-400 hover:text-amber-500"
+                              )}
+                            >
+                              <Pin size={14} />
+                            </button>
+                           {isCurrentUser && (
+                              <button 
+                                onClick={() => handleDelete(msg.id)}
+                                className="p-1.5 rounded-lg bg-white dark:bg-slate-800 text-gray-400 hover:text-red-500 shadow-sm border border-gray-100 dark:border-slate-700"
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                           )}
+                        </div>
+                      </div>
+
+                      {/* Metadata */}
+                      <div className={`mt-1.5 flex items-center gap-2 px-1 text-[10px] font-bold text-gray-400 uppercase tracking-tighter`}>
+                        {msg.is_pinned && <Pin size={10} className="text-amber-500 fill-current" />}
+                        <span>{formatTime(msg.created_at || '')}</span>
+                        {isCurrentUser && <CheckCheck size={12} className="text-primary-500" />}
+                      </div>
+
+                      {/* Reactions Bar */}
+                      {msg.reactions && msg.reactions.length > 0 && (
+                        <div className="mt-1 flex gap-1">
+                          {msg.reactions.map((r, i) => (
+                            <button 
+                              key={i} 
+                              onClick={() => r.emoji === '👍' && handleLike(msg.id)}
+                              className="flex items-center gap-1 rounded-full border border-gray-100 bg-white px-2 py-0.5 text-[10px] dark:border-slate-700 dark:bg-slate-800 hover:bg-primary-50 transition-colors"
+                            >
+                              <span>{r.emoji}</span>
+                              <span className="font-bold">{r.count}</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </motion.div>
+                );
+              })}
+            </div>
+          ))
+        )}
       </div>
 
       {/* Input Area */}
@@ -340,7 +370,9 @@ const GroupChatTab: React.FC<GroupChatTabProps> = ({ groupId }) => {
               <div className="flex items-center gap-3 min-w-0">
                 <Reply size={16} className="text-primary-500" />
                 <div className="min-w-0">
-                  <p className="text-[10px] font-black uppercase text-primary-600">Đang trả lời {getUserById(replyingTo.userId)?.displayName}</p>
+                  <p className="text-[10px] font-black uppercase text-primary-600">
+                    Đang trả lời {getUserById(replyingTo.user_id || '').displayName || replyingTo.user?.username}
+                  </p>
                   <p className="text-xs text-gray-500 truncate">{replyingTo.text}</p>
                 </div>
               </div>

@@ -32,7 +32,7 @@ const OrgAdminConsole: React.FC = () => {
   const navigate = useNavigate();
   const { tab } = useParams<{ tab: string }>();
   const { user } = useAuth();
-  const { currentOrg, groups, members } = useOrgStore();
+  const { currentOrg, groups, members, loadOrgDetails } = useOrgStore();
   const { isOrgAdmin } = usePermission();
   const [activeTab, setActiveTab] = useState<AdminTab>('overview');
 
@@ -42,6 +42,12 @@ const OrgAdminConsole: React.FC = () => {
       setActiveTab(tab as AdminTab);
     }
   }, [tab]);
+
+  React.useEffect(() => {
+    if (currentOrg?.id) {
+      loadOrgDetails(currentOrg.id);
+    }
+  }, [currentOrg?.id, loadOrgDetails]);
 
   // Update URL when tab changes
   const handleTabChange = (newTab: AdminTab) => {
@@ -109,7 +115,7 @@ const OrgAdminConsole: React.FC = () => {
               Quản lý người dùng, nhóm và cài đặt tổ chức
             </p>
           </div>
-          <button className="inline-flex items-center gap-2 rounded-lg bg-primary-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-primary-700">
+          <button onClick={() => handleTabChange('users')} className="inline-flex items-center gap-2 rounded-lg bg-primary-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-primary-700">
             <UserPlus size={14} />
             Mời người dùng
           </button>

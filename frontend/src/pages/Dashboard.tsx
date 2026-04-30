@@ -31,22 +31,29 @@ const Dashboard: React.FC = () => {
   const navigate = useNavigate();
   const { currentOrg, loadGroups } = useOrgStore();
   const { isOrgAdmin } = usePermission();
-  const { meetings, getStats } = useAppStore();
+  const { meetings, fetchStats, loadMeetings } = useAppStore();
+  const [stats, setStats] = useState({ totalMeetings: 0, totalHours: 0, processingCount: 0 });
   const [loading, setLoading] = useState(true);
   const [weekOffset, setWeekOffset] = useState(0);
 
   useEffect(() => {
-    const timer = setTimeout(() => setLoading(false), 400);
-    return () => clearTimeout(timer);
-  }, []);
+    const initDashboard = async () => {
+      setLoading(true);
+      if (currentOrg?.id) {
+        await Promise.all([
+          loadGroups(currentOrg.id),
+          loadMeetings(currentOrg.id)
+        ]);
+        const realStats = await fetchStats();
+        setStats(realStats);
+      }
+      setLoading(false);
+    };
+    
+    initDashboard();
+  }, [currentOrg?.id, loadGroups, loadMeetings, fetchStats]);
 
-  useEffect(() => {
-    if (currentOrg?.id) {
-      loadGroups(currentOrg.id);
-    }
-  }, [currentOrg?.id, loadGroups]);
-
-  const appStats = useMemo(() => getStats(), [meetings, getStats]);
+  const appStats = stats;
 
   const processingCount = useMemo(
     () => meetings.filter((m) => (m as any).status === "processing" || (m as any).status === "queued").length,
@@ -56,14 +63,22 @@ const Dashboard: React.FC = () => {
   const recentMeetings = useMemo(() => {
     return [...meetings]
       .filter(m => m.status === 'completed')
-      .sort((a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime())
+      .sort((a, b) => {
+        const dateA = new Date(a.scheduled_start || a.startTime || 0);
+        const dateB = new Date(b.scheduled_start || b.startTime || 0);
+        return dateB.getTime() - dateA.getTime();
+      })
       .slice(0, 4);
   }, [meetings]);
 
   const upcomingMeetings = useMemo(() => {
     return meetings
       .filter((m) => m.status === "upcoming" || m.status === "live")
-      .sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime())
+      .sort((a, b) => {
+        const dateA = new Date(a.scheduled_start || a.startTime || 0);
+        const dateB = new Date(b.scheduled_start || b.startTime || 0);
+        return dateA.getTime() - dateB.getTime();
+      })
       .slice(0, 3);
   }, [meetings]);
 
@@ -76,12 +91,23 @@ const Dashboard: React.FC = () => {
     for (let i = startOffset; i <= endOffset; i++) {
       const d = new Date();
       d.setDate(today.getDate() + i);
+      const dateStr = d.toISOString().split('T')[0];
       days.push({
         date: d.getDate(),
         dayName: d.toLocaleDateString('vi-VN', { weekday: 'short' }),
-        fullDate: d.toISOString().split('T')[0],
+        fullDate: dateStr,
         isToday: i === 0,
-        hasMeeting: meetings.some(m => new Date(m.startTime).toISOString().split('T')[0] === d.toISOString().split('T')[0])
+        hasMeeting: meetings.some(m => {
+          const mDate = m.scheduled_start || m.startTime;
+          if (!mDate) return false;
+          try {
+            const dObj = new Date(mDate);
+            if (isNaN(dObj.getTime())) return false;
+            return dObj.toISOString().split('T')[0] === dateStr;
+          } catch (e) {
+            return false;
+          }
+        })
       });
     }
     return days;
@@ -98,6 +124,10 @@ const Dashboard: React.FC = () => {
         <Loader2 className="h-9 w-9 animate-spin text-primary-500" />
       </div>
     );
+  }
+
+  if (!currentOrg) {
+    return <NoOrgView />;
   }
 
   return (
@@ -272,15 +302,15 @@ const Dashboard: React.FC = () => {
                       "flex h-10 w-10 shrink-0 flex-col items-center justify-center rounded-xl font-bold",
                       m.status === 'live' ? "bg-red-50 text-red-600 dark:bg-red-900/20 dark:text-red-400 animate-pulse" : "bg-primary-50 text-primary-600 dark:bg-primary-900/20 dark:text-primary-400"
                     )}>
-                      <span className="text-sm leading-none">{new Date(m.startTime).getDate()}</span>
-                      <span className="text-[8px] uppercase">{new Date(m.startTime).toLocaleDateString('vi-VN', { month: 'short' })}</span>
+                      <span className="text-sm leading-none">{new Date(m.scheduled_start || m.startTime || 0).getDate()}</span>
+                      <span className="text-[8px] uppercase">{new Date(m.scheduled_start || m.startTime || 0).toLocaleDateString('vi-VN', { month: 'short' })}</span>
                     </div>
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm font-bold text-gray-900 dark:text-white group-hover:text-primary-600">{m.title}</p>
                       <div className="mt-1 flex items-center gap-3 text-xs text-gray-500 dark:text-slate-400">
                         <span className="flex items-center gap-1 font-medium">
                           <Clock3 size={12} />
-                          {new Date(m.startTime).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', hour12: false })}
+                          {new Date(m.scheduled_start || m.startTime || 0).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', hour12: false })}
                         </span>
                         {m.status === 'live' && (
                           <span className="flex items-center gap-1 font-black text-red-500">
@@ -350,5 +380,133 @@ const QuickActionButton: React.FC<{ icon: React.ReactNode, label: string, onClic
     <span>{label}</span>
   </button>
 );
+
+const NoOrgView: React.FC = () => {
+  const { refreshUser } = useAuth();
+  const { createOrg, acceptInvitation, setCurrentOrg, isLoading, error, clearError } = useOrgStore();
+  const [orgName, setOrgName] = useState("");
+  const [token, setToken] = useState("");
+  const [mode, setMode] = useState<"choice" | "create" | "join">("choice");
+
+  const handleCreate = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!orgName.trim()) return;
+    try {
+      await createOrg(orgName);
+      await refreshUser();
+    } catch (e) {}
+  };
+
+  const handleJoin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!token.trim()) return;
+    try {
+      const organizationId = await acceptInvitation(token);
+      await refreshUser();
+      setCurrentOrg(organizationId);
+    } catch (e) {}
+  };
+
+  return (
+    <div className="flex min-h-[70vh] items-center justify-center p-4">
+      <motion.div 
+        initial={{ opacity: 0, scale: 0.95 }}
+        animate={{ opacity: 1, scale: 1 }}
+        className="w-full max-w-md rounded-[2.5rem] border border-gray-100 bg-white p-10 shadow-xl dark:border-slate-800 dark:bg-slate-900"
+      >
+        <div className="mb-8 text-center">
+          <div className="mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-3xl bg-primary-50 text-primary-600 dark:bg-primary-900/20 dark:text-primary-400">
+            <Building2 size={40} />
+          </div>
+          <h2 className="text-3xl font-black text-gray-900 dark:text-white">Chào mừng!</h2>
+          <p className="mt-2 text-slate-500">Bạn chưa thuộc về tổ chức nào. Hãy bắt đầu ngay.</p>
+        </div>
+
+        {error && (
+          <div className="mb-6 rounded-xl bg-red-50 p-4 text-sm font-bold text-red-600 dark:bg-red-900/20 dark:text-red-400 flex items-center justify-between">
+            <span>{error}</span>
+            <button onClick={clearError} className="text-xs underline">Thoát</button>
+          </div>
+        )}
+
+        {mode === "choice" && (
+          <div className="space-y-4">
+            <button
+              onClick={() => setMode("create")}
+              className="group flex w-full items-center justify-between rounded-2xl border border-primary-100 bg-primary-50/30 p-5 text-left transition-all hover:bg-primary-50 dark:border-primary-900/20 dark:bg-primary-900/10 dark:hover:bg-primary-900/20"
+            >
+              <div>
+                <h3 className="font-bold text-primary-900 dark:text-primary-100">Tôi là Quản trị viên</h3>
+                <p className="text-xs text-primary-600 dark:text-primary-400">Tạo tổ chức mới cho công ty/nhóm của bạn.</p>
+              </div>
+              <Plus className="text-primary-500 group-hover:scale-110 transition-transform" />
+            </button>
+
+            <div className="rounded-2xl border border-gray-100 p-5 dark:border-slate-800">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h3 className="font-bold text-gray-900 dark:text-white">Tôi được mời tham gia</h3>
+                  <p className="mt-1 text-xs text-slate-500">
+                    Luồng chính là mở email mời từ quản trị viên và bấm vào liên kết tham gia tổ chức.
+                  </p>
+                </div>
+                <ArrowRight className="mt-0.5 text-gray-300" />
+              </div>
+              <button
+                onClick={() => setMode("join")}
+                className="mt-4 text-xs font-bold text-primary-600 transition hover:text-primary-700 dark:text-primary-300"
+              >
+                Tôi có token thủ công
+              </button>
+            </div>
+          </div>
+        )}
+
+        {mode === "create" && (
+          <form onSubmit={handleCreate} className="space-y-6">
+            <div className="space-y-2">
+              <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 ml-1">Tên tổ chức</label>
+              <input 
+                autoFocus
+                className="w-full h-14 rounded-2xl border-gray-100 bg-gray-50 px-5 text-lg font-bold focus:border-primary-500 focus:bg-white focus:ring-4 focus:ring-primary-500/10 dark:border-slate-800 dark:bg-slate-800/50 dark:text-white"
+                placeholder="Ví dụ: Công ty MultiMinutes AI"
+                value={orgName}
+                onChange={(e) => setOrgName(e.target.value)}
+                required
+              />
+            </div>
+            <div className="flex gap-3">
+              <Button type="button" variant="secondary" className="flex-1 rounded-xl" onClick={() => setMode("choice")}>Quay lại</Button>
+              <Button type="submit" className="flex-2 rounded-xl px-8" loading={isLoading}>Tạo ngay</Button>
+            </div>
+          </form>
+        )}
+
+        {mode === "join" && (
+          <form onSubmit={handleJoin} className="space-y-6">
+            <div className="rounded-2xl border border-amber-200 bg-amber-50/70 p-4 text-xs text-amber-800 dark:border-amber-900/30 dark:bg-amber-900/10 dark:text-amber-200">
+              Hãy ưu tiên dùng liên kết trong email mời. Chỉ nhập token nếu bạn đang dùng luồng dự phòng hoặc môi trường dev.
+            </div>
+            <div className="space-y-2">
+              <label className="ml-1 text-[10px] font-black uppercase tracking-widest text-slate-500">Mã mời dự phòng</label>
+              <input
+                autoFocus
+                className="h-14 w-full rounded-2xl border-gray-100 bg-gray-50 px-5 text-lg font-bold focus:border-primary-500 focus:bg-white focus:ring-4 focus:ring-primary-500/10 dark:border-slate-800 dark:bg-slate-800/50 dark:text-white"
+                placeholder="Dán token mời của bạn vào đây"
+                value={token}
+                onChange={(e) => setToken(e.target.value)}
+                required
+              />
+            </div>
+            <div className="flex gap-3">
+              <Button type="button" variant="secondary" className="flex-1 rounded-xl" onClick={() => setMode("choice")}>Quay lại</Button>
+              <Button type="submit" className="flex-2 rounded-xl px-8" loading={isLoading}>Tham gia</Button>
+            </div>
+          </form>
+        )}
+      </motion.div>
+    </div>
+  );
+};
 
 export default Dashboard;

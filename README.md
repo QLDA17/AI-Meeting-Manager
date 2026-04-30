@@ -181,20 +181,23 @@ MUTI_AI/
 ### **1️⃣ Backend Setup**
 
 ```bash
-# 1. Install Python dependencies
+# 1. Navigate to backend directory
+cd backend
+
+# 2. Install Python dependencies
 pip install -r requirements.txt
 
-# 2. Setup environment variables
+# 3. Setup environment variables
 cp .env.example .env
 # Edit .env and add your API keys:
 #   GOOGLE_API_KEY=xxx
 #   OPENAI_API_KEY=xxx
 #   DATABASE_URL=mysql+pymysql://user:pass@localhost/multiminutes
 
-# 3. Initialize database
+# 4. Initialize database
 python scripts/init_mysql.py
 
-# 4. Start backend server
+# 5. Start backend server
 python src/api/main.py
 ```
 

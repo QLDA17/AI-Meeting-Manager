@@ -1,8 +1,9 @@
 /**
  * GroupSettingsTab - Tab cài đặt nâng cao và Bảo mật Nhóm
  */
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
+import { useNavigate } from 'react-router-dom';
 import {
   Save,
   RotateCcw,
@@ -22,39 +23,104 @@ import {
   EyeOff,
   UserCheck,
 } from 'lucide-react';
-import { getGroupById } from '../../data';
+import { useGroupStore } from '../../stores';
 import type { PrivacyLevel } from '../../types';
 import { Button, Badge, Card, Input, FloatingSaveBar } from '../ui';
 import { toast } from '../ui/Toast';
+import api from '../../services/api';
 
 interface GroupSettingsTabProps {
   groupId: string;
 }
 
 const GroupSettingsTab: React.FC<GroupSettingsTabProps> = ({ groupId }) => {
-  const group = getGroupById(groupId);
+  const navigate = useNavigate();
+  const { group, updateGroup } = useGroupStore();
+  const groupSettings = (group?.settings ?? {}) as Record<string, boolean | undefined>;
   const [isSaving, setIsSaving] = useState(false);
   const [formData, setFormData] = useState({
     name: group?.name || '',
     description: group?.description || '',
     privacyLevel: group?.privacyLevel || 'internal' as PrivacyLevel,
-    allowCreateMeetings: true,
-    autoSummarize: true,
-    requireApproval: false,
-    notifications: true,
-    encryptData: true,
+    allowCreateMeetings: groupSettings.allowCreateMeetings ?? true,
+    autoSummarize: groupSettings.autoSummarize ?? true,
+    requireApproval: groupSettings.requireApproval ?? false,
+    notifications: groupSettings.notifications ?? true,
+    encryptData: groupSettings.encryptData ?? true,
   });
+  const [initialData, setInitialData] = useState(formData);
+
+  useEffect(() => {
+    if (group) {
+      const data = {
+        name: group.name || '',
+        description: group.description || '',
+        privacyLevel: group.privacyLevel || 'internal' as PrivacyLevel,
+        allowCreateMeetings: (group.settings as Record<string, boolean | undefined> | undefined)?.allowCreateMeetings ?? true,
+        autoSummarize: (group.settings as Record<string, boolean | undefined> | undefined)?.autoSummarize ?? true,
+        requireApproval: (group.settings as Record<string, boolean | undefined> | undefined)?.requireApproval ?? false,
+        notifications: (group.settings as Record<string, boolean | undefined> | undefined)?.notifications ?? true,
+        encryptData: (group.settings as Record<string, boolean | undefined> | undefined)?.encryptData ?? true,
+      };
+      setFormData(data);
+      setInitialData(data);
+    }
+  }, [group]);
+
+  const isDirty = JSON.stringify(formData) !== JSON.stringify(initialData);
 
   const handleChange = (field: string, value: any) => {
     setFormData((prev) => ({ ...prev, [field]: value }));
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     setIsSaving(true);
-    setTimeout(() => {
-      setIsSaving(false);
+    try {
+      await updateGroup(groupId, {
+        name: formData.name,
+        description: formData.description,
+        privacyLevel: formData.privacyLevel,
+        settings: {
+          allowCreateMeetings: formData.allowCreateMeetings,
+          autoSummarize: formData.autoSummarize,
+          requireApproval: formData.requireApproval,
+          notifications: formData.notifications,
+          encryptData: formData.encryptData,
+        }
+      });
+      setInitialData(formData);
       toast.success('Đã cập nhật cấu hình bảo mật thành công!');
-    }, 1200);
+    } catch (error) {
+      toast.error('Có lỗi xảy ra khi cập nhật cấu hình.');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleArchiveGroup = async () => {
+    try {
+      await updateGroup(groupId, {
+        settings: {
+          ...(group?.settings || {}),
+          archived: true,
+          archivedAt: new Date().toISOString(),
+        } as any,
+      });
+      toast.success('Đã lưu trữ nhóm.');
+    } catch (error: any) {
+      toast.error(error?.response?.data?.detail || 'Không thể lưu trữ nhóm.');
+    }
+  };
+
+  const handleDeleteGroup = async () => {
+    if (!window.confirm('Bạn chắc chắn muốn xóa nhóm này? Hành động này không thể hoàn tác.')) return;
+    try {
+      await api.delete(`/api/groups/${groupId}`);
+      toast.success('Đã xóa nhóm.');
+      navigate('/dashboard');
+    } catch (error: any) {
+      toast.error(error?.response?.data?.detail || 'Không thể xóa nhóm.');
+    }
   };
 
   const colorStyles: Record<string, string> = {
@@ -263,6 +329,7 @@ const GroupSettingsTab: React.FC<GroupSettingsTabProps> = ({ groupId }) => {
                       variant="secondary" 
                       size="sm"
                       className="rounded-xl px-4 text-[10px] font-black"
+                      onClick={() => toast.success('Vào tab Thành viên để phân quyền group-admin cho người thay thế.')}
                     >
                       <ArrowLeftRight size={14} /> Chuyển quyền
                     </Button>
@@ -270,6 +337,7 @@ const GroupSettingsTab: React.FC<GroupSettingsTabProps> = ({ groupId }) => {
                       variant="secondary" 
                       size="sm"
                       className="rounded-xl px-4 text-[10px] font-black hover:text-amber-700 hover:bg-amber-50"
+                      onClick={handleArchiveGroup}
                     >
                       <Archive size={14} /> Lưu trữ
                     </Button>
@@ -277,6 +345,7 @@ const GroupSettingsTab: React.FC<GroupSettingsTabProps> = ({ groupId }) => {
                       variant="danger" 
                       size="sm"
                       className="rounded-xl px-4 text-[10px] font-black shadow-lg shadow-rose-600/20"
+                      onClick={handleDeleteGroup}
                     >
                       <Trash2 size={14} /> Xóa Nhóm
                     </Button>
@@ -290,10 +359,10 @@ const GroupSettingsTab: React.FC<GroupSettingsTabProps> = ({ groupId }) => {
 
       {/* Floating Modern Action Bar */}
       <FloatingSaveBar
-        isVisible={true}
+        isVisible={isDirty}
         isSaving={isSaving}
         onSave={handleSave}
-        onCancel={() => window.location.reload()}
+        onCancel={() => setFormData(initialData)}
       />
     </div>
   );

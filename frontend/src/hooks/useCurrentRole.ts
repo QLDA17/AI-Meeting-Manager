@@ -1,11 +1,12 @@
-/**
- * useCurrentRole Hook
- * Detect user's role based on current org/group context
- */
 import { useMemo } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useOrgStore } from '../stores';
-import { getOrgRole, getGroupRole } from '../data';
+import type { SystemRole } from '../types';
+
+type OrgRole = 'org-admin' | 'member' | 'viewer' | null;
+type GroupRole = 'group-admin' | 'member' | 'viewer' | null;
+
+type ContextRole = SystemRole | null;
 
 export const useCurrentRole = () => {
   const { user, session } = useAuth();
@@ -14,47 +15,47 @@ export const useCurrentRole = () => {
   return useMemo(() => {
     if (!user) return null;
 
-    // Get role in current org
-    const orgRole = currentOrgId ? getOrgRole(user.id, currentOrgId) : null;
+    const activeOrgId = currentOrgId || session?.currentOrgId || null;
+    const activeGroupId = currentGroupId || session?.currentGroupId || null;
 
-    // Get role in current group (if any)
-    const groupRole = currentGroupId ? getGroupRole(user.id, currentGroupId) : null;
+    const orgRole: OrgRole = activeOrgId
+      ? user.orgMemberships?.find((membership) => membership.orgId === activeOrgId)?.role || null
+      : null;
 
-    // System admin has all powers
-    if (user.systemRole === 'system-admin') {
-      return {
-        systemRole: 'system-admin' as const,
-        orgRole: null,
-        groupRole: null,
-        isSystemAdmin: true,
-        isOrgAdmin: false,
-        isGroupAdmin: false,
-        isViewer: false,
-        displayName: 'System Administrator',
-      };
-    }
+    const groupRole: GroupRole = activeGroupId
+      ? user.groupMemberships?.find((membership) => membership.groupId === activeGroupId)?.role || null
+      : null;
 
+    const isSystemAdmin = user.systemRole === 'system-admin';
     const isOrgAdmin = orgRole === 'org-admin';
     const isGroupAdmin = groupRole === 'group-admin';
     const isViewer = orgRole === 'viewer' || groupRole === 'viewer';
 
-    // Determine display name
+    let currentRole: ContextRole = 'member';
+    if (isSystemAdmin) currentRole = 'system-admin';
+    else if (isOrgAdmin) currentRole = 'org-admin';
+    else if (isGroupAdmin) currentRole = 'group-admin';
+    else if (isViewer) currentRole = 'viewer';
+    else if (!orgRole && !groupRole) currentRole = user.systemRole || 'member';
+
     let displayName = 'Member';
-    if (isOrgAdmin) displayName = 'Org Admin';
-    else if (isGroupAdmin) displayName = 'Group Admin';
-    else if (isViewer) displayName = 'Viewer';
+    if (currentRole === 'system-admin') displayName = 'System Administrator';
+    else if (currentRole === 'org-admin') displayName = 'Org Admin';
+    else if (currentRole === 'group-admin') displayName = 'Group Admin';
+    else if (currentRole === 'viewer') displayName = 'Viewer';
 
     return {
-      systemRole: user.systemRole,
+      systemRole: user.systemRole || 'member',
+      currentRole,
       orgRole,
       groupRole,
-      isSystemAdmin: false,
+      isSystemAdmin,
       isOrgAdmin,
       isGroupAdmin,
       isViewer,
       displayName,
     };
-  }, [user, currentOrgId, currentGroupId]);
+  }, [user, session?.currentOrgId, session?.currentGroupId, currentOrgId, currentGroupId]);
 };
 
 export default useCurrentRole;

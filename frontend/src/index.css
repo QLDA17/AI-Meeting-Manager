@@ -1,102 +1,100 @@
-@import url("https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap");
-
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-@layer base {
-  :root {
-    /* ── Modern SaaS Design Tokens ── */
-    --bg:           #FFFFFF;
-    --bg-alt:       #F9FAFB;
-    --surface:      #FFFFFF;
-    --dark:         #111827;
-    --text:         #374151;
-    --text-dark:    #111827;
-    --muted:        #6B7280;
-    --primary:      #16a34a;
-    --primary-dark: #14532d;
-    --border:       #E5E7EB;
-
-    --color-success: #22c55e;
-    --color-warning: #f59e0b;
-    --color-error:   #ef4444;
-
-    color-scheme: light;
-  }
-
-  .dark {
-    --bg:           #020617;
-    --bg-alt:       #0F172A;
-    --surface:      #1E293B;
-    --dark:         #F8FAFC;
-    --text:         #94A3B8;
-    --text-dark:    #F1F5F9;
-    --muted:        #64748B;
-    --border:       #1E293B;
-
-    color-scheme: dark;
-  }
-
-  * { box-sizing: border-box; }
-  html { scroll-behavior: smooth; }
-  html, body, #root { min-height: 100%; }
-
-  body {
-    margin: 0;
-    font-family: "Inter", system-ui, sans-serif;
-    background: var(--bg);
-    color: var(--text);
-    -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
-    font-size: 15px;
-    line-height: 1.6;
-  }
+:root {
+  /* ── Blue-Neutral Design System ── */
+  --primary: #2563eb;
+  --primary-hover: #1d4ed8;
+  --primary-light: #dbeafe;
+  --primary-dark: #1e3a8a;
+  
+  --secondary: #64748b;
+  --secondary-hover: #475569;
+  
+  --bg: #ffffff;
+  --bg-alt: #f8fafc;
+  --surface: #ffffff;
+  --surface-hover: #f1f5f9;
+  
+  --text-main: #0f172a;
+  --text-muted: #64748b;
+  --text-inverse: #ffffff;
+  
+  --border: #e2e8f0;
+  --border-focus: #3b82f6;
+  
+  --success: #10b981;
+  --warning: #f59e0b;
+  --error: #ef4444;
+  
+  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+  --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+  --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1);
 }
 
-@layer components {
-  /* ── App background ── */
-  .app-bg {
-    background: var(--bg-alt);
-  }
-
-  /* ── Glass panel ── */
-  .panel-glass {
-    @apply bg-white/80 backdrop-blur-xl border border-gray-100 dark:bg-slate-900/80 dark:border-slate-800;
-  }
-
-  /* ── Skeleton shimmer ── */
-  .skeleton {
-    background: linear-gradient(90deg, #f3f4f6 25%, #e5e7eb 50%, #f3f4f6 75%);
-    background-size: 200% 100%;
-    animation: shimmer 2s infinite linear;
-  }
-
-  /* ── Waveform bar animation ── */
-  @keyframes wave1 { 0%,100%{transform:scaleY(0.3)} 50%{transform:scaleY(1)} }
-  @keyframes wave2 { 0%,100%{transform:scaleY(0.6)} 50%{transform:scaleY(0.2)} }
-  @keyframes wave3 { 0%,100%{transform:scaleY(0.8)} 50%{transform:scaleY(0.4)} }
-  @keyframes wave4 { 0%,100%{transform:scaleY(0.2)} 50%{transform:scaleY(0.9)} }
-  @keyframes wave5 { 0%,100%{transform:scaleY(0.5)} 50%{transform:scaleY(0.7)} }
-  @keyframes wave6 { 0%,100%{transform:scaleY(0.9)} 50%{transform:scaleY(0.3)} }
-
-  /* ── Live blink ── */
-  @keyframes liveBlink { 0%,100%{opacity:1} 50%{opacity:0.3} }
-  .live-blink { animation: liveBlink 1.2s ease-in-out infinite; }
+.dark {
+  --bg: #0f172a;
+  --bg-alt: #020617;
+  --surface: #1e293b;
+  --surface-hover: #334155;
+  
+  --text-main: #f8fafc;
+  --text-muted: #94a3b8;
+  --text-inverse: #0f172a;
+  
+  --border: #334155;
+  --border-focus: #60a5fa;
+  
+  --primary: #3b82f6;
+  --primary-hover: #60a5fa;
+  --primary-light: rgba(59, 130, 246, 0.1);
+  --primary-dark: #1d4ed8;
 }
 
-@keyframes shimmer {
-  0%   { background-position: -200% 0; }
-  100% { background-position:  200% 0; }
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
 }
 
-@layer utilities {
-  .custom-scrollbar::-webkit-scrollbar        { width: 6px; height: 6px; }
-  .custom-scrollbar::-webkit-scrollbar-track  { background: transparent; }
-  .custom-scrollbar::-webkit-scrollbar-thumb  { background: #d1d5db; border-radius: 3px; }
-  .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #9ca3af; }
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background-color: var(--bg);
+  color: var(--text-main);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
 
-  .text-gradient {
-    @apply bg-clip-text text-transparent bg-gradient-to-r from-primary-600 to-green-500;
-  }
+/* ── Custom Scrollbar ── */
+::-webkit-scrollbar {
+  width: 8px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bg);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--secondary);
+}
+
+/* ── Utility Classes ── */
+.glass {
+  background: rgba(255, 255, 255, 0.7);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+}
+
+.dark .glass {
+  background: rgba(15, 23, 42, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.strikethrough {
+  text-decoration: line-through;
+  opacity: 0.6;
 }

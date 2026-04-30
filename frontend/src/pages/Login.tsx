@@ -1,10 +1,10 @@
 import React from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { Crown, User, ChevronDown, Check, Lock, ArrowRight } from 'lucide-react';
+import { Crown, User, ChevronDown, Check, Lock, ArrowRight, Eye, EyeOff } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { Button, Input, Logo } from '../components/ui';
 
@@ -42,9 +42,12 @@ const testimonials = [
 const Login: React.FC = () => {
   const { login } = useAuth();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const inviteToken = searchParams.get('inviteToken');
   const [apiError, setApiError] = React.useState('');
   const [isLoading, setIsLoading] = React.useState(false);
   const [activeTestimonial, setActiveTestimonial] = React.useState(0);
+  const [showPassword, setShowPassword] = React.useState(false);
 
   const {
     register,
@@ -67,8 +70,21 @@ const Login: React.FC = () => {
     setIsLoading(true);
     setApiError('');
     try {
-      await login(data.username, data.password);
-      navigate('/dashboard');
+      const nextUser = await login(data.username, data.password);
+      const isSystemAdmin = nextUser.systemRole === 'system-admin';
+      const hasApprovedOrganizations = Boolean(
+        nextUser.orgMemberships?.some((membership) => membership.approvalStatus !== 'pending'),
+      );
+
+      if (inviteToken) {
+        navigate(`/invite?token=${encodeURIComponent(inviteToken)}`);
+      } else if (isSystemAdmin) {
+        navigate('/admin/console');
+      } else if (!hasApprovedOrganizations) {
+        navigate('/setup-organization');
+      } else {
+        navigate('/dashboard');
+      }
     } catch {
       setApiError('Đăng nhập thất bại. Vui lòng thử lại.');
       setFocus('username');
@@ -230,12 +246,22 @@ const Login: React.FC = () => {
                 </div>
                 <div className="relative group/input">
                   <Input
-                    type="password"
+                    type={showPassword ? 'text' : 'password'}
                     placeholder="Nhập mật khẩu"
                     autoComplete="current-password"
                     error={errors.password?.message}
                     disabled={isLoading}
                     leftIcon={<Lock size={18} className="text-slate-500 group-focus-within/input:text-primary-400 transition-colors" />}
+                    rightIcon={
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword(!showPassword)}
+                        className="p-1.5 rounded-lg hover:bg-white/10 text-slate-500 hover:text-primary-400 transition-colors focus:outline-none"
+                        tabIndex={-1}
+                      >
+                        {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                      </button>
+                    }
                     className="bg-white/[0.03] border-white/10 text-white placeholder:text-slate-700 focus:border-primary-500/50 focus:bg-white/[0.05] h-12 rounded-xl transition-all"
                     {...register('password')}
                   />
@@ -256,7 +282,7 @@ const Login: React.FC = () => {
               <p className="text-slate-500 text-sm font-medium">
                 Chưa có tài khoản?{' '}
                 <Link
-                  to="/register"
+                  to={inviteToken ? `/register?inviteToken=${encodeURIComponent(inviteToken)}` : '/register'}
                   className="text-white hover:text-primary-400 font-bold transition-colors ml-1 underline underline-offset-4 decoration-primary-500/30"
                 >
                   Đăng ký miễn phí

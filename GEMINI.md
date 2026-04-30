@@ -19,12 +19,15 @@
 - **Thành tựu vừa đạt được**: 
     - Triển khai thành công hệ thống Lịch (Calendar) và Kho kiến thức (Glossary).
     - Hoàn thành `CreateGroupModal.tsx` theo chuẩn TDD và tích hợp vào Sidebar.
+    - **Tái cấu trúc Monorepo**: Gom toàn bộ Backend vào thư mục `backend/` để quản lý chuyên nghiệp hơn.
 - **Nhiệm vụ tiếp theo**: 
     - Xây dựng trang **Chi tiết Nhóm (Group Detail)** với các Tab: *Cuộc họp, Thành viên, Cài đặt*.
     - Áp dụng TDD cho logic phân quyền hiển thị trong Group Detail.
 
 ## 📂 Tài liệu tham khảo quan trọng
-- Kế hoạch tổng thể: `docs/FE_IMPLEMENTATION_PLAN_v2.md`
+- Tài liệu tổng quan: `docs/01_PROJECT_OVERVIEW.md`
+- Kế hoạch Frontend: `docs/02_FRONTEND_PLAN.md`
+- Kế hoạch Backend: `docs/03_BACKEND_PLAN.md`
 - Quy chuẩn code: `external_tools/everything-claude-code/.gemini/GEMINI.md`
 
 ---

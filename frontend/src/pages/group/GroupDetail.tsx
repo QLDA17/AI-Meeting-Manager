@@ -18,9 +18,8 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
-import { useGroupStore, useOrgStore } from '../../stores';
+import { useGroupStore, useOrgStore, useAppStore } from '../../stores';
 import { usePermission } from '../../hooks';
-import { getGroupById, getMeetingsByGroupId, getMembersByGroupId } from '../../data';
 import GroupMeetingsTab from '../../components/group/GroupMeetingsTab';
 import GroupMembersTab from '../../components/group/GroupMembersTab';
 import GroupChatTab from '../../components/group/GroupChatTab';
@@ -36,25 +35,27 @@ const GroupDetail: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { user } = useAuth();
-  const { setCurrentGroup } = useGroupStore();
-  const { currentOrg } = useOrgStore();
-  const { isGroupAdmin } = usePermission();
+  const { currentGroup, group: groupData, loadGroup, loadMembers, loadMeetings, members, meetings } = useGroupStore();
+  const { isGroupAdmin, isOrgAdmin } = usePermission();
 
-  const [group, setGroup] = useState<Group | null>(null);
   const [activeTab, setActiveTab] = useState<TabKey>('meetings');
   const [loading, setLoading] = useState(true);
   const [showCreateModal, setShowCreateModal] = useState(false);
 
   useEffect(() => {
-    if (id) {
-      const groupData = getGroupById(id);
-      if (groupData) {
-        setGroup(groupData);
-        setCurrentGroup(id);
+    const initGroup = async () => {
+      if (id) {
+        setLoading(true);
+        await Promise.all([
+          loadGroup(id),
+          loadMembers(id),
+          loadMeetings(id)
+        ]);
+        setLoading(false);
       }
-      setLoading(false);
-    }
-  }, [id, setCurrentGroup]);
+    };
+    initGroup();
+  }, [id, loadGroup, loadMembers, loadMeetings]);
 
   if (loading) {
     return (
@@ -64,14 +65,16 @@ const GroupDetail: React.FC = () => {
     );
   }
 
-  if (!group) {
+  if (!groupData) {
     return (
       <div className="mx-auto max-w-lg mt-10 rounded-[2.5rem] border border-gray-100 bg-white p-12 text-center shadow-xl dark:border-slate-800 dark:bg-slate-900">
         <div className="mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-full bg-red-50 text-red-500 dark:bg-red-900/20">
           <Lock size={40} />
         </div>
         <h2 className="text-2xl font-black text-gray-900 dark:text-slate-100">Không tìm thấy nhóm</h2>
-        <p className="mt-3 text-gray-500 dark:text-slate-400">Nhóm bạn đang tìm kiếm không tồn tại hoặc bạn không có quyền truy cập.</p>
+        <p className="mt-3 text-gray-500 dark:text-slate-400">
+          {useGroupStore.getState().error || "Nhóm bạn đang tìm kiếm không tồn tại hoặc bạn không có quyền truy cập."}
+        </p>
         <Button variant="primary" className="mt-8 px-10 rounded-2xl" onClick={() => navigate('/')}>
           Về Trang chủ
         </Button>
@@ -97,12 +100,14 @@ const GroupDetail: React.FC = () => {
     }
   };
 
+  const hasSettingsAccess = isGroupAdmin || isOrgAdmin;
+
   const tabs: Array<{ key: TabKey; label: string; icon: React.ReactNode }> = [
     { key: 'meetings', label: 'Cuộc họp', icon: <FileText size={16} /> },
     { key: 'members', label: 'Thành viên', icon: <Users size={16} /> },
     { key: 'chat', label: 'Thảo luận', icon: <MessageSquare size={16} /> },
     { key: 'stats', label: 'Thống kê', icon: <BarChart3 size={16} /> },
-    ...(isGroupAdmin ? [{ key: 'settings' as TabKey, label: 'Cài đặt', icon: <Settings size={16} /> }] : []),
+    ...(hasSettingsAccess ? [{ key: 'settings' as TabKey, label: 'Cài đặt', icon: <Settings size={16} /> }] : []),
   ];
 
   return (
@@ -127,13 +132,13 @@ const GroupDetail: React.FC = () => {
             <div className="flex-1">
               <div className="flex flex-wrap items-center gap-3">
                 <h1 className="text-3xl font-black tracking-tight text-gray-900 dark:text-white sm:text-4xl">
-                  {group.name}
+                  {groupData.name}
                 </h1>
                 <Badge variant="secondary" className="flex items-center gap-1.5 px-3 py-1 text-xs">
-                  {privacyIcon(group.privacyLevel)}
-                  {privacyLabel(group.privacyLevel)}
+                  {privacyIcon(groupData.privacyLevel)}
+                  {privacyLabel(groupData.privacyLevel)}
                 </Badge>
-                {isGroupAdmin && (
+                {hasSettingsAccess && (
                   <Badge variant="primary" className="gap-1.5 px-3 py-1 text-xs">
                     <ShieldCheck size={12} />
                     Quản trị viên
@@ -141,9 +146,9 @@ const GroupDetail: React.FC = () => {
                 )}
               </div>
 
-              {group.description && (
+              {groupData.description && (
                 <p className="mt-4 max-w-2xl text-lg text-gray-600 dark:text-slate-300">
-                  {group.description}
+                  {groupData.description}
                 </p>
               )}
 
@@ -152,19 +157,19 @@ const GroupDetail: React.FC = () => {
                   <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-50 text-blue-600 dark:bg-blue-900/20">
                     <Users size={16} />
                   </div>
-                  <span><b className="text-gray-900 dark:text-white">{group.memberCount}</b> thành viên</span>
+                  <span><b className="text-gray-900 dark:text-white">{groupData.memberCount || 0}</b> thành viên</span>
                 </div>
                 <div className="flex items-center gap-2">
                   <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-amber-50 text-amber-600 dark:bg-amber-900/20">
                     <FileText size={16} />
                   </div>
-                  <span><b className="text-gray-900 dark:text-white">{group.meetingCount}</b> cuộc họp</span>
+                  <span><b className="text-gray-900 dark:text-white">{groupData.meetingCount || 0}</b> cuộc họp</span>
                 </div>
                 <div className="flex items-center gap-2">
                   <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-50 text-emerald-600 dark:bg-emerald-900/20">
                     <BarChart3 size={16} />
                   </div>
-                  <span>Tổng cộng <b className="text-gray-900 dark:text-white">{group.totalHours}h</b></span>
+                  <span>Tổng cộng <b className="text-gray-900 dark:text-white">{groupData.totalHours || 0}h</b></span>
                 </div>
               </div>
             </div>
@@ -224,7 +229,7 @@ const GroupDetail: React.FC = () => {
                     <div key={i} className="h-8 w-8 rounded-full border-2 border-white bg-gray-200 shadow-sm dark:border-slate-900" />
                   ))}
                </div>
-               <span className="text-xs font-black text-gray-400">+{group.memberCount - 3}</span>
+               <span className="text-xs font-black text-gray-400">+{Math.max(0, (groupData.memberCount || 0) - 3)}</span>
             </div>
           </div>
         </div>
@@ -241,26 +246,26 @@ const GroupDetail: React.FC = () => {
           >
             <Card className="border-none bg-transparent p-0 shadow-none">
               {activeTab === 'meetings' && (
-                <GroupMeetingsTab meetings={getMeetingsByGroupId(group.id)} />
+                <GroupMeetingsTab meetings={meetings} />
               )}
 
               {activeTab === 'members' && (
                 <GroupMembersTab
-                  groupId={group.id}
-                  members={getMembersByGroupId(group.id)}
+                  groupId={groupData.id}
+                  members={members}
                 />
               )}
 
               {activeTab === 'chat' && (
-                <GroupChatTab groupId={group.id} />
+                <GroupChatTab groupId={groupData.id} />
               )}
 
               {activeTab === 'stats' && (
-                <GroupStatsTab groupId={group.id} />
+                <GroupStatsTab groupId={groupData.id} />
               )}
 
-              {activeTab === 'settings' && isGroupAdmin && (
-                <GroupSettingsTab groupId={group.id} />
+              {activeTab === 'settings' && (isGroupAdmin || isOrgAdmin) && (
+                <GroupSettingsTab groupId={groupData.id} />
               )}
             </Card>
           </motion.div>

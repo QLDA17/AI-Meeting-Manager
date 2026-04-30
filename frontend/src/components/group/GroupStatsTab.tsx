@@ -26,15 +26,14 @@ import {
   MessageSquare,
   CheckCircle2,
 } from 'lucide-react';
-import { getGroupById, getMeetingsByGroupId } from '../../data';
+import { useGroupStore } from '../../stores';
 
 interface GroupStatsTabProps {
   groupId: string;
 }
 
 const GroupStatsTab: React.FC<GroupStatsTabProps> = ({ groupId }) => {
-  const group = getGroupById(groupId);
-  const meetings = getMeetingsByGroupId(groupId);
+  const { group, meetings } = useGroupStore();
 
   // Calculate stats
   const stats = useMemo(() => {
@@ -53,39 +52,63 @@ const GroupStatsTab: React.FC<GroupStatsTabProps> = ({ groupId }) => {
     };
   }, [meetings]);
 
-  // Weekly meeting trend (mock data)
-  const weeklyTrend = [
-    { week: 'W1', meetings: 3, hours: 4.5 },
-    { week: 'W2', meetings: 5, hours: 7.2 },
-    { week: 'W3', meetings: 4, hours: 6.0 },
-    { week: 'W4', meetings: 6, hours: 8.5 },
-    { week: 'W5', meetings: 4, hours: 5.8 },
-    { week: 'W6', meetings: 7, hours: 10.2 },
-  ];
+  // Timeline trend (dynamic from last 7 active days)
+  const timelineTrend = useMemo(() => {
+    if (meetings.length === 0) return [];
+    
+    // Group by date (YYYY-MM-DD)
+    const grouped = meetings.reduce((acc, m) => {
+      const dateStr = m.startTime ? new Date(m.startTime).toLocaleDateString('vi-VN') : 'Unknown';
+      if (!acc[dateStr]) acc[dateStr] = { date: dateStr, meetings: 0, hours: 0 };
+      acc[dateStr].meetings += 1;
+      acc[dateStr].hours += (m.duration || 0) / 60;
+      return acc;
+    }, {} as Record<string, { date: string; meetings: number; hours: number }>);
+
+    // Get top 7 most recent days
+    return Object.values(grouped).slice(-7);
+  }, [meetings]);
 
   // Meeting duration distribution
-  const durationDistribution = [
-    { range: '< 30 min', count: 5 },
-    { range: '30-60 min', count: 12 },
-    { range: '60-90 min', count: 8 },
-    { range: '90+ min', count: 3 },
-  ];
+  const durationDistribution = useMemo(() => {
+    const dist = { '< 30 min': 0, '30-60 min': 0, '60-90 min': 0, '90+ min': 0 };
+    meetings.forEach(m => {
+      const d = m.duration || 0;
+      if (d < 30) dist['< 30 min']++;
+      else if (d < 60) dist['30-60 min']++;
+      else if (d < 90) dist['60-90 min']++;
+      else dist['90+ min']++;
+    });
+    return Object.entries(dist).map(([range, count]) => ({ range, count }));
+  }, [meetings]);
 
-  // AI summary breakdown (mock)
-  const aiBreakdown = [
-    { name: 'Key Points', value: 45 },
-    { name: 'Decisions', value: 30 },
-    { name: 'Summaries', value: 25 },
-  ];
+  // AI summary breakdown
+  const aiBreakdown = useMemo(() => {
+    return [
+      { name: 'Key Points', value: stats.totalKeyPoints || 1 },
+      { name: 'Decisions', value: stats.totalDecisions || 1 },
+      { name: 'Summaries', value: meetings.filter(m => m.summary).length || 1 },
+    ];
+  }, [stats, meetings]);
 
-  // Top speakers (mock)
-  const topSpeakers = [
-    { name: 'Nguyễn Văn A', meetings: 18, hours: 24 },
-    { name: 'Trần Thị B', meetings: 15, hours: 18 },
-    { name: 'Phạm Văn C', meetings: 12, hours: 15 },
-    { name: 'Hoàng Hữu D', meetings: 10, hours: 12 },
-    { name: 'Phan Minh E', meetings: 8, hours: 10 },
-  ];
+  // Top Attendees (based on meeting presence)
+  const topSpeakers = useMemo(() => {
+    const speakerMap: Record<string, { name: string; meetings: number; hours: number }> = {};
+    meetings.forEach(m => {
+      if (Array.isArray(m.attendees)) {
+        m.attendees.forEach(u => {
+          if (!u || !u.id) return;
+          if (!speakerMap[u.id]) speakerMap[u.id] = { name: u.displayName || u.email || 'Unknown', meetings: 0, hours: 0 };
+          speakerMap[u.id].meetings += 1;
+          speakerMap[u.id].hours += (m.duration || 0) / 60;
+        });
+      }
+    });
+    return Object.values(speakerMap)
+      .sort((a, b) => b.meetings - a.meetings)
+      .slice(0, 5)
+      .map(s => ({ ...s, hours: Number(s.hours.toFixed(1)) }));
+  }, [meetings]);
 
   const COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6'];
 
@@ -137,9 +160,9 @@ const GroupStatsTab: React.FC<GroupStatsTabProps> = ({ groupId }) => {
             Weekly Meeting Trend
           </h4>
           <ResponsiveContainer width="100%" height={250}>
-            <LineChart data={weeklyTrend}>
+            <LineChart data={timelineTrend}>
               <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
-              <XAxis dataKey="week" stroke="#6B7280" fontSize={12} />
+              <XAxis dataKey="date" stroke="#6B7280" fontSize={12} />
               <YAxis stroke="#6B7280" fontSize={12} />
               <Tooltip />
               <Line type="monotone" dataKey="meetings" stroke="#3B82F6" strokeWidth={2} dot={{ fill: '#3B82F6' }} name="Meetings" />

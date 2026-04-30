@@ -45,11 +45,6 @@ const QuickAccess: React.FC = () => {
       icon: <CheckCircle2 size={16} />,
     },
     {
-      label: 'Thông báo',
-      path: '/notifications',
-      icon: <Bell size={16} />,
-    },
-    {
       label: 'Tải âm thanh lên',
       path: '/upload',
       icon: <Upload size={16} />,

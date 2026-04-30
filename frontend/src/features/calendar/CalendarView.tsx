@@ -5,14 +5,29 @@ import timeGridPlugin from '@fullcalendar/timegrid';
 import interactionPlugin from '@fullcalendar/interaction';
 import viLocale from '@fullcalendar/core/locales/vi';
 import { Plus, Calendar as CalendarIcon, List, Clock } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { Card, Button } from '../../components/ui';
-import { useCalendarStore, useAppStore } from '../../stores';
+import { useCalendarStore, useAppStore, useOrgStore } from '../../stores';
 import ScheduleMeetingModal from '../../components/meeting/ScheduleMeetingModal';
 
 const CalendarView: React.FC = () => {
   const { viewType, setViewType, setSelectedDate, toggleScheduleModal } = useCalendarStore();
-  const { meetings } = useAppStore();
+  const { meetings, loadMeetings } = useAppStore();
+  const { currentOrgId } = useOrgStore();
   const calendarRef = React.useRef<FullCalendar>(null);
+  const navigate = useNavigate();
+
+  // Load meetings on mount and when org changes
+  React.useEffect(() => {
+    if (currentOrgId) {
+      loadMeetings(currentOrgId);
+    }
+  }, [currentOrgId, loadMeetings]);
+
+  // Debug log
+  React.useEffect(() => {
+    console.log('DEBUG: Meetings from store:', meetings);
+  }, [meetings]);
 
   // Sync FullCalendar instance with viewType from store
   React.useEffect(() => {
@@ -22,18 +37,59 @@ const CalendarView: React.FC = () => {
     }
   }, [viewType]);
 
-  const events = meetings.map((m) => ({
-    id: m.id,
-    title: m.title,
-    start: m.startTime,
-    end: m.endTime || new Date(new Date(m.startTime).getTime() + 3600000).toISOString(),
-    backgroundColor: m.status === 'completed' ? '#10b981' : m.status === 'live' ? '#ef4444' : '#3b82f6',
-    borderColor: 'transparent',
-    extendedProps: {
-      status: m.status,
-      groupName: m.groupName,
-    },
-  }));
+  const events = meetings
+    .filter((m) => m.scheduled_start || m.startTime) // Handle both formats
+    .map((m) => {
+      const startStr = m.scheduled_start || m.startTime;
+      const endStr = m.scheduled_end || m.endTime;
+      
+      if (!startStr) return null;
+
+      try {
+        const startDate = new Date(startStr);
+        const endDate = endStr 
+          ? new Date(endStr) 
+          : new Date(startDate.getTime() + 3600000);
+
+        if (isNaN(startDate.getTime())) {
+          console.error('DEBUG: Invalid Start Date:', startStr);
+          return null;
+        }
+
+        const isPast = endDate.getTime() < new Date().getTime();
+        const now = new Date().getTime();
+        const isLive = startDate.getTime() <= now && endDate.getTime() >= now;
+
+        // Determine color based on status
+        let bgColor = '#3b82f6'; // Default Blue (Upcoming)
+        if (m.status === 'completed' || isPast) {
+          bgColor = '#10b981'; // Emerald (Completed/Past)
+        } else if (m.status === 'live' || isLive) {
+          bgColor = '#ef4444'; // Red (Live/Ongoing)
+        }
+
+        return {
+          id: m.id,
+          title: m.title,
+          start: startDate.toISOString(),
+          end: endDate.toISOString(),
+          className: isPast ? 'fc-event-past' : isLive ? 'fc-event-live' : 'fc-event-upcoming',
+          backgroundColor: bgColor,
+          borderColor: bgColor,
+          extendedProps: {
+            status: m.status,
+            groupName: m.groupName,
+            bgColor,
+            isPast,
+            isLive,
+          },
+        };
+      } catch (e) {
+        console.error('DEBUG: Date parsing error:', e);
+        return null;
+      }
+    })
+    .filter(Boolean) as any[];
 
   const handleDateClick = (arg: any) => {
     setSelectedDate(arg.date);
@@ -41,8 +97,7 @@ const CalendarView: React.FC = () => {
   };
 
   const handleEventClick = (arg: any) => {
-    // Navigate to meeting detail or show preview
-    console.log('Event clicked:', arg.event.id);
+    navigate(`/meetings/${arg.event.id}`);
   };
 
   return (
@@ -133,6 +188,13 @@ const CalendarView: React.FC = () => {
             allDaySlot={false}
             nowIndicator={true}
             dayMaxEvents={true}
+            eventDisplay="block"
+            eventDidMount={(info) => {
+              const bgColor = info.event.extendedProps?.bgColor || '#3b82f6';
+              info.el.style.setProperty('background-color', bgColor, 'important');
+              info.el.style.setProperty('border-color', bgColor, 'important');
+              info.el.style.setProperty('color', '#ffffff', 'important');
+            }}
           />
         </div>
       </Card>
@@ -179,12 +241,31 @@ const CalendarView: React.FC = () => {
           font-size: 0.75rem !important;
           font-weight: 500 !important;
           box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+          transition: all 0.2s ease;
+        }
+        .fc-event:hover {
+          transform: translateY(-1px);
+          box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }
+        /* Past event styling */
+        .fc-event-past {
+          opacity: 0.6 !important;
+          filter: grayscale(0.5);
+        }
+        .fc-event-past .fc-event-title {
+          text-decoration: line-through;
+          text-decoration-thickness: 1px;
         }
         .fc-daygrid-event-dot {
           display: none;
         }
         .fc-v-event {
           border: none !important;
+        }
+        .fc-event-upcoming {
+          background-color: #3b82f6 !important;
+          border-color: #3b82f6 !important;
+          color: #ffffff !important;
         }
       `}</style>
     </div>

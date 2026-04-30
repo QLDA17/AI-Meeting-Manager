@@ -8,6 +8,9 @@ import type { User as UserType, SystemRole } from '../../types';
 import { getRoleDisplayInfo } from '../../data';
 import { Button, Badge, Input, Card } from '../ui';
 import { toast } from '../ui/Toast';
+import { usePermission } from '../../hooks';
+import api from '../../services/api';
+import { useGroupStore } from '../../stores';
 
 interface GroupMembersTabProps {
   groupId: string;
@@ -24,11 +27,16 @@ const GroupMembersTab: React.FC<GroupMembersTabProps> = ({
   currentUserId = 'user-001',
   onInviteMember,
 }) => {
+  const { isGroupAdmin, isOrgAdmin } = usePermission();
   const [searchTerm, setSearchTerm] = useState('');
   const [roleFilter, setRoleFilter] = useState<RoleFilter>('all');
   const [showInviteModal, setShowInviteModal] = useState(false);
   const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteRole, setInviteRole] = useState('member');
   const [isInviting, setIsInviting] = useState(false);
+  const { group } = useGroupStore();
+
+  const canInvite = isGroupAdmin || isOrgAdmin;
 
   // Group members by role with filtering
   const groupedMembers = React.useMemo(() => {
@@ -62,19 +70,25 @@ const GroupMembersTab: React.FC<GroupMembersTabProps> = ({
     return membership?.role || 'member';
   };
 
-  const handleInvite = (e: React.FormEvent) => {
+  const handleInvite = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!inviteEmail) return;
+    if (!inviteEmail || !groupId) return;
 
     setIsInviting(true);
-    // Giả lập gọi API
-    setTimeout(() => {
+    try {
+      await api.post(`/api/groups/${groupId}/members/invite-by-email`, {
+        email: inviteEmail,
+        role: inviteRole
+      });
       if (onInviteMember) onInviteMember(inviteEmail);
       toast.success(`Đã gửi lời mời tới ${inviteEmail}`);
       setInviteEmail('');
-      setIsInviting(false);
       setShowInviteModal(false);
-    }, 800);
+    } catch (err: any) {
+      toast.error(err.response?.data?.detail || 'Lỗi khi gửi lời mời');
+    } finally {
+      setIsInviting(false);
+    }
   };
 
   const roleIcon = (role: string) => {
@@ -161,14 +175,16 @@ const GroupMembersTab: React.FC<GroupMembersTabProps> = ({
               <option value="viewer">Người xem</option>
             </select>
           </div>
-          <Button 
-            variant="primary" 
-            className="h-12 rounded-2xl px-6" 
-            onClick={() => setShowInviteModal(true)}
-            icon={<Plus size={18} />}
-          >
-            Mời thành viên
-          </Button>
+          {canInvite && (
+            <Button 
+              variant="primary" 
+              className="h-12 rounded-2xl px-6" 
+              onClick={() => setShowInviteModal(true)}
+              icon={<Plus size={18} />}
+            >
+              Mời thành viên
+            </Button>
+          )}
         </div>
       </div>
 
@@ -278,7 +294,11 @@ const GroupMembersTab: React.FC<GroupMembersTabProps> = ({
                 />
                 <div className="space-y-1.5">
                   <label className="text-xs font-bold uppercase tracking-wider text-gray-400">Gán vai trò mặc định</label>
-                  <select className="h-11 w-full rounded-xl border border-gray-200 bg-white px-3 text-sm font-medium outline-none dark:border-slate-800 dark:bg-slate-800">
+                  <select 
+                    value={inviteRole}
+                    onChange={(e) => setInviteRole(e.target.value)}
+                    className="h-11 w-full rounded-xl border border-gray-200 bg-white px-3 text-sm font-medium outline-none dark:border-slate-800 dark:bg-slate-800"
+                  >
                     <option value="member">Thành viên (Member)</option>
                     <option value="viewer">Người xem (Viewer)</option>
                     <option value="group-admin">Quản trị viên (Admin)</option>

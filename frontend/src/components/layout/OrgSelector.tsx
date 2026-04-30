@@ -4,33 +4,37 @@
  */
 import React from 'react';
 import { ChevronDown, Building2, Check } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { useOrgStore } from '../../stores';
-import { getOrgById } from '../../data';
-import type { Organization } from '../../types';
 
 interface OrgSelectorProps {
   className?: string;
 }
 
 const OrgSelector: React.FC<OrgSelectorProps> = ({ className = '' }) => {
+  const navigate = useNavigate();
   const { user, switchOrg } = useAuth();
-  const { currentOrgId, setCurrentOrg } = useOrgStore();
+  // Get user's organizations from store
+  const { orgs, currentOrgId, setCurrentOrg, members } = useOrgStore();
   const [isOpen, setIsOpen] = React.useState(false);
   const dropdownRef = React.useRef<HTMLDivElement>(null);
-
-  // Get user's organizations
-  const userOrgs = React.useMemo(() => {
-    if (!user?.orgMemberships) return [];
-    return user.orgMemberships
-      .map((membership) => getOrgById(membership.orgId))
-      .filter(Boolean) as Organization[];
-  }, [user]);
+  const userOrgs = React.useMemo(
+    () => orgs.filter((org) => org.approvalStatus !== 'pending'),
+    [orgs],
+  );
 
   const currentOrg = React.useMemo(
-    () => (currentOrgId ? getOrgById(currentOrgId) : userOrgs[0]),
+    () => userOrgs.find(o => o.id === currentOrgId) || userOrgs[0],
     [currentOrgId, userOrgs]
   );
+  const displayedMemberCount = React.useMemo(() => {
+    if (!currentOrg) return 0;
+    if (currentOrgId && currentOrg.id === currentOrgId && members.length > 0) {
+      return members.length;
+    }
+    return currentOrg.memberCount || 0;
+  }, [currentOrg, currentOrgId, members.length]);
 
   // Auto-select first org if none selected
   React.useEffect(() => {
@@ -54,6 +58,7 @@ const OrgSelector: React.FC<OrgSelectorProps> = ({ className = '' }) => {
     setCurrentOrg(orgId);
     switchOrg(orgId);
     setIsOpen(false);
+    navigate('/dashboard');
   };
 
   if (userOrgs.length === 0) {
@@ -79,7 +84,7 @@ const OrgSelector: React.FC<OrgSelectorProps> = ({ className = '' }) => {
             {currentOrg?.name || 'Select Org'}
           </p>
           <p className="truncate text-xs text-gray-500 dark:text-slate-400">
-            {currentOrg?.memberCount || 0} members
+            {displayedMemberCount} members
           </p>
         </div>
         <ChevronDown

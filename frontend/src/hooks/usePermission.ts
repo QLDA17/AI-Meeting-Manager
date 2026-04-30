@@ -1,31 +1,17 @@
-/**
- * usePermission Hook
- * Provides convenient access to permission checking utilities
- */
 import { useCallback } from 'react';
 import { useAuth } from '../context/AuthContext';
 import type { SystemRole, Permission } from '../types';
 import { roleDefinitions, roleHierarchy } from '../data';
+import useCurrentRole from './useCurrentRole';
 
 interface UsePermissionReturn {
-  // Check single permission
   hasPermission: (permission: Permission | string) => boolean;
-
-  // Check multiple permissions (all must be true)
   hasAllPermissions: (permissions: (Permission | string)[]) => boolean;
-
-  // Check if has any of the permissions
   hasAnyPermission: (permissions: (Permission | string)[]) => boolean;
-
-  // Check role level
   isRoleAtLeast: (minRole: SystemRole) => boolean;
-
-  // Role info
   currentRole: SystemRole | null;
   roleDisplayName: string;
   roleColor: string;
-
-  // Context info
   isOrgAdmin: boolean;
   isGroupAdmin: boolean;
   isSystemAdmin: boolean;
@@ -33,9 +19,10 @@ interface UsePermissionReturn {
 }
 
 export const usePermission = (): UsePermissionReturn => {
-  const { user, session, hasPermission, isOrgAdmin, isGroupAdmin } = useAuth();
+  const { hasPermission } = useAuth();
+  const roleContext = useCurrentRole();
 
-  const currentRole = user?.systemRole || null;
+  const currentRole = roleContext?.currentRole || null;
 
   const isRoleAtLeast = useCallback(
     (minRole: SystemRole): boolean => {
@@ -46,16 +33,12 @@ export const usePermission = (): UsePermissionReturn => {
   );
 
   const hasAllPermissions = useCallback(
-    (permissions: (Permission | string)[]): boolean => {
-      return permissions.every((p) => hasPermission(p));
-    },
+    (permissions: (Permission | string)[]): boolean => permissions.every((permission) => hasPermission(permission)),
     [hasPermission]
   );
 
   const hasAnyPermission = useCallback(
-    (permissions: (Permission | string)[]): boolean => {
-      return permissions.some((p) => hasPermission(p));
-    },
+    (permissions: (Permission | string)[]): boolean => permissions.some((permission) => hasPermission(permission)),
     [hasPermission]
   );
 
@@ -67,12 +50,12 @@ export const usePermission = (): UsePermissionReturn => {
     hasAnyPermission,
     isRoleAtLeast,
     currentRole,
-    roleDisplayName: roleInfo?.displayName || 'Unknown',
+    roleDisplayName: roleContext?.displayName || roleInfo?.displayName || 'Unknown',
     roleColor: roleInfo?.color || '#6B7280',
-    isOrgAdmin: isOrgAdmin(),
-    isGroupAdmin: isGroupAdmin(),
-    isSystemAdmin: currentRole === 'system-admin',
-    isViewer: currentRole === 'viewer',
+    isOrgAdmin: roleContext?.isOrgAdmin || false,
+    isGroupAdmin: roleContext?.isGroupAdmin || false,
+    isSystemAdmin: roleContext?.isSystemAdmin || false,
+    isViewer: roleContext?.isViewer || false,
   };
 };
 

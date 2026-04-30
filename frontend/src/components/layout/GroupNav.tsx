@@ -13,6 +13,8 @@ import {
 } from 'lucide-react';
 import { useOrgStore } from '../../stores';
 import { usePermission } from '../../hooks';
+import { useAuth } from '../../context/AuthContext';
+import api from '../../services/api';
 import type { Group, PrivacyLevel } from '../../types';
 
 interface GroupNavProps {
@@ -23,9 +25,15 @@ interface GroupNavProps {
 const GroupNav: React.FC<GroupNavProps> = ({ onGroupSelect, onCreateGroup }) => {
   const location = useLocation();
   const { groups } = useOrgStore();
-  const { hasPermission } = usePermission();
+  const { hasPermission, isOrgAdmin } = usePermission();
+  const { user } = useAuth();
+  const [unreadGroupIds, setUnreadGroupIds] = React.useState<Set<string>>(new Set());
 
   const canCreateGroup = hasPermission('create_group');
+  const chatReadKey = React.useMemo(
+    () => `group_chat_last_read_by_user_${user?.id || 'anonymous'}`,
+    [user?.id],
+  );
 
   const privacyIcon = (level: PrivacyLevel) => {
     switch (level) {
@@ -41,6 +49,50 @@ const GroupNav: React.FC<GroupNavProps> = ({ onGroupSelect, onCreateGroup }) => 
   const isActive = (groupId: string) => {
     return location.pathname.includes(`/groups/${groupId}`);
   };
+
+  React.useEffect(() => {
+    let cancelled = false;
+
+    const refreshUnread = async () => {
+      if (!groups.length || !user?.id) {
+        if (!cancelled) setUnreadGroupIds(new Set());
+        return;
+      }
+
+      const raw = localStorage.getItem(chatReadKey);
+      const lastReadMap: Record<string, string> = raw ? JSON.parse(raw) : {};
+      const results = await Promise.all(
+        groups.map(async (group) => {
+          try {
+            const res = await api.get(`/api/groups/${group.id}/messages/latest`);
+            return { groupId: group.id, latest: res.data };
+          } catch {
+            return { groupId: group.id, latest: null };
+          }
+        }),
+      );
+
+      const unreadIds = new Set<string>();
+      for (const item of results) {
+        const latestAt = item.latest?.created_at || item.latest?.createdAt;
+        const latestUserId = item.latest?.user_id || item.latest?.userId;
+        if (!latestAt || !latestUserId) continue;
+        if (latestUserId === user.id) continue;
+        const seenAt = lastReadMap[item.groupId];
+        if (!seenAt || new Date(latestAt).getTime() > new Date(seenAt).getTime()) {
+          unreadIds.add(item.groupId);
+        }
+      }
+      if (!cancelled) setUnreadGroupIds(unreadIds);
+    };
+
+    refreshUnread();
+    const timer = window.setInterval(refreshUnread, 20000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [chatReadKey, groups, user?.id]);
 
   if (groups.length === 0) {
     return (
@@ -65,8 +117,12 @@ const GroupNav: React.FC<GroupNavProps> = ({ onGroupSelect, onCreateGroup }) => 
     <div className="space-y-1 px-2">
       {groups.map((group: Group) => {
         const active = isActive(group.id);
-        // Check if current user is admin via groupMemberships (no admins field on Group type)
-        const isAdmin = false; // Will be determined from auth context in real implementation
+        const isAdmin =
+          isOrgAdmin ||
+          user?.groupMemberships?.some(
+            (membership) => membership.groupId === group.id && membership.role === 'group-admin'
+          ) ||
+          false;
 
         return (
           <Link
@@ -85,6 +141,9 @@ const GroupNav: React.FC<GroupNavProps> = ({ onGroupSelect, onCreateGroup }) => 
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-1">
                 <span className="truncate font-medium">{group.name}</span>
+                {unreadGroupIds.has(group.id) && (
+                  <span className="h-2 w-2 rounded-full bg-red-500" aria-label="Unread messages" />
+                )}
                 {isAdmin && (
                   <Crown
                     size={10}

@@ -1,86 +1,68 @@
 import React from 'react';
-import {
-  useReactTable,
-  getCoreRowModel,
-  flexRender,
-  createColumnHelper,
-  getPaginationRowModel,
-  getSortedRowModel,
-  type SortingState,
-} from '@tanstack/react-table';
-import { 
-  Search, 
-  Download, 
-  Upload as UploadIcon, 
-  Plus, 
-  Trash2, 
-  Edit2, 
-  ChevronLeft, 
-  ChevronRight, 
-  Globe, 
-  Building 
-} from 'lucide-react';
-import { type Glossary } from '../../stores/glossaryStore';
-import { Button, Input, Badge } from '../../components/ui';
+import { createColumnHelper, flexRender, getCoreRowModel, getPaginationRowModel, getSortedRowModel, type SortingState, useReactTable } from '@tanstack/react-table';
+import { Building, ChevronLeft, ChevronRight, Edit2, Globe, Plus, Search, ToggleLeft, Trash2 } from 'lucide-react';
+import type { GlossaryTerm } from '../../types';
+import { Badge, Button, Input } from '../../components/ui';
 
 interface GlossaryTableProps {
-  data: Glossary[];
+  data: GlossaryTerm[];
   onDelete?: (id: string) => void;
-  onEdit?: (glossary: Glossary) => void;
+  onEdit?: (glossary: GlossaryTerm) => void;
   onAdd?: () => void;
   showScope?: boolean;
 }
 
-const columnHelper = createColumnHelper<Glossary>();
+const columnHelper = createColumnHelper<GlossaryTerm>();
 
-const GlossaryTable: React.FC<GlossaryTableProps> = ({ 
-  data, 
-  onDelete, 
-  onEdit, 
-  onAdd,
-  showScope = true 
-}) => {
+const GlossaryTable: React.FC<GlossaryTableProps> = ({ data, onAdd, onDelete, onEdit, showScope = true }) => {
   const [sorting, setSorting] = React.useState<SortingState>([]);
   const [globalFilter, setGlobalFilter] = React.useState('');
 
+  const filteredData = React.useMemo(() => {
+    const term = globalFilter.trim().toLowerCase();
+    if (!term) return data;
+    return data.filter((item) =>
+      [item.term, item.translationVi, item.translationEn, item.category]
+        .filter(Boolean)
+        .some((value) => value?.toLowerCase().includes(term))
+    );
+  }, [data, globalFilter]);
+
   const columns = [
-    columnHelper.accessor('name', {
-      header: 'Tên thư viện',
+    columnHelper.accessor('term', {
+      header: 'Thuật ngữ',
       cell: (info) => (
         <div className="flex flex-col">
           <span className="font-semibold text-gray-900 dark:text-slate-100">{info.getValue()}</span>
-          {info.row.original.description && (
-            <span className="text-xs text-gray-500 dark:text-slate-400 truncate max-w-[300px]">
-              {info.row.original.description}
-            </span>
-          )}
+          <span className="text-xs text-gray-500 dark:text-slate-400">
+            {info.row.original.translationVi || info.row.original.translationEn || 'Chưa có bản dịch'}
+          </span>
         </div>
       ),
     }),
-    ...(showScope ? [
-      columnHelper.accessor('scope', {
-        header: 'Phạm vi',
-        cell: (info) => (
-          <Badge variant={info.getValue() === 'GLOBAL' ? 'primary' : 'secondary'} className="flex items-center gap-1">
-            {info.getValue() === 'GLOBAL' ? <Globe size={12} /> : <Building size={12} />}
-            {info.getValue() === 'GLOBAL' ? 'Hệ thống' : 'Nội bộ'}
-          </Badge>
-        ),
-      })
-    ] : []),
-    columnHelper.accessor('termCount', {
-      header: 'Số lượng từ',
-      cell: (info) => (
-        <span className="font-medium text-gray-700 dark:text-slate-300">
-          {info.getValue().toLocaleString()} từ
-        </span>
-      ),
+    columnHelper.accessor('category', {
+      header: 'Danh mục',
+      cell: (info) => <span className="text-sm text-gray-700 dark:text-slate-300">{info.getValue() || 'General'}</span>,
     }),
-    columnHelper.accessor('lastUpdated', {
-      header: 'Cập nhật cuối',
+    ...(showScope
+      ? [
+          columnHelper.accessor('scope', {
+            header: 'Phạm vi',
+            cell: (info) => (
+              <Badge variant={info.getValue() === 'GLOBAL' ? 'primary' : 'secondary'} className="flex items-center gap-1">
+                {info.getValue() === 'GLOBAL' ? <Globe size={12} /> : <Building size={12} />}
+                {info.getValue() === 'GLOBAL' ? 'Hệ thống' : 'Nội bộ'}
+              </Badge>
+            ),
+          }),
+        ]
+      : []),
+    columnHelper.accessor('isActive', {
+      header: 'Trạng thái',
       cell: (info) => (
-        <span className="text-sm text-gray-500 dark:text-slate-400">
-          {info.getValue()}
+        <span className={`inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs font-semibold ${info.getValue() ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-300' : 'bg-gray-100 text-gray-600 dark:bg-slate-800 dark:text-slate-300'}`}>
+          <ToggleLeft size={12} />
+          {info.getValue() ? 'Đang dùng' : 'Tắt'}
         </span>
       ),
     }),
@@ -89,16 +71,10 @@ const GlossaryTable: React.FC<GlossaryTableProps> = ({
       header: 'Thao tác',
       cell: (info) => (
         <div className="flex items-center gap-2">
-          <button 
-            onClick={() => onEdit?.(info.row.original)}
-            className="p-1.5 text-gray-500 hover:text-primary-600 transition"
-          >
+          <button onClick={() => onEdit?.(info.row.original)} className="p-1.5 text-gray-500 transition hover:text-primary-600">
             <Edit2 size={16} />
           </button>
-          <button 
-            onClick={() => onDelete?.(info.row.original.id)}
-            className="p-1.5 text-gray-500 hover:text-red-600 transition"
-          >
+          <button onClick={() => onDelete?.(info.row.original.id)} className="p-1.5 text-gray-500 transition hover:text-red-600">
             <Trash2 size={16} />
           </button>
         </div>
@@ -107,19 +83,15 @@ const GlossaryTable: React.FC<GlossaryTableProps> = ({
   ];
 
   const table = useReactTable({
-    data,
+    data: filteredData,
     columns,
-    state: {
-      sorting,
-    },
+    state: { sorting },
     onSortingChange: setSorting,
     getCoreRowModel: getCoreRowModel(),
     getPaginationRowModel: getPaginationRowModel(),
     getSortedRowModel: getSortedRowModel(),
     initialState: {
-      pagination: {
-        pageSize: 10,
-      },
+      pagination: { pageSize: 10 },
     },
   });
 
@@ -128,46 +100,27 @@ const GlossaryTable: React.FC<GlossaryTableProps> = ({
       <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
         <div className="relative flex-1 max-w-sm">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
-          <Input 
-            placeholder="Tìm kiếm thư viện từ vựng..." 
-            className="pl-10"
-            value={globalFilter}
-            onChange={(e) => setGlobalFilter(e.target.value)}
-          />
+          <Input placeholder="Tìm kiếm thuật ngữ..." className="pl-10" value={globalFilter} onChange={(event) => setGlobalFilter(event.target.value)} />
         </div>
-        <div className="flex items-center gap-2">
-          <Button variant="ghost" className="flex items-center gap-2">
-            <Download size={16} />
-            Xuất Excel
-          </Button>
-          <Button variant="ghost" className="flex items-center gap-2">
-            <UploadIcon size={16} />
-            Nhập Excel
-          </Button>
-          <Button variant="primary" className="flex items-center gap-2" onClick={onAdd}>
-            <Plus size={16} />
-            Thêm mới
-          </Button>
-        </div>
+        <Button variant="primary" className="flex items-center gap-2" onClick={onAdd}>
+          <Plus size={16} />
+          Thêm mới
+        </Button>
       </div>
 
       <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white dark:border-slate-800 dark:bg-slate-900">
-        <table className="w-full text-left text-sm border-collapse">
-          <thead className="bg-gray-50 dark:bg-slate-800/50 text-gray-600 dark:text-slate-400 uppercase text-xs font-semibold">
+        <table className="w-full border-collapse text-left text-sm">
+          <thead className="bg-gray-50 text-xs font-semibold uppercase text-gray-600 dark:bg-slate-800/50 dark:text-slate-400">
             {table.getHeaderGroups().map((headerGroup) => (
               <tr key={headerGroup.id}>
                 {headerGroup.headers.map((header) => (
-                  <th 
-                    key={header.id} 
-                    className="px-6 py-4 border-b border-gray-200 dark:border-slate-800 cursor-pointer hover:bg-gray-100 dark:hover:bg-slate-800 transition"
+                  <th
+                    key={header.id}
+                    className="cursor-pointer border-b border-gray-200 px-6 py-4 transition hover:bg-gray-100 dark:border-slate-800 dark:hover:bg-slate-800"
                     onClick={header.column.getToggleSortingHandler()}
                   >
                     <div className="flex items-center gap-2">
                       {flexRender(header.column.columnDef.header, header.getContext())}
-                      {{
-                        asc: ' 🔼',
-                        desc: ' 🔽',
-                      }[header.column.getIsSorted() as string] ?? null}
                     </div>
                   </th>
                 ))}
@@ -177,10 +130,7 @@ const GlossaryTable: React.FC<GlossaryTableProps> = ({
           <tbody>
             {table.getRowModel().rows.length > 0 ? (
               table.getRowModel().rows.map((row) => (
-                <tr 
-                  key={row.id} 
-                  className="group hover:bg-gray-50 dark:hover:bg-slate-800/30 transition border-b border-gray-100 dark:border-slate-800"
-                >
+                <tr key={row.id} className="group border-b border-gray-100 transition hover:bg-gray-50 dark:border-slate-800 dark:hover:bg-slate-800/30">
                   {row.getVisibleCells().map((cell) => (
                     <td key={cell.id} className="px-6 py-4">
                       {flexRender(cell.column.columnDef.cell, cell.getContext())}
@@ -191,7 +141,7 @@ const GlossaryTable: React.FC<GlossaryTableProps> = ({
             ) : (
               <tr>
                 <td colSpan={columns.length} className="px-6 py-12 text-center text-gray-500">
-                  Chưa có dữ liệu thư viện từ vựng.
+                  Chưa có dữ liệu từ điển.
                 </td>
               </tr>
             )}
@@ -200,35 +150,12 @@ const GlossaryTable: React.FC<GlossaryTableProps> = ({
       </div>
 
       <div className="flex items-center justify-between px-2">
-        <p className="text-sm text-gray-500">
-          Hiển thị {table.getRowModel().rows.length} trong tổng số {data.length} thư viện
-        </p>
+        <p className="text-sm text-gray-500">Hiển thị {table.getRowModel().rows.length} trong tổng số {filteredData.length} thuật ngữ</p>
         <div className="flex items-center gap-2">
-          <Button 
-            variant="ghost" 
-            size="sm" 
-            disabled={!table.getCanPreviousPage()}
-            onClick={() => table.previousPage()}
-          >
+          <Button variant="ghost" size="sm" disabled={!table.getCanPreviousPage()} onClick={() => table.previousPage()}>
             <ChevronLeft size={18} />
           </Button>
-          <div className="flex items-center gap-1">
-             {Array.from({ length: table.getPageCount() }, (_, i) => (
-               <button
-                 key={i}
-                 onClick={() => table.setPageIndex(i)}
-                 className={`w-8 h-8 rounded-lg text-sm font-medium transition ${table.getState().pagination.pageIndex === i ? 'bg-primary-600 text-white shadow-md' : 'text-gray-600 dark:text-slate-400 hover:bg-gray-100 dark:hover:bg-slate-800'}`}
-               >
-                 {i + 1}
-               </button>
-             ))}
-          </div>
-          <Button 
-            variant="ghost" 
-            size="sm" 
-            disabled={!table.getCanNextPage()}
-            onClick={() => table.nextPage()}
-          >
+          <Button variant="ghost" size="sm" disabled={!table.getCanNextPage()} onClick={() => table.nextPage()}>
             <ChevronRight size={18} />
           </Button>
         </div>

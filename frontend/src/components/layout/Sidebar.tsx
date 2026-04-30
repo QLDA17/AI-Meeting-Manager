@@ -88,7 +88,7 @@ const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onClose }) => {
             <div className="mb-3">
               <div className="px-4 pb-2">
                 <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-slate-400">
-                  Nhóm
+                  Phòng ban / Danh mục
                 </p>
               </div>
               <GroupNav 

@@ -1,14 +1,19 @@
-/**
- * CreateGroupModal Component
- * Modal để tạo group mới trong organization
- */
 import React, { useState } from 'react';
-import { X, Lock, Building2, Globe, Check, CheckCircle, PartyPopper, Sparkles, Info } from 'lucide-react';
+import {
+  X,
+  Lock,
+  Building2,
+  Globe,
+  Check,
+  CheckCircle,
+  PartyPopper,
+  Sparkles,
+  Info,
+} from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
-import { useAuth } from '../../context/AuthContext';
+import { usePermission } from '../../hooks/usePermission';
 import { useOrgStore } from '../../stores';
-
-import { mockGroups } from '../../data';
+import api from '../../services/api';
 import type { PrivacyLevel, Group } from '../../types';
 
 interface CreateGroupModalProps {
@@ -25,79 +30,27 @@ interface FormData {
 
 const CreateGroupModal: React.FC<CreateGroupModalProps> = ({ isOpen, onClose }) => {
   const navigate = useNavigate();
-  const { user } = useAuth();
-  const { currentOrg, loadGroups } = useOrgStore();
-  
+  const { currentOrg, loadGroups, members = [] } = useOrgStore();
+  const { hasPermission, isOrgAdmin, isSystemAdmin } = usePermission();
+
   const [formData, setFormData] = useState<FormData>({
     name: '',
     description: '',
     privacyLevel: 'private',
     selectedMembers: [],
   });
-
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<Group | null>(null);
 
-  // Mock users in org for invitation
-  const orgMembers = React.useMemo(() => {
-    if (!user?.orgMemberships) return [];
-    const orgId = currentOrg?.id || user.orgMemberships[0]?.orgId;
-    // In real app, this would come from API
-    return [
-      { id: 'user-001', email: 'nguyen.a@abc-company.com', displayName: 'Nguyễn Văn A' },
-      { id: 'user-002', email: 'tran.b@abc-company.com', displayName: 'Trần Thị B' },
-      { id: 'user-003', email: 'pham.c@abc-company.com', displayName: 'Phạm Văn C' },
-    ];
-  }, [user, currentOrg]);
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setIsSubmitting(true);
-    setError(null);
-
-    try {
-      // Simulate API call
-      await new Promise((resolve) => setTimeout(resolve, 800));
-
-      // Create new group (mock)
-      const newGroup: Group = {
-        id: `mock-group-${Date.now()}`,
-        name: formData.name,
-        orgId: currentOrg?.id || 'org-001',
-        description: formData.description,
-        privacyLevel: formData.privacyLevel,
-        memberCount: formData.selectedMembers.length + 1,
-        meetingCount: 0,
-        totalHours: 0,
-        createdBy: user?.id || 'user-001',
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      };
-
-      // Add to mock database
-      mockGroups.push(newGroup);
-
-      // Reload groups
-      if (currentOrg?.id) {
-        loadGroups(currentOrg.id);
-      }
-
-      setSuccess(newGroup);
-
-      // Auto-close after success
-      setTimeout(() => {
-        navigate(`/groups/${newGroup.id}`);
-        onClose();
-      }, 2000);
-    } catch (err) {
-      setError('Có lỗi xảy ra khi tạo group. Vui lòng thử lại.');
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
+  const canCreateGroup = hasPermission('create_group') || isOrgAdmin || isSystemAdmin;
+  const permissionError =
+    'Ban can quyen quan tri to chuc de tao nhom trong organization hien tai.';
+  const missingOrgError = 'Vui long chon to chuc truoc khi tao nhom.';
 
   const toggleMember = (userId: string) => {
+    if (!canCreateGroup) return;
+
     setFormData((prev) => ({
       ...prev,
       selectedMembers: prev.selectedMembers.includes(userId)
@@ -106,7 +59,65 @@ const CreateGroupModal: React.FC<CreateGroupModalProps> = ({ isOpen, onClose }) 
     }));
   };
 
-  const privacyOptions: Array<{ level: PrivacyLevel; icon: React.ReactNode; label: string; desc: string }> = [
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+
+    if (!canCreateGroup) {
+      setError(permissionError);
+      return;
+    }
+
+    setIsSubmitting(true);
+    setError(null);
+
+    try {
+      if (!currentOrg?.id) {
+        setError(missingOrgError);
+        return;
+      }
+
+      const response = await api.post('/api/groups', {
+        name: formData.name,
+        description: formData.description,
+        privacy_level: formData.privacyLevel,
+        organization_id: currentOrg.id,
+      });
+
+      const newGroup = response.data as Group;
+      await Promise.resolve(loadGroups(currentOrg.id));
+      setSuccess(newGroup);
+
+      setTimeout(() => {
+        navigate('/dashboard');
+        onClose();
+      }, 2000);
+    } catch (err: any) {
+      console.error('Failed to create group:', err);
+
+      const status = err.response?.status;
+      let errorMsg =
+        err.response?.data?.detail || err.message || 'Da co loi xay ra khi tao nhom.';
+
+      if (status === 403) {
+        errorMsg = permissionError;
+      } else if (status === 401) {
+        errorMsg = 'Phien dang nhap da het han. Vui long dang nhap lai.';
+      } else if (!currentOrg?.id) {
+        errorMsg = missingOrgError;
+      }
+
+      setError(typeof errorMsg === 'string' ? errorMsg : JSON.stringify(errorMsg));
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const privacyOptions: Array<{
+    level: PrivacyLevel;
+    icon: React.ReactNode;
+    label: string;
+    desc: string;
+  }> = [
     {
       level: 'private',
       icon: <Lock size={16} />,
@@ -129,7 +140,6 @@ const CreateGroupModal: React.FC<CreateGroupModalProps> = ({ isOpen, onClose }) 
 
   if (!isOpen) return null;
 
-  // Success State
   if (success) {
     return (
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
@@ -141,22 +151,28 @@ const CreateGroupModal: React.FC<CreateGroupModalProps> = ({ isOpen, onClose }) 
             <h2 className="mt-4 text-2xl font-bold text-gray-900 dark:text-slate-100">
               <PartyPopper size={24} className="text-green-600" /> Group Created Successfully!
             </h2>
-            <p className="mt-2 text-gray-600 dark:text-slate-300">
-              Welcome to "{success.name}"
-            </p>
+            <p className="mt-2 text-gray-600 dark:text-slate-300">Welcome to "{success.name}"</p>
             <p className="mt-1 text-sm text-gray-500 dark:text-slate-400">
               You are now the Group Owner
             </p>
 
             <div className="mt-6 rounded-xl bg-gray-50 p-4 dark:bg-slate-800/70">
-              <p className="text-sm font-semibold text-gray-700 dark:text-slate-200 flex items-center gap-2">
+              <p className="flex items-center gap-2 text-sm font-semibold text-gray-700 dark:text-slate-200">
                 <Sparkles size={14} className="text-primary-600" /> What's next?
               </p>
               <ul className="mt-2 space-y-1 text-sm text-gray-600 dark:text-slate-300">
-                <li className="flex items-center gap-2"><CheckCircle size={12} className="text-green-600" /> Invite more members</li>
-                <li className="flex items-center gap-2"><CheckCircle size={12} className="text-green-600" /> Upload meetings</li>
-                <li className="flex items-center gap-2"><CheckCircle size={12} className="text-green-600" /> Manage settings</li>
-                <li className="flex items-center gap-2"><CheckCircle size={12} className="text-green-600" /> View analytics</li>
+                <li className="flex items-center gap-2">
+                  <CheckCircle size={12} className="text-green-600" /> Invite more members
+                </li>
+                <li className="flex items-center gap-2">
+                  <CheckCircle size={12} className="text-green-600" /> Upload meetings
+                </li>
+                <li className="flex items-center gap-2">
+                  <CheckCircle size={12} className="text-green-600" /> Manage settings
+                </li>
+                <li className="flex items-center gap-2">
+                  <CheckCircle size={12} className="text-green-600" /> View analytics
+                </li>
               </ul>
             </div>
 
@@ -183,10 +199,9 @@ const CreateGroupModal: React.FC<CreateGroupModalProps> = ({ isOpen, onClose }) 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
       <div className="w-full max-w-2xl rounded-3xl border border-gray-200 bg-white shadow-2xl dark:border-slate-700 dark:bg-slate-900">
-        {/* Header */}
         <div className="flex items-center justify-between border-b border-gray-100 px-6 py-4 dark:border-slate-800">
           <h2 className="text-xl font-bold text-gray-900 dark:text-slate-100">
-            ➕ Create New Group
+            Create New Group
           </h2>
           <button
             onClick={onClose}
@@ -196,7 +211,6 @@ const CreateGroupModal: React.FC<CreateGroupModalProps> = ({ isOpen, onClose }) 
           </button>
         </div>
 
-        {/* Form */}
         <form onSubmit={handleSubmit} className="max-h-[70vh] overflow-y-auto p-6">
           {error && (
             <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300">
@@ -204,7 +218,12 @@ const CreateGroupModal: React.FC<CreateGroupModalProps> = ({ isOpen, onClose }) 
             </div>
           )}
 
-          {/* Organization */}
+          {!canCreateGroup && (
+            <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-900/40 dark:bg-amber-900/20 dark:text-amber-200">
+              {permissionError}
+            </div>
+          )}
+
           <div className="mb-5">
             <label className="mb-2 block text-sm font-semibold text-gray-700 dark:text-slate-200">
               Organization
@@ -212,7 +231,7 @@ const CreateGroupModal: React.FC<CreateGroupModalProps> = ({ isOpen, onClose }) 
             <div className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 dark:border-slate-700 dark:bg-slate-800">
               <Building2 size={16} className="text-gray-500" />
               <span className="text-sm font-medium text-gray-800 dark:text-slate-100">
-                {currentOrg?.name || 'ABC Company'}
+                {currentOrg?.name || 'No organization selected'}
               </span>
             </div>
             <p className="mt-1 text-xs text-gray-500 dark:text-slate-400">
@@ -220,9 +239,8 @@ const CreateGroupModal: React.FC<CreateGroupModalProps> = ({ isOpen, onClose }) 
             </p>
           </div>
 
-          {/* Group Name */}
           <div className="mb-5">
-            <label 
+            <label
               htmlFor="group-name"
               className="mb-2 block text-sm font-semibold text-gray-700 dark:text-slate-200"
             >
@@ -235,13 +253,13 @@ const CreateGroupModal: React.FC<CreateGroupModalProps> = ({ isOpen, onClose }) 
               onChange={(e) => setFormData({ ...formData, name: e.target.value })}
               placeholder='Ex: "Marketing Q3", "Tech Team", etc'
               required
-              className="w-full rounded-lg border border-gray-200 px-4 py-2.5 text-sm outline-none transition focus:border-primary-400 focus:ring-2 focus:ring-primary-100 dark:border-slate-700 dark:bg-slate-800 dark:focus:ring-primary-900/30"
+              disabled={!canCreateGroup}
+              className="w-full rounded-lg border border-gray-200 px-4 py-2.5 text-sm outline-none transition focus:border-primary-400 focus:ring-2 focus:ring-primary-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700 dark:bg-slate-800 dark:focus:ring-primary-900/30"
             />
           </div>
 
-          {/* Description */}
           <div className="mb-5">
-            <label 
+            <label
               htmlFor="group-description"
               className="mb-2 block text-sm font-semibold text-gray-700 dark:text-slate-200"
             >
@@ -253,11 +271,11 @@ const CreateGroupModal: React.FC<CreateGroupModalProps> = ({ isOpen, onClose }) 
               onChange={(e) => setFormData({ ...formData, description: e.target.value })}
               placeholder="Optional - what's this group for?"
               rows={3}
-              className="w-full rounded-lg border border-gray-200 px-4 py-2.5 text-sm outline-none transition focus:border-primary-400 focus:ring-2 focus:ring-primary-100 dark:border-slate-700 dark:bg-slate-800 dark:focus:ring-primary-900/30"
+              disabled={!canCreateGroup}
+              className="w-full rounded-lg border border-gray-200 px-4 py-2.5 text-sm outline-none transition focus:border-primary-400 focus:ring-2 focus:ring-primary-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700 dark:bg-slate-800 dark:focus:ring-primary-900/30"
             />
           </div>
 
-          {/* Privacy Level */}
           <div className="mb-5">
             <label className="mb-2 block text-sm font-semibold text-gray-700 dark:text-slate-200">
               Privacy Level
@@ -266,10 +284,12 @@ const CreateGroupModal: React.FC<CreateGroupModalProps> = ({ isOpen, onClose }) 
               {privacyOptions.map((option) => (
                 <label
                   key={option.level}
-                  className={`flex cursor-pointer items-center gap-3 rounded-lg border p-3 transition ${
+                  className={`flex items-center gap-3 rounded-lg border p-3 transition ${
+                    canCreateGroup ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'
+                  } ${
                     formData.privacyLevel === option.level
                       ? 'border-primary-300 bg-primary-50 dark:border-primary-700 dark:bg-primary-900/20'
-                      : 'border-gray-200 hover:bg-gray-50 dark:border-slate-700 dark:hover:bg-slate-800'
+                      : 'border-gray-200 dark:border-slate-700'
                   }`}
                 >
                   <input
@@ -280,6 +300,7 @@ const CreateGroupModal: React.FC<CreateGroupModalProps> = ({ isOpen, onClose }) 
                     onChange={(e) =>
                       setFormData({ ...formData, privacyLevel: e.target.value as PrivacyLevel })
                     }
+                    disabled={!canCreateGroup}
                     className="h-4 w-4 text-primary-600"
                   />
                   <div className="flex items-center gap-2">
@@ -296,25 +317,25 @@ const CreateGroupModal: React.FC<CreateGroupModalProps> = ({ isOpen, onClose }) 
             </div>
           </div>
 
-          {/* Invite Members */}
           <div className="mb-5">
             <label className="mb-2 block text-sm font-semibold text-gray-700 dark:text-slate-200">
               Invite Initial Members (Optional)
             </label>
             <div className="rounded-lg border border-gray-200 dark:border-slate-700">
               <div className="max-h-40 overflow-y-auto p-2">
-                {orgMembers.map((member) => {
+                {members.map((member) => {
                   const isSelected = formData.selectedMembers.includes(member.id);
                   return (
                     <button
                       key={member.id}
                       type="button"
                       onClick={() => toggleMember(member.id)}
+                      disabled={!canCreateGroup}
                       className={`flex w-full items-center gap-2 rounded-md px-3 py-2 text-left transition ${
                         isSelected
                           ? 'bg-primary-50 text-primary-700 dark:bg-primary-900/30 dark:text-primary-200'
                           : 'text-gray-700 hover:bg-gray-50 dark:text-slate-300 dark:hover:bg-slate-800'
-                      }`}
+                      } ${!canCreateGroup ? 'cursor-not-allowed opacity-60' : ''}`}
                     >
                       <input
                         type="checkbox"
@@ -343,14 +364,13 @@ const CreateGroupModal: React.FC<CreateGroupModalProps> = ({ isOpen, onClose }) 
             </div>
           </div>
 
-          {/* Info Note */}
           <div className="mb-6 rounded-lg bg-blue-50 p-3 dark:bg-blue-900/20">
             <p className="flex items-center gap-1.5 text-xs text-blue-700 dark:text-blue-300">
-              <Info size={12} /> <strong>Note:</strong> You will be the Group Admin. You can manage members, meetings, and settings after creation.
+              <Info size={12} /> <strong>Note:</strong> You will be the Group Admin. You can
+              manage members, meetings, and settings after creation.
             </p>
           </div>
 
-          {/* Actions */}
           <div className="flex items-center justify-end gap-3">
             <button
               type="button"
@@ -361,10 +381,10 @@ const CreateGroupModal: React.FC<CreateGroupModalProps> = ({ isOpen, onClose }) 
             </button>
             <button
               type="submit"
-              disabled={isSubmitting || !formData.name}
+              disabled={isSubmitting || !formData.name || !canCreateGroup || !currentOrg?.id}
               className="rounded-xl bg-primary-600 px-6 py-2.5 text-sm font-semibold text-white transition hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {isSubmitting ? 'Creating...' : '✓ Create Group'}
+              {isSubmitting ? 'Creating...' : 'Create Group'}
             </button>
           </div>
         </form>

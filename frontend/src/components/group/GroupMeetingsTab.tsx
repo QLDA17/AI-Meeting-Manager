@@ -19,7 +19,7 @@ import {
   Bot,
 } from 'lucide-react';
 import type { Meeting } from '../../types';
-import { format } from 'date-fns';
+import { format, isValid } from 'date-fns';
 
 interface GroupMeetingsTabProps {
   meetings: Meeting[];
@@ -27,6 +27,13 @@ interface GroupMeetingsTabProps {
 
 type StatusFilter = 'all' | 'completed' | 'processing' | 'queued' | 'failed';
 type SortOption = 'newest' | 'oldest' | 'longest';
+
+const getMeetingDate = (meeting: Meeting) => {
+  const rawDate = meeting.scheduled_start || meeting.startTime;
+  if (!rawDate) return null;
+  const parsedDate = new Date(rawDate);
+  return isValid(parsedDate) ? parsedDate : null;
+};
 
 const GroupMeetingsTab: React.FC<GroupMeetingsTabProps> = ({ meetings }) => {
   const [searchTerm, setSearchTerm] = useState('');
@@ -62,15 +69,14 @@ const GroupMeetingsTab: React.FC<GroupMeetingsTabProps> = ({ meetings }) => {
     // Sort
     switch (sortBy) {
       case 'newest':
-        result.sort((a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime());
+        result.sort((a, b) => (getMeetingDate(b)?.getTime() || 0) - (getMeetingDate(a)?.getTime() || 0));
         break;
       case 'oldest':
-        result.sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime());
+        result.sort((a, b) => (getMeetingDate(a)?.getTime() || 0) - (getMeetingDate(b)?.getTime() || 0));
         break;
       case 'longest':
-        result.sort((a, b) => b.duration - a.duration);
+        result.sort((a, b) => (b.duration || 0) - (a.duration || 0));
         break;
-
     }
 
     return result;
@@ -195,70 +201,71 @@ const GroupMeetingsTab: React.FC<GroupMeetingsTabProps> = ({ meetings }) => {
             </p>
           </div>
         ) : (
-          paginatedMeetings.map((meeting, idx) => (
-            <Link
-              key={meeting.id}
-              to={`/meetings/${meeting.id}`}
-              className="block rounded-xl border border-gray-200 bg-white p-5 transition hover:border-primary-300 hover:shadow-md dark:border-slate-700 dark:bg-slate-800/50 dark:hover:border-primary-700"
-            >
-              <div className="flex items-start justify-between gap-4">
-                <div className="flex-1">
-                  <div className="mb-2 flex items-center gap-2">
-                    <h4 className="text-base font-bold text-gray-900 dark:text-slate-100">
-                      {meeting.title}
-                    </h4>
-                    {meeting.isPinned && (
-                      <Star size={14} className="text-amber-500" fill="currentColor" />
+          paginatedMeetings.map((meeting) => {
+            const meetingDate = getMeetingDate(meeting);
+
+            return (
+              <Link
+                key={meeting.id}
+                to={`/meetings/${meeting.id}`}
+                className="block rounded-xl border border-gray-200 bg-white p-5 transition hover:border-primary-300 hover:shadow-md dark:border-slate-700 dark:bg-slate-800/50 dark:hover:border-primary-700"
+              >
+                <div className="flex items-start justify-between gap-4">
+                  <div className="flex-1">
+                    <div className="mb-2 flex items-center gap-2">
+                      <h4 className="text-base font-bold text-gray-900 dark:text-slate-100">
+                        {meeting.title}
+                      </h4>
+                      {meeting.isPinned && (
+                        <Star size={14} className="text-amber-500" fill="currentColor" />
+                      )}
+                    </div>
+
+                    {meeting.description && (
+                      <p className="mb-3 text-sm text-gray-600 dark:text-slate-300">
+                        {meeting.description}
+                      </p>
+                    )}
+
+                    <div className="flex flex-wrap items-center gap-4 text-xs text-gray-500 dark:text-slate-400">
+                      <span className="flex items-center gap-1">
+                        <Calendar size={12} />
+                        {meetingDate ? format(meetingDate, 'dd/MM/yyyy HH:mm') : 'Chưa có lịch'}
+                      </span>
+                      <span className="flex items-center gap-1">
+                        <Clock size={12} />
+                        {meeting.duration || 0} min
+                      </span>
+                      <span className="flex items-center gap-1">
+                        <Users size={12} />
+                        {Array.isArray(meeting.attendees) ? meeting.attendees.length : 0} attendees
+                      </span>
+                    </div>
+
+                    {meeting.keyPoints && (
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <span className="flex items-center gap-1 rounded-md bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700 dark:bg-blue-900/20 dark:text-blue-300">
+                          <Key size={10} /> {meeting.keyPoints.length} Key Points
+                        </span>
+                        {meeting.decisions && meeting.decisions.length > 0 && (
+                          <span className="flex items-center gap-1 rounded-md bg-green-50 px-2 py-1 text-xs font-medium text-green-700 dark:bg-green-900/20 dark:text-green-300">
+                            <CheckCircle2 size={10} /> {meeting.decisions.length} Decisions
+                          </span>
+                        )}
+                        <span className="flex items-center gap-1 rounded-md bg-purple-50 px-2 py-1 text-xs font-medium text-purple-700 dark:bg-purple-900/20 dark:text-purple-300">
+                          <Bot size={10} /> AI Summary
+                        </span>
+                      </div>
                     )}
                   </div>
 
-                  {meeting.description && (
-                    <p className="mb-3 text-sm text-gray-600 dark:text-slate-300">
-                      {meeting.description}
-                    </p>
-                  )}
-
-                  <div className="flex flex-wrap items-center gap-4 text-xs text-gray-500 dark:text-slate-400">
-                    <span className="flex items-center gap-1">
-                      <Calendar size={12} />
-                      {format(new Date(meeting.startTime), 'dd/MM/yyyy HH:mm')}
-                    </span>
-                    <span className="flex items-center gap-1">
-                      <Clock size={12} />
-                      {meeting.duration} min
-                    </span>
-                    <span className="flex items-center gap-1">
-                      <Users size={12} />
-                      {meeting.attendees?.length || 0} attendees
-                    </span>
-
+                  <div className="flex flex-col items-end gap-2">
+                    {statusBadge(meeting.status || 'completed')}
                   </div>
-
-                  {/* AI Summary Badges */}
-                  {meeting.keyPoints && (
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      <span className="rounded-md bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700 dark:bg-blue-900/20 dark:text-blue-300 flex items-center gap-1">
-                        <Key size={10} /> {meeting.keyPoints.length} Key Points
-                      </span>
-                      {meeting.decisions && meeting.decisions.length > 0 && (
-                        <span className="rounded-md bg-green-50 px-2 py-1 text-xs font-medium text-green-700 dark:bg-green-900/20 dark:text-green-300 flex items-center gap-1">
-                          <CheckCircle2 size={10} /> {meeting.decisions.length} Decisions
-                        </span>
-                      )}
-                      <span className="rounded-md bg-purple-50 px-2 py-1 text-xs font-medium text-purple-700 dark:bg-purple-900/20 dark:text-purple-300 flex items-center gap-1">
-                        <Bot size={10} /> AI Summary
-                      </span>
-                    </div>
-                  )}
                 </div>
-
-                <div className="flex flex-col items-end gap-2">
-                  {statusBadge('completed')}
-
-                </div>
-              </div>
-            </Link>
-          ))
+              </Link>
+            );
+          })
         )}
       </div>
 

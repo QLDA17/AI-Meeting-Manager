@@ -1,23 +1,23 @@
 /* eslint-disable react-refresh/only-export-comments */
-import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
-import type { User, Session, SystemRole, OrgUser, GroupUser } from '../types';
-import { mockUsers } from '../data';
+import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import type { GroupUser, OrgUser, Session, SystemRole, User } from '../types';
 import api from '../services/api';
+import { useOrgStore } from '../stores';
+import { normalizeOrganization, normalizeUser } from '../services/mappers';
 
-export type Role = SystemRole | 'admin' | 'manager' | 'staff'; // backward compat
+export type Role = SystemRole | 'admin' | 'manager' | 'staff';
 
 interface AuthContextType {
   user: User | null;
   session: Session | null;
-  login: (username: string, password: string) => Promise<void>;
+  login: (username: string, password: string) => Promise<User>;
   logout: () => void;
   switchOrg: (orgId: string) => void;
   switchGroup: (groupId: string) => void;
   isAuthenticated: boolean;
   isLoading: boolean;
   error: string | null;
-
-  // Role/Permission helpers
+  refreshUser: () => Promise<void>;
   hasPermission: (permission: string) => boolean;
   isOrgAdmin: (orgId?: string) => boolean;
   isGroupAdmin: (groupId?: string) => boolean;
@@ -27,29 +27,71 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+const toOrganizationFromMembership = (membership: OrgUser) =>
+  normalizeOrganization({
+    id: membership.orgId,
+    name: membership.orgName || 'To chuc cua toi',
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    member_count: 0,
+    group_count: 0,
+    meeting_count: 0,
+    total_hours: 0,
+    approval_status: membership.approvalStatus ?? 'active',
+  });
+
+const getFirstApprovedOrgId = (memberships: OrgUser[] = []) =>
+  memberships.find((membership) => membership.approvalStatus !== 'pending')?.orgId || '';
+
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { setCurrentOrg, setOrgs, clearOrgContext } = useOrgStore();
   const [user, setUser] = useState<User | null>(() => {
     const saved = localStorage.getItem('user');
     return saved ? JSON.parse(saved) : null;
   });
-
   const [session, setSession] = useState<Session | null>(() => {
     const saved = localStorage.getItem('session');
     return saved ? JSON.parse(saved) : null;
   });
-
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Persist to localStorage
   useEffect(() => {
-    if (user) localStorage.setItem('user', JSON.stringify(user));
-    else localStorage.removeItem('user');
+    if (user?.orgMemberships?.length) {
+      const firstApprovedOrgId = getFirstApprovedOrgId(user.orgMemberships);
+      const approvedOrgs = user.orgMemberships
+        .filter((membership) => membership.approvalStatus !== 'pending')
+        .map(toOrganizationFromMembership);
+
+      if (!approvedOrgs.length) {
+        clearOrgContext();
+        return;
+      }
+
+      setOrgs(approvedOrgs);
+      const { currentOrgId } = useOrgStore.getState();
+      if (!currentOrgId && firstApprovedOrgId) {
+        setCurrentOrg(firstApprovedOrgId);
+      }
+    } else {
+      clearOrgContext();
+    }
+  }, [clearOrgContext, user, setCurrentOrg, setOrgs]);
+
+  useEffect(() => {
+    if (user) {
+      localStorage.setItem('user', JSON.stringify(user));
+    } else {
+      localStorage.removeItem('user');
+    }
   }, [user]);
 
   useEffect(() => {
-    if (session) localStorage.setItem('session', JSON.stringify(session));
-    else localStorage.removeItem('session');
+    if (session) {
+      localStorage.setItem('session', JSON.stringify(session));
+    } else {
+      localStorage.removeItem('session');
+    }
   }, [session]);
 
   const login = useCallback(async (username: string, password: string) => {
@@ -57,90 +99,84 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setError(null);
 
     try {
-      // Try real API first
-      const response = await api.post('/api/auth/login', {
-        username,
-        password,
-        email: username.includes('@') ? username : `${username}@demo.com`,
-      });
-
-      const { access_token, user: userData } = response.data;
-
-      const newSession: Session = {
-        userId: userData.id,
-        currentOrgId: userData.orgMemberships?.[0]?.orgId || '',
+      const response = await api.post('/api/auth/login', { username, password });
+      const { access_token, user: rawUser } = response.data;
+      const nextUser = normalizeUser(rawUser);
+      const firstApprovedOrgId = getFirstApprovedOrgId(nextUser.orgMemberships);
+      const nextSession: Session = {
+        userId: nextUser.id,
+        currentOrgId: firstApprovedOrgId,
         token: access_token,
         expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
         createdAt: new Date(),
       };
 
-      setUser(userData);
-      setSession(newSession);
-    } catch (err) {
-      console.error('Login failed, falling back to mock:', err);
+      setUser(nextUser);
+      setSession(nextSession);
+      const approvedOrgs = nextUser.orgMemberships
+        .filter((membership) => membership.approvalStatus !== 'pending')
+        .map(toOrganizationFromMembership);
 
-      // Mock users - Tìm user theo email hoặc username
-      const userInput = username.toLowerCase().trim();
-      const mockUser = mockUsers.find(u => 
-        u.email.toLowerCase() === userInput || 
-        u.id.toLowerCase() === userInput ||
-        (userInput === 'superadmin' && u.id === 'user-000') ||
-        (userInput === 'admin' && u.id === 'user-001') ||
-        (userInput === 'user' && u.id === 'user-010')
-      );
-
-      if (!mockUser) {
-        setIsLoading(false);
-        setError('Tài khoản không tồn tại. Thử "superadmin" hoặc "admin".');
-        return;
-      }
-
-      const newSession: Session = {
-        userId: mockUser.id,
-        currentOrgId: mockUser.orgMemberships?.[0]?.orgId || '',
-        token: `mock-jwt-${mockUser.id}-${Date.now()}`,
-        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
-        createdAt: new Date(),
-      };
-
-      setUser(mockUser);
-      setSession(newSession);
-
-      // Điều hướng tách biệt:
-      if (mockUser.id === 'user-000') {
-        // Tài khoản superadmin -> Vào thẳng Admin Console
-        setTimeout(() => window.location.href = '/admin/console', 100);
+      if (approvedOrgs.length) {
+        setOrgs(approvedOrgs);
+        setCurrentOrg(firstApprovedOrgId);
       } else {
-        // Các tài khoản khác (bao gồm user-001) -> Vào Dashboard người dùng
-        setTimeout(() => window.location.href = '/dashboard', 100);
+        clearOrgContext();
       }
+
+      return nextUser;
+    } catch (err) {
+      console.error('Login failed:', err);
+      setError('Dang nhap that bai. Vui long kiem tra lai tai khoan va mat khau.');
+      throw err;
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [clearOrgContext, setCurrentOrg, setOrgs]);
 
   const logout = useCallback(() => {
     setUser(null);
     setSession(null);
+    clearOrgContext();
     localStorage.removeItem('user');
     localStorage.removeItem('session');
     localStorage.removeItem('auth-storage');
-  }, []);
+  }, [clearOrgContext]);
+
+  const refreshUser = useCallback(async () => {
+    try {
+      const response = await api.get('/api/auth/me');
+      const nextUser = normalizeUser(response.data);
+      const firstApprovedOrgId = getFirstApprovedOrgId(nextUser.orgMemberships);
+      const approvedOrgs = nextUser.orgMemberships
+        .filter((membership) => membership.approvalStatus !== 'pending')
+        .map(toOrganizationFromMembership);
+
+      setUser(nextUser);
+      if (session) {
+        setSession({ ...session, currentOrgId: firstApprovedOrgId });
+      }
+
+      if (approvedOrgs.length && firstApprovedOrgId) {
+        setOrgs(approvedOrgs);
+        setCurrentOrg(firstApprovedOrgId);
+      } else {
+        clearOrgContext();
+      }
+    } catch (err) {
+      console.error('Failed to refresh user:', err);
+    }
+  }, [clearOrgContext, session, setCurrentOrg, setOrgs]);
 
   const switchOrg = useCallback((orgId: string) => {
     if (!session || !user) return;
-
-    const newSession = { ...session, currentOrgId: orgId };
-    setSession(newSession);
-
-    // Update user context
-    const updatedUser = {
+    setSession({ ...session, currentOrgId: orgId, currentGroupId: undefined });
+    setUser({
       ...user,
-      orgMemberships: user.orgMemberships.map((ou: OrgUser) =>
-        ou.orgId === orgId ? { ...ou, role: ou.role } : ou
+      orgMemberships: user.orgMemberships.map((membership: OrgUser) =>
+        membership.orgId === orgId ? { ...membership } : membership,
       ),
-    };
-    setUser(updatedUser);
+    });
   }, [session, user]);
 
   const switchGroup = useCallback((groupId: string) => {
@@ -150,28 +186,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const hasPermission = useCallback((permission: string): boolean => {
     if (!user) return false;
-
-    // System admin has all permissions
     if (user.systemRole === 'system-admin') return true;
 
-    // Get role in current org
     const currentOrgMembership = user.orgMemberships?.find(
-      (ou: OrgUser) => ou.orgId === session?.currentOrgId
+      (membership: OrgUser) => membership.orgId === session?.currentOrgId,
     );
-
     if (currentOrgMembership?.role === 'org-admin') {
-      // Org admin has most permissions except system-level
       return !['manage_system_settings', 'view_audit_log'].includes(permission);
     }
 
-    // Get role in current group
     const currentGroupMembership = user.groupMemberships?.find(
-      (gu: GroupUser) => gu.groupId === session?.currentGroupId
+      (membership: GroupUser) => membership.groupId === session?.currentGroupId,
     );
-
     if (currentGroupMembership?.role === 'group-admin') {
-      // Group admin has group-level permissions
-      const groupPermissions = [
+      return [
         'read_organization',
         'read_group',
         'update_group',
@@ -192,13 +220,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         'assign_action_items',
         'view_analytics',
         'export_data',
-      ];
-      return groupPermissions.includes(permission);
+      ].includes(permission);
     }
 
     if (currentGroupMembership?.role === 'member') {
-      // Member permissions
-      const memberPermissions = [
+      return [
         'read_organization',
         'read_group',
         'create_meeting',
@@ -213,48 +239,56 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         'update_action_item',
         'assign_action_items',
         'view_analytics',
-      ];
-      return memberPermissions.includes(permission);
+      ].includes(permission);
     }
 
-    if (currentGroupMembership?.role === 'viewer' || currentOrgMembership?.role === 'viewer') {
-      // Viewer permissions (read-only)
-      const viewerPermissions = ['read_organization', 'read_group', 'read_meeting', 'download_recording', 'export_transcript', 'read_action_item', 'view_analytics'];
-      return viewerPermissions.includes(permission);
+    if (
+      currentGroupMembership?.role === 'viewer' ||
+      currentOrgMembership?.role === 'viewer'
+    ) {
+      return [
+        'read_organization',
+        'read_group',
+        'read_meeting',
+        'download_recording',
+        'export_transcript',
+        'read_action_item',
+        'view_analytics',
+      ].includes(permission);
     }
 
     return false;
-  }, [user, session]);
+  }, [session, user]);
 
   const isOrgAdmin = useCallback((orgId?: string): boolean => {
     if (!user) return false;
     const targetOrgId = orgId || session?.currentOrgId;
-    return user.orgMemberships?.some(
-      (ou: OrgUser) => ou.orgId === targetOrgId && ou.role === 'org-admin'
-    ) || false;
-  }, [user, session]);
+    return (
+      user.orgMemberships?.some(
+        (membership: OrgUser) =>
+          membership.orgId === targetOrgId && membership.role === 'org-admin',
+      ) || false
+    );
+  }, [session, user]);
 
   const isGroupAdmin = useCallback((groupId?: string): boolean => {
     if (!user) return false;
-    // If no groupId provided, check if user is group-admin in ANY group
     if (!groupId && !session?.currentGroupId) {
-      return user.groupMemberships?.some(
-        (gu: GroupUser) => gu.role === 'group-admin'
-      ) || false;
+      return (
+        user.groupMemberships?.some(
+          (membership: GroupUser) => membership.role === 'group-admin',
+        ) || false
+      );
     }
+
     const targetGroupId = groupId || session?.currentGroupId;
-    return user.groupMemberships?.some(
-      (gu: GroupUser) => gu.groupId === targetGroupId && gu.role === 'group-admin'
-    ) || false;
-  }, [user, session]);
-
-  const getCurrentOrg = useCallback(() => {
-    return session?.currentOrgId || null;
-  }, [session]);
-
-  const getCurrentGroup = useCallback(() => {
-    return session?.currentGroupId || null;
-  }, [session]);
+    return (
+      user.groupMemberships?.some(
+        (membership: GroupUser) =>
+          membership.groupId === targetGroupId && membership.role === 'group-admin',
+      ) || false
+    );
+  }, [session, user]);
 
   const value: AuthContextType = {
     user,
@@ -269,8 +303,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     hasPermission,
     isOrgAdmin,
     isGroupAdmin,
-    getCurrentOrg,
-    getCurrentGroup,
+    getCurrentOrg: () => session?.currentOrgId || null,
+    getCurrentGroup: () => session?.currentGroupId || null,
+    refreshUser,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
@@ -278,7 +313,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
 export const useAuth = () => {
   const context = useContext(AuthContext);
-  if (context === undefined) {
+  if (!context) {
     throw new Error('useAuth must be used within an AuthProvider');
   }
   return context;

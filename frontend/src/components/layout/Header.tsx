@@ -18,12 +18,14 @@ import {
 import { useAuth } from '../../context/AuthContext';
 import { useUIStore } from '../../stores';
 import Breadcrumbs from './Breadcrumbs';
+import api from '../../services/api';
 
 const Header: React.FC = () => {
   const { user, logout } = useAuth();
   const { isDarkMode, setDarkMode, setMobileSidebarOpen, mobileSidebarOpen } = useUIStore();
   const navigate = useNavigate();
   const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const [hasUnreadNotifications, setHasUnreadNotifications] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
   // Close dropdown when clicking outside
@@ -41,6 +43,30 @@ const Header: React.FC = () => {
     logout();
     navigate('/login');
   };
+
+  useEffect(() => {
+    let cancelled = false;
+    const fetchNotifications = async () => {
+      if (!user) {
+        if (!cancelled) setHasUnreadNotifications(false);
+        return;
+      }
+      try {
+        const res = await api.get('/api/notifications');
+        const unread = Array.isArray(res.data) && res.data.some((n: any) => !n?.isRead);
+        if (!cancelled) setHasUnreadNotifications(unread);
+      } catch {
+        if (!cancelled) setHasUnreadNotifications(false);
+      }
+    };
+
+    fetchNotifications();
+    const timer = window.setInterval(fetchNotifications, 20000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [user]);
 
   return (
     <header className="sticky top-0 z-30 border-b border-gray-200 bg-white/90 px-4 py-3 backdrop-blur dark:border-slate-800 dark:bg-slate-900/90 lg:px-8">
@@ -91,7 +117,9 @@ const Header: React.FC = () => {
             aria-label="Notifications"
           >
             <Bell size={18} />
-            <span className="absolute right-1 top-1 h-2 w-2 rounded-full bg-red-500" />
+            {hasUnreadNotifications && (
+              <span className="absolute right-1 top-1 h-2 w-2 rounded-full bg-red-500" />
+            )}
           </Link>
 
           {/* User Avatar & Dropdown */}

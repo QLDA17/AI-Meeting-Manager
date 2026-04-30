@@ -6,12 +6,9 @@
  * Use useAppStore().getMeetingsByGroupId(groupId) for group meetings.
  */
 import { create } from 'zustand';
-import type { Group, User } from '../types';
-import {
-  mockGroups,
-  mockUsers,
-  getGroupById,
-} from '../data';
+import type { Group, User, Meeting } from '../types';
+import api from '../services/api';
+import { normalizeGroup, normalizeMeeting, normalizeUser } from '../services/mappers';
 
 interface GroupState {
   // Current context
@@ -21,15 +18,18 @@ interface GroupState {
   // Data
   group: Group | null;
   members: User[];
+  meetings: Meeting[];
 
   // UI State
   isLoading: boolean;
   error: string | null;
 
   // Actions
-  setCurrentGroup: (groupId: string) => void;
-  loadGroup: (groupId: string) => void;
-  loadMembers: (groupId: string) => void;
+  setCurrentGroup: (groupId: string | null) => void;
+  loadGroup: (groupId: string) => Promise<void>;
+  loadMembers: (groupId: string) => Promise<void>;
+  loadMeetings: (groupId: string) => Promise<void>;
+  updateGroup: (groupId: string, data: Partial<Group>) => Promise<void>;
   clearError: () => void;
 
   // Computed
@@ -47,37 +47,78 @@ export const useGroupStore = create<GroupState>((set, get) => ({
   currentGroup: null,
   group: null,
   members: [],
+  meetings: [],
   isLoading: false,
   error: null,
 
   // Actions
-  setCurrentGroup: (groupId: string) => {
-    const group = mockGroups.find((g) => g.id === groupId) || null;
-    set({ currentGroupId: groupId, currentGroup: group });
-    // Auto-load related data
-    get().loadMembers(groupId);
+  setCurrentGroup: (groupId: string | null) => {
+    set({ currentGroupId: groupId });
+    if (groupId) {
+      get().loadGroup(groupId);
+      get().loadMembers(groupId);
+    } else {
+      set({ currentGroup: null, group: null, members: [], meetings: [] });
+    }
   },
 
-  loadGroup: (groupId: string) => {
+  loadGroup: async (groupId: string) => {
     set({ isLoading: true, error: null });
-    setTimeout(() => {
-      const group = getGroupById(groupId);
-      if (group) {
-        set({ group, isLoading: false });
-      } else {
-        set({ error: 'Group not found', isLoading: false });
-      }
-    }, 300);
+    try {
+      const response = await api.get(`/api/groups/${groupId}`);
+      const normalizedGroup = normalizeGroup(response.data);
+      set({ group: normalizedGroup, currentGroup: normalizedGroup, isLoading: false });
+    } catch (err: any) {
+      const errorMsg = err.response?.data?.detail || err.message || 'Group not found';
+      set({ group: null, currentGroup: null, error: errorMsg, isLoading: false });
+    }
   },
 
-  loadMembers: (groupId: string) => {
+  loadMembers: async (groupId: string) => {
     set({ isLoading: true });
-    setTimeout(() => {
-      const members = mockUsers.filter((u) =>
-        u.groupMemberships.some((gu) => gu.groupId === groupId)
-      );
-      set({ members, isLoading: false });
-    }, 300);
+    try {
+      const response = await api.get(`/api/groups/${groupId}/members`);
+      set({ members: Array.isArray(response.data) ? response.data.map(normalizeUser) : [], isLoading: false });
+    } catch (err: any) {
+      const errorMsg = err.response?.data?.detail || 'Failed to load members';
+      set((state) => ({ error: state.error || errorMsg, isLoading: false }));
+    }
+  },
+
+  loadMeetings: async (groupId: string) => {
+    set({ isLoading: true });
+    try {
+      const response = await api.get(`/api/meetings?group_id=${groupId}`);
+      const normalizedMeetings = Array.isArray(response.data)
+        ? response.data.map(normalizeMeeting)
+        : [];
+      set({ meetings: normalizedMeetings, isLoading: false });
+    } catch (err: any) {
+      const errorMsg = err.response?.data?.detail || 'Failed to load meetings';
+      set((state) => ({ error: state.error || errorMsg, isLoading: false }));
+    }
+  },
+
+  updateGroup: async (groupId: string, data: Partial<Group>) => {
+    set({ isLoading: true, error: null });
+    try {
+      // Map frontend naming back to backend naming if necessary
+      const payload = {
+        ...data,
+        privacy_level: data.privacyLevel || undefined
+      };
+      const response = await api.patch(`/api/groups/${groupId}`, payload);
+      const normalizedGroup = normalizeGroup(response.data);
+      set((state) => ({
+        group: normalizedGroup,
+        currentGroup: state.currentGroupId === groupId ? normalizedGroup : state.currentGroup,
+        isLoading: false
+      }));
+    } catch (err: any) {
+      const errorMsg = err.response?.data?.detail || err.message || 'Failed to update group';
+      set({ error: errorMsg, isLoading: false });
+      throw err;
+    }
   },
 
   clearError: () => set({ error: null }),
@@ -94,10 +135,7 @@ export const useGroupStore = create<GroupState>((set, get) => ({
   },
 
   getMembersByGroup: () => {
-    const { currentGroupId } = get();
-    if (!currentGroupId) return [];
-    return mockUsers.filter((u) =>
-      u.groupMemberships.some((gu) => gu.groupId === currentGroupId)
-    );
+    const { members } = get();
+    return members;
   },
 }));
