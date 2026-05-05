@@ -11,7 +11,6 @@ services:
       - "8000:8000"
     environment:
       - DATABASE_URL=mysql+pymysql://multiminutes:multiminutes_password@db:3306/multiminutes
-      - REDIS_URL=redis://redis:6379/0
       - SMTP_HOST=smtp.gmail.com
       - SMTP_PORT=587
       - SMTP_USER=${SMTP_USER}
@@ -28,7 +27,6 @@ services:
       - ./exports:/app/exports
     depends_on:
       - db
-      - redis
     networks:
       - multiminutes-network
     restart: unless-stopped
@@ -50,7 +48,6 @@ services:
       - MYSQL_ROOT_PASSWORD=root_password
     volumes:
       - mysql-data:/var/lib/mysql
-      - ./database/mysql_schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
     ports:
       - "3307:3306"
     networks:
@@ -58,23 +55,6 @@ services:
     restart: unless-stopped
     healthcheck:
       test: [ "CMD-SHELL", "mysqladmin ping -h localhost -uroot -proot_password" ]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  # Redis Cache
-  redis:
-    image: redis:7-alpine
-    container_name: multiminutes-redis
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis-data:/data
-    networks:
-      - multiminutes-network
-    restart: unless-stopped
-    healthcheck:
-      test: [ "CMD", "redis-cli", "ping" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -116,4 +96,3 @@ networks:
 
 volumes:
   mysql-data:
-  redis-data:
