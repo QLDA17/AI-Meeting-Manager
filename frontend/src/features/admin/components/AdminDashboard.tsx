@@ -30,8 +30,8 @@ import {
   Cell,
 } from 'recharts';
 import { useAdminStore } from '../stores/adminStore';
-import { useAppStore } from '../../../stores';
-import { mockOrganizations, mockUsers } from '../../../data';
+import { useAppStore } from '@/shared/lib/stores';
+import { mockOrganizations, mockUsers } from '@/shared/mockData';
 import { clsx } from 'clsx';
 import { format } from 'date-fns';
 

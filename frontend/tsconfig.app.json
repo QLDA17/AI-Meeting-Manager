@@ -20,7 +20,13 @@
     "noUnusedParameters": false,
     "noFallthroughCasesInSwitch": true,
     "strict": false,
-    "strictNullChecks": false
+    "strictNullChecks": false,
+
+    /* Path Aliases */
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"]
+    }
   },
   "include": ["src"]
 }

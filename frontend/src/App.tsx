@@ -2,33 +2,33 @@ import React from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Toaster } from 'react-hot-toast';
-import { AuthProvider, useAuth } from './context/AuthContext';
-import { usePermission } from './hooks/usePermission';
-import Layout from './layouts/Layout';
-import AdminLayout from './layouts/AdminLayout';
+import { AuthProvider, useAuth } from '@/features/auth/context/AuthContext';
+import { usePermission } from '@/shared/hooks/usePermission';
+import Layout from '@/shared/layouts/Layout';
+import AdminLayout from '@/shared/layouts/AdminLayout';
 
 // Lazy loaded pages
-import Landing from './pages/Landing';
-const Login = React.lazy(() => import('./pages/Login'));
-const Register = React.lazy(() => import('./pages/Register'));
-const ForgotPassword = React.lazy(() => import('./pages/ForgotPassword'));
-const Dashboard = React.lazy(() => import('./pages/Dashboard'));
-const MeetingList = React.lazy(() => import('./pages/MeetingList'));
-const MeetingDetail = React.lazy(() => import('./pages/MeetingDetail'));
-const Calendar = React.lazy(() => import('./pages/meeting/Calendar'));
-const CreateMeeting = React.lazy(() => import('./pages/CreateMeeting'));
-const MeetingRoom = React.lazy(() => import('./pages/MeetingRoom'));
-const JoinMeeting = React.lazy(() => import('./pages/JoinMeeting'));
-const UploadAudio = React.lazy(() => import('./pages/meeting/UploadAudio'));
-const Notifications = React.lazy(() => import('./pages/Notifications'));
-const ActionItems = React.lazy(() => import('./pages/ActionItems'));
-const NotFound = React.lazy(() => import('./pages/NotFound'));
-const Forbidden = React.lazy(() => import('./pages/Forbidden'));
-const GroupDetail = React.lazy(() => import('./pages/group/GroupDetail'));
-const CreateGroup = React.lazy(() => import('./pages/group/CreateGroup'));
-const OrgAdminConsole = React.lazy(() => import('./pages/org/OrgAdminConsole'));
-const SystemAdminConsole = React.lazy(() => import('./pages/admin/SystemAdminConsole'));
-const Profile = React.lazy(() => import('./pages/profile/Profile'));
+import Landing from '@/features/landing/pages/Landing';
+const Login = React.lazy(() => import('@/features/auth/pages/Login'));
+const Register = React.lazy(() => import('@/features/auth/pages/Register'));
+const ForgotPassword = React.lazy(() => import('@/features/auth/pages/ForgotPassword'));
+const Dashboard = React.lazy(() => import('@/features/meetings/pages/Dashboard'));
+const MeetingList = React.lazy(() => import('@/features/meetings/pages/MeetingList'));
+const MeetingDetail = React.lazy(() => import('@/features/meetings/pages/MeetingDetail'));
+const Calendar = React.lazy(() => import('@/features/calendar/pages/Calendar'));
+const CreateMeeting = React.lazy(() => import('@/features/meetings/pages/CreateMeeting'));
+const MeetingRoom = React.lazy(() => import('@/features/meetings/pages/MeetingRoom'));
+const JoinMeeting = React.lazy(() => import('@/features/meetings/pages/JoinMeeting'));
+const UploadAudio = React.lazy(() => import('@/features/meetings/pages/UploadAudio'));
+const Notifications = React.lazy(() => import('@/features/notifications/pages/Notifications'));
+const ActionItems = React.lazy(() => import('@/features/meetings/pages/ActionItems'));
+const NotFound = React.lazy(() => import('@/shared/pages/NotFound'));
+const Forbidden = React.lazy(() => import('@/shared/pages/Forbidden'));
+const GroupDetail = React.lazy(() => import('@/features/groups/pages/GroupDetail'));
+const CreateGroup = React.lazy(() => import('@/features/groups/pages/CreateGroup'));
+const OrgAdminConsole = React.lazy(() => import('@/features/admin/org/pages/OrgAdminConsole'));
+const SystemAdminConsole = React.lazy(() => import('@/features/admin/system/pages/SystemAdminConsole'));
+const Profile = React.lazy(() => import('@/features/profile/pages/Profile'));
 
 const queryClient = new QueryClient({
   defaultOptions: {
