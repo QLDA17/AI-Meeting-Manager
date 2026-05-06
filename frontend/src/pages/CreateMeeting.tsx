@@ -21,7 +21,9 @@ import {
 } from "lucide-react";
 import { Card, Button, Input, Tooltip, showToast, MultiSelect, Badge } from "../components/ui";
 import { useAuth } from "../context/AuthContext";
-import { useOrgStore, useGlossaryStore } from "../stores";
+import { useOrgStore, useGlossaryStore, useAppStore } from "../stores";
+import api from "../services/api";
+import { normalizeMeeting } from "../services/mappers";
 
 const generateMeetingCode = (): string => {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -46,7 +48,8 @@ const CreateMeeting: React.FC = () => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const { user } = useAuth();
-  const { groups } = useOrgStore();
+  const { groups, currentOrgId } = useOrgStore();
+  const { addMeeting } = useAppStore();
   const { glossaries, loadGlossaries } = useGlossaryStore();
 
   const [step, setStep] = useState<"setup" | "invite">("setup");
@@ -131,7 +134,7 @@ const CreateMeeting: React.FC = () => {
     }
   };
 
-  const startMeeting = () => {
+  const startMeeting = async () => {
     if (!title.trim()) {
       showToast.error("Vui lòng nhập tên cuộc họp");
       return;
@@ -140,6 +143,22 @@ const CreateMeeting: React.FC = () => {
       showToast.error("Vui lòng chọn nhóm cho cuộc họp");
       return;
     }
+
+    try {
+      const response = await api.post("/api/meetings", {
+        title,
+        organization_id: currentOrgId,
+        group_id: selectedGroupId,
+        code: meetingCode,
+        status: "live",
+      });
+      addMeeting(normalizeMeeting(response.data));
+    } catch (err) {
+      console.error("Failed to create meeting:", err);
+      showToast.error("Không thể tạo cuộc họp. Vui lòng thử lại.");
+      return;
+    }
+
     navigate(`/room/${meetingCode}`, {
       state: {
         title,

@@ -1,19 +1,39 @@
 from typing import Dict, Any, List, Union
-from src.providers.stt import WhisperProvider
-from src.providers.phowhisper import PhowhisperProvider
-from src.providers.google_stt import GoogleSTTProvider
 import os
+import logging
+
+logger = logging.getLogger(__name__)
 
 class STTService:
-    """STT service coordinating Whisper or Phowhisper transcription."""
-    
-    def __init__(self, provider: Union[WhisperProvider, PhowhisperProvider, GoogleSTTProvider] = None):
+    """STT service coordinating Whisper, Phowhisper, Deepgram, or Google transcription."""
+
+    def __init__(self, provider=None):
         if provider:
             self.provider = provider
-        elif os.getenv("LLM_PROVIDER") == "google":
-            self.provider = GoogleSTTProvider()
         else:
-            self.provider = WhisperProvider()
+            stt_provider = os.getenv("STT_PROVIDER", "deepgram").lower()
+            if stt_provider == "deepgram":
+                from src.providers.deepgram import DeepgramProvider
+                self.provider = DeepgramProvider()
+            elif stt_provider == "phowhisper":
+                from src.providers.phowhisper import PhowhisperProvider
+                self.provider = PhowhisperProvider()
+            elif stt_provider == "google":
+                try:
+                    from src.providers.google_stt import GoogleSTTProvider
+                    self.provider = GoogleSTTProvider()
+                except ImportError as e:
+                    logger.warning(f"Google STT not available ({e}), falling back to Deepgram")
+                    from src.providers.deepgram import DeepgramProvider
+                    self.provider = DeepgramProvider()
+            else:
+                # Default fallback
+                try:
+                    from src.providers.stt import WhisperProvider
+                    self.provider = WhisperProvider()
+                except ImportError:
+                    from src.providers.deepgram import DeepgramProvider
+                    self.provider = DeepgramProvider()
 
     def transcribe_audio(self, audio_path: str) -> Dict[str, Any]:
         """Convert audio file to transcript with segments."""

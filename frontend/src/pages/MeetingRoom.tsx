@@ -30,7 +30,7 @@ import {
   Settings
 } from "lucide-react";
 import { showToast } from "../components/ui";
-import { useWebSocket } from "../hooks";
+import { useWebSocket, useAudioRecorder } from "../hooks";
 import { useAuth } from "../context/AuthContext";
 import { useAppStore } from "../stores";
 import { clsx } from "clsx";
@@ -60,17 +60,6 @@ type SidePanel = "chat" | "participants" | "ai-notes" | null;
 // ─── Mock Data ───────────────────────────────────────────────────────────────
 
 const WAVEFORM_HEIGHTS = [0, 1, 2, 3, 4, 5, 4, 3, 2, 1, 0].map(() => Math.random() * 40 + 10);
-
-const MOCK_PARTICIPANTS: Omit<Participant, "id">[] = [];
-
-const MOCK_TRANSCRIPTS: any[] = [];
-
-const MOCK_AI_NOTES = {
-  keyPoints: [],
-  decisions: [],
-  actionItems: [],
-  summary: "Đang lắng nghe và tóm tắt cuộc họp...",
-};
 
 // ─── Helper Components ───────────────────────────────────────────────────────
 
@@ -139,9 +128,49 @@ const RecordingTimer: React.FC<{ isRecording: boolean }> = ({ isRecording }) => 
   );
 };
 
+// ─── Error Boundary ─────────────────────────────────────────────────────────
+
+class MeetingRoomErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { hasError: boolean; error: Error | null }
+> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+    console.error("MeetingRoom Error:", error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#020617] text-white">
+          <div className="text-center p-8">
+            <h2 className="text-xl font-bold mb-4">Lỗi tải phòng họp</h2>
+            <p className="text-slate-400 mb-4">{this.state.error?.message}</p>
+            <button
+              onClick={() => window.location.reload()}
+              className="px-6 py-2 bg-indigo-600 rounded-xl hover:bg-indigo-700"
+            >
+              Tải lại trang
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 // ─── Component ───────────────────────────────────────────────────────────────
 
-const MeetingRoom: React.FC = () => {
+const MeetingRoomInner: React.FC = () => {
   const navigate = useNavigate();
   const { code } = useParams<{ code: string }>();
   const { user } = useAuth();
@@ -171,7 +200,20 @@ const MeetingRoom: React.FC = () => {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const { status: wsStatus, connect, disconnect } = useWebSocket();
 
-  const spotlightParticipant = useMemo(() => 
+  // Audio Recorder - PhoWhisper STT
+  const meetingId = meeting?.id || null;
+  const {
+    isRecording: isAudioRecording,
+    liveTranscripts,
+    fullTranscript,
+    allSegments,
+    startRecording,
+    stopRecording,
+    finalize,
+    error: recorderError,
+  } = useAudioRecorder(localStream, meetingId);
+
+  const spotlightParticipant = useMemo(() =>
     participants.find(p => p.id === spotlightId) || participants[0]
   , [participants, spotlightId]);
 
@@ -222,6 +264,17 @@ const MeetingRoom: React.FC = () => {
       if (localStream) localStream.getAudioTracks().forEach(t => t.stop());
     };
   }, []);
+
+  // Auto-start audio recording when stream is ready
+  useEffect(() => {
+    if (localStream && !isAudioRecording && meetingId) {
+      const timer = setTimeout(() => {
+        startRecording();
+        showToast.info("Đã bắt đầu ghi âm và phiên âm AI");
+      }, 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [localStream, meetingId]);
 
   // Strict Camera Toggle Effect
   useEffect(() => {
@@ -281,11 +334,32 @@ const MeetingRoom: React.FC = () => {
     }
   };
 
-  const leaveMeeting = () => {
+  const [isFinalizing, setIsFinalizing] = useState(false);
+
+  const leaveMeeting = async () => {
     stopCameraHardware();
     localStream?.getAudioTracks().forEach(t => t.stop());
     screenStream?.getTracks().forEach(t => t.stop());
-    navigate("/meetings");
+
+    // Finalize recording if we have a meeting and transcripts
+    if (meetingId && liveTranscripts.length > 0) {
+      setIsFinalizing(true);
+      showToast.info("Đang lưu transcript và tóm tắt AI...");
+      try {
+        await finalize(meetingId);
+        showToast.success("Đã lưu transcript thành công!");
+        navigate(`/meetings/${meetingId}`);
+      } catch {
+        showToast.error("Lưu transcript thất bại, nhưng meeting vẫn được tạo");
+        navigate("/meetings");
+      } finally {
+        setIsFinalizing(false);
+      }
+    } else if (meetingId) {
+      navigate(`/meetings/${meetingId}`);
+    } else {
+      navigate("/meetings");
+    }
   };
 
   const sendChat = (e: React.FormEvent) => {
@@ -324,7 +398,7 @@ const MeetingRoom: React.FC = () => {
              <span className="text-xs font-bold text-green-400">{localStream && cameraOn ? 'LIVE' : 'OFFLINE'}</span>
           </div>
           <div className="flex items-center gap-3 px-4 py-2 rounded-2xl bg-slate-900 border border-slate-800">
-             <RecordingTimer isRecording={isRecording} />
+             <RecordingTimer isRecording={isAudioRecording} />
              <div className="h-4 w-px bg-slate-800" />
              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">AI Transcript Live</p>
           </div>
@@ -387,7 +461,7 @@ const MeetingRoom: React.FC = () => {
                   <div className="flex items-center gap-3.5">
                     <div className="w-12 h-12 rounded-2xl bg-slate-800 overflow-hidden border border-white/10 relative shadow-inner">
                        {cameraOn && localStream ? (
-                          <VideoView stream={localStream} mirror={true} className="scale-110" />
+                          <VideoView stream={localStream} mirror={true} className="scale-110" muted={true} />
                        ) : (
                           <div className="h-full w-full flex items-center justify-center bg-gradient-to-br from-indigo-500/20 to-slate-800 text-indigo-400 font-black text-lg">
                             {(user?.displayName || "Me")[0]}
@@ -521,10 +595,11 @@ const MeetingRoom: React.FC = () => {
               {spotlightId === 'me' ? (
                 localStream && cameraOn ? (
                   <div className="h-full w-full bg-black relative">
-                    <VideoView 
+                    <VideoView
                       stream={screenSharing && screenStream && mainView === "screen" ? screenStream : localStream}
                       mirror={!(screenSharing && screenStream && mainView === "screen")}
                       objectFit={screenSharing && screenStream && mainView === "screen" ? 'contain' : 'cover'}
+                      muted={true}
                     />
                     
                     {screenSharing && screenStream && localStream && (
@@ -532,10 +607,11 @@ const MeetingRoom: React.FC = () => {
                         onClick={() => setMainView(mainView === "camera" ? "screen" : "camera")}
                         className="absolute bottom-4 right-4 w-48 h-36 rounded-xl overflow-hidden border-2 border-indigo-500/40 shadow-2xl bg-black cursor-pointer hover:border-indigo-500 transition-all z-10 group/pip"
                       >
-                        <VideoView 
+                        <VideoView
                           stream={mainView === "screen" ? localStream : screenStream}
                           mirror={mainView === "screen"}
                           objectFit={mainView === "screen" ? 'cover' : 'contain'}
+                          muted={true}
                         />
                         <div className="absolute inset-0 bg-black/40 opacity-0 group-hover/pip:opacity-100 flex items-center justify-center transition-opacity">
                            <Maximize2 size={16} className="text-white" />
@@ -615,8 +691,8 @@ const MeetingRoom: React.FC = () => {
                    <Sparkles size={22} />
                 </button>
                 <div className="w-px h-8 bg-white/10 mx-1" />
-                <button onClick={leaveMeeting} className="p-4 rounded-full bg-rose-600 text-white hover:bg-rose-700 shadow-lg shadow-rose-600/40 transition-all active:scale-95 group/leave">
-                   <PhoneOff size={22} className="group-hover/leave:-rotate-[135deg] transition-transform duration-500" />
+                <button onClick={leaveMeeting} disabled={isFinalizing} className={clsx("p-4 rounded-full shadow-lg transition-all active:scale-95 group/leave", isFinalizing ? "bg-amber-600 cursor-wait" : "bg-rose-600 hover:bg-rose-700 shadow-rose-600/40")}>
+                   <PhoneOff size={22} className={clsx("transition-transform duration-500", isFinalizing ? "animate-spin" : "group-hover/leave:-rotate-[135deg]")} />
                 </button>
              </div>
           </div>
@@ -646,63 +722,89 @@ const MeetingRoom: React.FC = () => {
               <div className="flex-1 overflow-y-auto p-6 custom-scrollbar space-y-8">
                  {sidePanel === 'ai-notes' ? (
                    <>
+                      {/* Recording Status */}
+                      <div className="flex items-center gap-3 p-4 rounded-2xl bg-slate-900/50 border border-slate-800">
+                         <div className={`w-3 h-3 rounded-full ${isAudioRecording ? 'bg-red-500 animate-pulse' : 'bg-slate-600'}`} />
+                         <span className="text-xs font-bold text-slate-300">
+                            {isAudioRecording ? 'Đang ghi âm & phiên âm AI...' : isFinalizing ? 'Đang lưu và tóm tắt...' : 'Chưa ghi âm'}
+                         </span>
+                         {liveTranscripts.length > 0 && (
+                            <span className="ml-auto text-[10px] font-bold text-indigo-400">{liveTranscripts.length} đoạn</span>
+                         )}
+                      </div>
+
+                      {recorderError && (
+                         <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-xs">
+                            {recorderError}
+                         </div>
+                      )}
+
+                      {/* Live Transcript Sections */}
                       <div className="space-y-4">
                          <div className="flex items-center gap-2 text-indigo-400">
                             <FileText size={16} />
-                            <span className="text-xs font-bold uppercase tracking-widest">Tóm tắt nội dung</span>
+                            <span className="text-xs font-bold uppercase tracking-widest">Phiên âm trực tiếp</span>
                          </div>
-                         <div className="p-5 rounded-[1.5rem] bg-indigo-500/5 border border-indigo-500/10 text-slate-300 text-sm leading-relaxed">
-                            {MOCK_AI_NOTES.summary}
-                         </div>
-                      </div>
-                      <div className="space-y-4">
-                         <div className="flex items-center gap-2 text-emerald-400">
-                            <Target size={16} />
-                            <span className="text-xs font-bold uppercase tracking-widest">Quyết định chốt</span>
-                         </div>
-                         <div className="space-y-2">
-                            {MOCK_AI_NOTES.decisions.map((d, i) => (
-                               <div key={i} className="flex gap-3 items-start p-4 rounded-2xl bg-emerald-500/5 border border-emerald-500/10">
-                                  <Check className="text-emerald-500 flex-shrink-0 mt-0.5" size={16} />
-                                  <p className="text-sm text-slate-300">{d}</p>
+                         <div className="space-y-3 max-h-[60vh] overflow-y-auto custom-scrollbar">
+                            {liveTranscripts.length === 0 ? (
+                               <div className="p-5 rounded-[1.5rem] bg-indigo-500/5 border border-indigo-500/10 text-slate-500 text-sm text-center">
+                                  {isAudioRecording ? "Đang lắng nghe... Hãy nói chuyện để xem phiên âm real-time." : "Chờ bắt đầu ghi âm..."}
                                </div>
-                            ))}
-                         </div>
-                      </div>
-                      <div className="space-y-4">
-                         <div className="flex items-center gap-2 text-amber-400">
-                            <ListChecks size={16} />
-                            <span className="text-xs font-bold uppercase tracking-widest">Việc cần làm</span>
-                         </div>
-                         <div className="space-y-3">
-                            {MOCK_AI_NOTES.actionItems.map((item, i) => (
-                               <div key={i} className="p-4 rounded-2xl bg-amber-500/5 border border-amber-500/10 flex flex-col gap-2">
-                                  <p className="text-sm font-bold text-slate-200">{item.task}</p>
-                                  <div className="flex items-center justify-between">
-                                     <span className="text-[10px] font-bold text-amber-500/80 uppercase">{item.owner}</span>
-                                     <span className="text-[10px] font-bold text-slate-500">{item.deadline}</span>
+                            ) : (
+                               liveTranscripts.map((t) => (
+                                  <div key={t.id} className="p-4 rounded-2xl bg-indigo-500/5 border border-indigo-500/10">
+                                     <div className="flex items-center gap-2 mb-2">
+                                        <span className="text-[10px] font-bold text-indigo-400">
+                                           {new Date(t.timestamp).toLocaleTimeString("vi-VN")}
+                                        </span>
+                                        <span className="text-[10px] font-bold text-slate-600">
+                                           {t.segments.length > 0 ? `${t.segments.length} câu` : ""}
+                                        </span>
+                                     </div>
+                                     <p className="text-sm text-slate-300 leading-relaxed">{t.text}</p>
                                   </div>
-                               </div>
-                            ))}
+                               ))
+                            )}
                          </div>
                       </div>
+
+                      {/* Full Transcript Preview */}
+                      {fullTranscript && (
+                         <div className="space-y-4">
+                            <div className="flex items-center gap-2 text-emerald-400">
+                               <Target size={16} />
+                               <span className="text-xs font-bold uppercase tracking-widest">Toàn bộ transcript</span>
+                            </div>
+                            <div className="p-4 rounded-2xl bg-emerald-500/5 border border-emerald-500/10 text-sm text-slate-400 max-h-40 overflow-y-auto custom-scrollbar leading-relaxed">
+                               {fullTranscript}
+                            </div>
+                         </div>
+                      )}
                    </>
                  ) : (
                    <div className="flex flex-col h-full">
                       <div className="flex-1 space-y-4">
-                         {MOCK_TRANSCRIPTS.map((t, i) => (
-                            <div key={i} className="flex flex-col gap-1">
-                               <span className="text-[10px] font-black text-indigo-400 uppercase tracking-tighter">{t.speaker}</span>
-                               <div className="px-4 py-2.5 rounded-2xl bg-slate-900 border border-slate-800 text-sm text-slate-300">
-                                  {t.text}
-                               </div>
+                         {liveTranscripts.length === 0 ? (
+                            <div className="p-4 text-center text-slate-600 text-sm">
+                               Chưa có transcript. Hãy nói chuyện để xem phiên âm.
                             </div>
-                         ))}
+                         ) : (
+                            liveTranscripts.map((t) => (
+                               <div key={t.id} className="flex flex-col gap-1">
+                                  <span className="text-[10px] font-black text-indigo-400 uppercase tracking-tighter">
+                                     {new Date(t.timestamp).toLocaleTimeString("vi-VN")}
+                                  </span>
+                                  <div className="px-4 py-2.5 rounded-2xl bg-slate-900 border border-slate-800 text-sm text-slate-300">
+                                     {t.text}
+                                  </div>
+                               </div>
+                            ))
+                         )}
                       </div>
                       <div className="pt-6">
                          <form onSubmit={sendChat} className="relative">
-                            <input 
-                              type="text" 
+                            <input
+                              type="text"
                               value={chatInput}
                               onChange={(e) => setChatInput(e.target.value)}
                               placeholder="Gửi tin nhắn cho mọi người..."
@@ -723,11 +825,17 @@ const MeetingRoom: React.FC = () => {
 
       {!sidePanel && spotlightId !== 'me' && (
          <div className="absolute bottom-24 right-8 w-48 aspect-video rounded-3xl bg-slate-900 border border-slate-700 shadow-2xl overflow-hidden hidden lg:block z-10">
-            <VideoView stream={localStream} mirror={true} />
+            <VideoView stream={localStream} mirror={true} muted={true} />
          </div>
       )}
     </div>
   );
 };
+
+const MeetingRoom: React.FC = () => (
+  <MeetingRoomErrorBoundary>
+    <MeetingRoomInner />
+  </MeetingRoomErrorBoundary>
+);
 
 export default MeetingRoom;

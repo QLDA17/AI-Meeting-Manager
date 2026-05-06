@@ -161,15 +161,31 @@ ADMIN_PROMPTS: Dict[str, Dict[str, Any]] = {
         "key": "summary_vi",
         "name": "Tom tat cuoc hop (VI)",
         "description": "Prompt tao tom tat cuoc hop bang tieng Viet",
-        "content": "Dua tren transcript, hay tao tom tat cuoc hop.",
+        "content": "Dựa trên transcript cuộc họp dưới đây, hãy tạo bản tóm tắt ngắn gọn bằng tiếng Việt. Chỉ trả về nội dung tóm tắt, không giải thích.",
         "version": "1.0.0",
         "last_updated": datetime.utcnow().isoformat(),
     },
     "action_items": {
         "key": "action_items",
         "name": "Trich xuat cong viec",
-        "description": "Prompt trich xuat action items",
-        "content": "Trich xuat cac cong viec can lam tu transcript.",
+        "description": "Prompt trich xuat action items tu transcript",
+        "content": "Dựa trên transcript cuộc họp, hãy trích xuất các công việc cần làm (action items). Trả về JSON array với format: [{\"task\": \"mô tả công việc\", \"owner\": \"người phụ trách hoặc Unassigned\", \"deadline\": \"hạn chót hoặc N/A\"}]. Chỉ trả về JSON, không giải thích.",
+        "version": "1.0.0",
+        "last_updated": datetime.utcnow().isoformat(),
+    },
+    "key_points": {
+        "key": "key_points",
+        "name": "Diem chinh cuoc hop",
+        "description": "Prompt trich xuat cac diem chinh tu transcript",
+        "content": "Dựa trên transcript cuộc họp, hãy liệt kê các điểm chính được thảo luận. Trả về JSON array: [\"điểm 1\", \"điểm 2\", ...]. Chỉ trả về JSON.",
+        "version": "1.0.0",
+        "last_updated": datetime.utcnow().isoformat(),
+    },
+    "decisions": {
+        "key": "decisions",
+        "name": "Quyet dinh cuoc hop",
+        "description": "Prompt trich xuat cac quyet dinh tu transcript",
+        "content": "Dựa trên transcript cuộc họp, hãy liệt kê các quyết định đã được đưa ra. Trả về JSON array: [\"quyết định 1\", \"quyết định 2\", ...]. Chỉ trả về JSON.",
         "version": "1.0.0",
         "last_updated": datetime.utcnow().isoformat(),
     },
@@ -1670,6 +1686,264 @@ async def upload_audio(
     # background_tasks.add_task(job.run)
 
     # return {"job_id": job.job_id, "meeting_id": db_meeting.id}
+
+# Singleton STT provider - load once, reuse for all chunks
+_stt_service = None
+
+def get_stt_provider():
+    global _stt_service
+    if _stt_service is None:
+        from src.stt.service import STTService
+        _stt_service = STTService()
+    return _stt_service.provider
+
+@app.post("/api/meetings/{meeting_id}/transcribe-chunk")
+async def transcribe_chunk(
+    meeting_id: str,
+    audio: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user=Depends(auth.get_current_user),
+):
+    """Receive an audio chunk and return STT transcription (Deepgram Nova 3)."""
+    import tempfile
+    import subprocess
+
+    try:
+        # Validate meeting exists
+        meeting = db.query(models.Meeting).filter(models.Meeting.id == meeting_id).first()
+        if not meeting:
+            raise HTTPException(status_code=404, detail="Meeting not found")
+
+        # Validate user has access to this meeting's organization
+        auth.require_org_member(db, current_user, meeting.organization_id)
+
+        # Validate audio file
+        if not audio.filename:
+            raise HTTPException(status_code=400, detail="No filename provided")
+        
+        # Determine audio format
+        suffix = ".webm"
+        if audio.filename.lower().endswith(".wav"):
+            suffix = ".wav"
+        elif audio.filename.lower().endswith(".mp3"):
+            suffix = ".mp3"
+        elif audio.filename.lower().endswith(".mp4"):
+            suffix = ".mp4"
+        elif audio.filename.lower().endswith(".webm"):
+            suffix = ".webm"
+        else:
+            # Default to webm for unknown formats
+            suffix = ".webm"
+
+        # Save chunk to temp file
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            try:
+                content = await audio.read()
+                if not content:
+                    raise ValueError("Empty audio file")
+                tmp.write(content)
+                tmp_path = tmp.name
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Failed to read audio: {str(e)}")
+
+        audio_path = tmp_path
+        stt_provider_name = os.getenv("STT_PROVIDER", "deepgram").lower()
+
+        # Always convert to WAV (PCM 16kHz mono) for reliable STT processing
+        if suffix != ".wav":
+            wav_path = tmp_path.rsplit(".", 1)[0] + ".wav"
+            try:
+                subprocess.run(
+                    ["ffmpeg", "-y", "-i", tmp_path, "-ar", "16000", "-ac", "1", "-acodec", "pcm_s16le", "-f", "wav", wav_path],
+                    capture_output=True, timeout=30, check=True
+                )
+                os.unlink(tmp_path)
+                audio_path = wav_path
+                logger.info(f"Converted {suffix} to WAV for STT processing")
+            except (subprocess.CalledProcessError, FileNotFoundError) as e:
+                logger.warning(f"ffmpeg conversion failed, using original: {e}")
+
+        try:
+            # Transcribe using configured provider (Deepgram Nova 3)
+            provider = get_stt_provider()
+            result = provider.transcribe(audio_path)
+            
+            # Validate result
+            if not result or "text" not in result:
+                raise ValueError("Invalid transcription result")
+
+            # Check if provider returned an error
+            if "error" in result and result["error"]:
+                raise ValueError(f"STT provider error: {result['error']}")
+            
+            logger.info(f"Chunk transcription success: meeting={meeting_id}, text_len={len(result.get('text', ''))}, segments={len(result.get('segments', []))}")
+            
+            return {
+                "text": result.get("text", ""),
+                "segments": result.get("segments", []),
+                "provider": stt_provider_name,
+                "model": os.getenv("DEEPGRAM_MODEL", "nova-3"),
+            }
+        except Exception as transcribe_error:
+            logger.error(f"Transcription error: {str(transcribe_error)}", exc_info=True)
+            raise HTTPException(
+                status_code=500, 
+                detail=f"Transcription failed: {str(transcribe_error)}"
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Chunk upload error: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Chunk processing failed: {str(e)}"
+        )
+    finally:
+        if 'audio_path' in locals() and os.path.exists(audio_path):
+            try:
+                os.unlink(audio_path)
+            except Exception as e:
+                logger.warning(f"Failed to cleanup audio file: {e}")
+
+
+@app.post("/api/meetings/{meeting_id}/finalize")
+async def finalize_meeting(
+    meeting_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user=Depends(auth.get_current_user),
+):
+    """Save full transcript to DB, optionally summarize via Router API."""
+    import json as json_mod
+    from src.providers.router_llm import RouterLLMAdapter
+
+    body = await request.json()
+    full_text = body.get("transcript", "")
+    segments = body.get("segments", [])
+
+    # Verify meeting exists
+    meeting = db.query(models.Meeting).filter(models.Meeting.id == meeting_id).first()
+    if not meeting:
+        raise HTTPException(status_code=404, detail="Meeting not found")
+
+    # Validate user has access to this meeting's organization
+    auth.require_org_member(db, current_user, meeting.organization_id)
+
+    # Save transcript
+    transcript_data = {
+        "meeting_id": meeting_id,
+        "content": full_text,
+        "language": "vi",
+        "word_count": len(full_text.split()),
+        "processing_status": "COMPLETED",
+        "stt_provider": os.getenv("STT_PROVIDER", "deepgram"),
+    }
+    db_transcript = create_transcript(db, transcript_data)
+
+    # Save segments
+    if segments:
+        segments_data = []
+        for seg in segments:
+            segments_data.append({
+                "transcript_id": db_transcript.id,
+                "speaker_label": seg.get("speaker", "Speaker_01"),
+                "start_time": seg.get("start", 0),
+                "end_time": seg.get("end", 0),
+                "text": seg.get("text", ""),
+            })
+        if segments_data:
+            create_transcript_segments_bulk(db, segments_data)
+
+    # Update meeting status
+    update_meeting(db, meeting_id, {"status": "completed"})
+    db.commit()
+
+    # Try LLM summarization via Router API
+    summary_data = {"meeting_summary": "", "key_points": [], "decisions": [], "action_items": []}
+    router = RouterLLMAdapter()
+
+    if router.enabled:
+        try:
+            # Get prompts from ADMIN_PROMPTS
+            summary_prompt = ADMIN_PROMPTS.get("summary_vi", {}).get("content", "")
+            key_points_prompt = ADMIN_PROMPTS.get("key_points", {}).get("content", "")
+            decisions_prompt = ADMIN_PROMPTS.get("decisions", {}).get("content", "")
+            action_items_prompt = ADMIN_PROMPTS.get("action_items", {}).get("content", "")
+
+            system_prompt = "Bạn là trợ lý AI chuyên tóm tắt cuộc họp. Chỉ trả về nội dung được yêu cầu, không giải thích thêm."
+
+            # Summary
+            summary_result = router.chat_completion(system_prompt, f"{summary_prompt}\n\nTranscript:\n{full_text}")
+            if summary_result:
+                summary_data["meeting_summary"] = summary_result.strip()
+
+            # Key points
+            kp_result = router.chat_completion(system_prompt, f"{key_points_prompt}\n\nTranscript:\n{full_text}")
+            if kp_result:
+                try:
+                    json_match = __import__('re').search(r'\[.*\]', kp_result, __import__('re').DOTALL)
+                    if json_match:
+                        summary_data["key_points"] = json_mod.loads(json_match.group())
+                except Exception:
+                    summary_data["key_points"] = [kp_result.strip()]
+
+            # Decisions
+            dec_result = router.chat_completion(system_prompt, f"{decisions_prompt}\n\nTranscript:\n{full_text}")
+            if dec_result:
+                try:
+                    json_match = __import__('re').search(r'\[.*\]', dec_result, __import__('re').DOTALL)
+                    if json_match:
+                        summary_data["decisions"] = json_mod.loads(json_match.group())
+                except Exception:
+                    summary_data["decisions"] = [dec_result.strip()]
+
+            # Action items
+            ai_result = router.chat_completion(system_prompt, f"{action_items_prompt}\n\nTranscript:\n{full_text}")
+            if ai_result:
+                try:
+                    json_match = __import__('re').search(r'\[.*\]', ai_result, __import__('re').DOTALL)
+                    if json_match:
+                        summary_data["action_items"] = json_mod.loads(json_match.group())
+                except Exception:
+                    pass
+
+            # Save summary to DB
+            summary_db = create_meeting_summary(db, {
+                "meeting_id": meeting_id,
+                "language": "vi",
+                "key_points": summary_data["key_points"],
+                "decisions": summary_data["decisions"],
+                "action_items": summary_data["action_items"],
+                "meeting_summary": summary_data["meeting_summary"],
+                "ai_provider": "router",
+                "model_name": router.model,
+                "processing_status": "COMPLETED",
+            })
+
+            # Save action items to DB
+            for ai in summary_data["action_items"]:
+                if isinstance(ai, dict):
+                    create_action_item(db, {
+                        "meeting_id": meeting_id,
+                        "summary_id": summary_db.id,
+                        "title": ai.get("task", "Untitled"),
+                        "description": ai.get("description", ""),
+                        "assigned_email": ai.get("owner", "Unassigned"),
+                        "status": "PENDING",
+                        "priority": "MEDIUM",
+                    }, created_by=current_user.id)
+
+            db.commit()
+
+        except Exception as e:
+            logger.error(f"Router LLM summarization failed: {e}")
+
+    return {
+        "meeting_id": meeting_id,
+        "transcript": full_text,
+        "summary": summary_data,
+    }
+
 
 @app.get("/api/jobs/{job_id}")
 def get_job_status(job_id: str):

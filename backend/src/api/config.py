@@ -56,6 +56,9 @@ class AIConfig:
     anthropic_api_key: Optional[str] = None
     gemini_model: str = "gemini-1.5-flash"
     whisper_model: str = "base"
+    deepgram_api_key: Optional[str] = None
+    deepgram_model: str = "nova-3"
+    deepgram_language: str = "vi"
     temperature: float = 0.2
     max_retries: int = 3
     
@@ -68,6 +71,9 @@ class AIConfig:
             anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
             gemini_model=os.getenv("GEMINI_MODEL", "gemini-1.5-flash"),
             whisper_model=os.getenv("WHISPER_MODEL", "base"),
+            deepgram_api_key=os.getenv("DEEPGRAM_API_KEY"),
+            deepgram_model=os.getenv("DEEPGRAM_MODEL", "nova-3"),
+            deepgram_language=os.getenv("DEEPGRAM_LANGUAGE", "vi"),
             temperature=float(os.getenv("AI_TEMPERATURE", "0.2")),
             max_retries=int(os.getenv("AI_MAX_RETRIES", "3")),
         )
