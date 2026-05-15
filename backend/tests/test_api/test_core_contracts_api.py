@@ -6,6 +6,7 @@ from sqlalchemy.pool import StaticPool
 
 from src.api.database import Base, get_db
 from src.api.main import app
+from src.api import models
 
 
 TEST_DATABASE_URL = "sqlite:///:memory:"
@@ -26,6 +27,16 @@ def override_get_db():
 
 
 app.dependency_overrides[get_db] = override_get_db
+
+
+def activate_org(org_id: str):
+    db = TestingSessionLocal()
+    try:
+        org = db.query(models.Organization).filter(models.Organization.id == org_id).first()
+        org.settings = {"approval_status": "active"}
+        db.commit()
+    finally:
+        db.close()
 
 
 @pytest.fixture(scope="function")
@@ -53,6 +64,7 @@ def register_and_login(client: TestClient):
         json={"username": "owner", "password": "securepassword123"},
     )
     data = login_response.json()
+    activate_org(data["user"]["orgMemberships"][0]["orgId"])
     return {
         "headers": {"Authorization": f"Bearer {data['access_token']}"},
         "org_id": data["user"]["orgMemberships"][0]["orgId"],

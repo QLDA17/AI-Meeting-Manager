@@ -212,6 +212,7 @@ export const normalizeMeetingDetail = (meeting: any): MeetingDetail => ({
         meetingSummary: summary.meeting_summary ?? '',
         keyPoints: summary.key_points ?? [],
         decisions: summary.decisions ?? [],
+        processingStatus: summary.processing_status ?? undefined,
         createdAt: asIsoString(summary.created_at),
       }))
     : [],
@@ -221,6 +222,10 @@ export const normalizeMeetingDetail = (meeting: any): MeetingDetail => ({
   meetingSummaryText: meeting.meeting_summary_text ?? undefined,
   keyPointsText: Array.isArray(meeting.key_points_text) ? meeting.key_points_text : [],
   decisionsText: Array.isArray(meeting.decisions_text) ? meeting.decisions_text : [],
+  summaryStatus: meeting.summary_status ?? undefined,
+  summaryErrorText: meeting.summary_error_text ?? undefined,
+  summaryProvider: meeting.summary_provider ?? undefined,
+  summaryModelName: meeting.summary_model_name ?? undefined,
 });
 
 export const normalizeGlossaryTerm = (term: any): GlossaryTerm => ({

@@ -1,10 +1,12 @@
 import pytest
+from unittest.mock import patch
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 from src.api.main import app
 from src.api.database import get_db, Base
+from src.api import models
 
 TEST_DATABASE_URL = "sqlite:///:memory:"
 test_engine = create_engine(
@@ -24,6 +26,16 @@ def override_get_db():
 
 
 app.dependency_overrides[get_db] = override_get_db
+
+
+def activate_org(org_id: str):
+    db = TestingSessionLocal()
+    try:
+        org = db.query(models.Organization).filter(models.Organization.id == org_id).first()
+        org.settings = {"approval_status": "active"}
+        db.commit()
+    finally:
+        db.close()
 
 
 @pytest.fixture(scope="function")
@@ -56,6 +68,7 @@ def auth_context(client):
         },
     )
     data = response.json()
+    activate_org(data["user"]["orgMemberships"][0]["orgId"])
     return {
         "headers": {"Authorization": f"Bearer {data['access_token']}"},
         "org_id": data["user"]["orgMemberships"][0]["orgId"],
@@ -207,3 +220,103 @@ def test_get_meetings_unauthorized(client):
     response = client.get("/api/meetings")
 
     assert response.status_code == 401
+
+
+def test_finalize_meeting_single_router_call_success(client, auth_context):
+    create_response = client.post(
+        "/api/meetings",
+        headers=auth_context["headers"],
+        json=meeting_payload(auth_context, title="Finalize Success", status="processing"),
+    )
+    meeting_id = create_response.json()["id"]
+
+    router_response = """
+    {
+      "meeting_summary": "Cuoc hop thong nhat chot scope STT va summary.",
+      "key_points": ["Chot luong live chunk", "Dung Router cho summary"],
+      "decisions": ["Bo 4 call rieng trong finalize"],
+      "action_items": [{"task": "Cap nhat finalize", "owner": "Backend", "deadline": "2026-05-20"}]
+    }
+    """
+
+    with patch.dict(
+        "os.environ",
+        {"ROUTER_API_URL": "http://router.test", "ROUTER_API_KEY": "secret", "ROUTER_MODEL": "router-model"},
+        clear=False,
+    ), patch(
+        "src.providers.router_llm.RouterLLMAdapter.structured_completion",
+        return_value=router_response,
+    ) as structured_completion:
+        finalize_response = client.post(
+            f"/api/meetings/{meeting_id}/finalize",
+            headers=auth_context["headers"],
+            json={
+                "transcript": "Hom nay chung ta chot luong live chunk va dung Router de tom tat.",
+                "segments": [{"speaker": "Speaker_01", "start": 0, "end": 5, "text": "Noi dung hop"}],
+            },
+        )
+
+    assert finalize_response.status_code == 200
+    data = finalize_response.json()
+    assert data["meeting_id"] == meeting_id
+    assert data["transcript_status"] == "COMPLETED"
+    assert data["summary_status"] == "COMPLETED"
+    assert data["summary"]["meeting_summary"] == "Cuoc hop thong nhat chot scope STT va summary."
+    assert data["summary"]["key_points"] == ["Chot luong live chunk", "Dung Router cho summary"]
+    assert len(data["summary"]["action_items"]) == 1
+    assert data["errors"] == []
+    structured_completion.assert_called_once()
+
+    detail_response = client.get(f"/api/meetings/{meeting_id}", headers=auth_context["headers"])
+    assert detail_response.status_code == 200
+    detail = detail_response.json()
+    assert detail["transcript_content"] == "Hom nay chung ta chot luong live chunk va dung Router de tom tat."
+    assert detail["meeting_summary_text"] == "Cuoc hop thong nhat chot scope STT va summary."
+    assert detail["key_points_text"] == ["Chot luong live chunk", "Dung Router cho summary"]
+    assert detail["decisions_text"] == ["Bo 4 call rieng trong finalize"]
+    assert len(detail["action_items"]) == 1
+    assert detail["action_items"][0]["title"] == "Cap nhat finalize"
+
+
+def test_finalize_meeting_router_failure_marks_summary_failed(client, auth_context):
+    create_response = client.post(
+        "/api/meetings",
+        headers=auth_context["headers"],
+        json=meeting_payload(auth_context, title="Finalize Failure", status="processing"),
+    )
+    meeting_id = create_response.json()["id"]
+
+    with patch.dict(
+        "os.environ",
+        {"ROUTER_API_URL": "http://router.test", "ROUTER_API_KEY": "secret", "ROUTER_MODEL": "router-model"},
+        clear=False,
+    ), patch(
+        "src.providers.router_llm.RouterLLMAdapter.structured_completion",
+        return_value="not valid json",
+    ):
+        finalize_response = client.post(
+            f"/api/meetings/{meeting_id}/finalize",
+            headers=auth_context["headers"],
+            json={
+                "transcript": "Transcript van duoc luu du Router tra ve sai dinh dang.",
+                "segments": [],
+            },
+        )
+
+    assert finalize_response.status_code == 200
+    data = finalize_response.json()
+    assert data["transcript_status"] == "COMPLETED"
+    assert data["summary_status"] == "FAILED"
+    assert data["summary"]["meeting_summary"] == ""
+    assert data["summary"]["key_points"] == []
+    assert data["summary"]["decisions"] == []
+    assert data["errors"]
+
+    detail_response = client.get(f"/api/meetings/{meeting_id}", headers=auth_context["headers"])
+    assert detail_response.status_code == 200
+    detail = detail_response.json()
+    assert detail["transcript_content"] == "Transcript van duoc luu du Router tra ve sai dinh dang."
+    assert detail["meeting_summary_text"] is None
+    assert detail["key_points_text"] == []
+    assert detail["decisions_text"] == []
+    assert detail["action_items"] == []

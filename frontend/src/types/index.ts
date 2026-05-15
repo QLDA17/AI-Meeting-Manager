@@ -171,6 +171,7 @@ export interface MeetingSummaryRecord {
   meetingSummary: string;
   keyPoints: unknown[];
   decisions: unknown[];
+  processingStatus?: string;
   createdAt: string;
 }
 
@@ -186,6 +187,10 @@ export interface MeetingDetail extends Meeting {
   meetingSummaryText?: string;
   keyPointsText: string[];
   decisionsText: string[];
+  summaryStatus?: string;
+  summaryErrorText?: string;
+  summaryProvider?: string;
+  summaryModelName?: string;
 }
 
 export interface GroupMessage {

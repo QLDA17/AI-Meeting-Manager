@@ -366,7 +366,7 @@ class MeetingSummary(Base):
 
     # Relationships
     meeting = relationship("Meeting", back_populates="summaries")
-    action_items = relationship("ActionItem", back_populates="summary", cascade="all, delete-orphan")
+    linked_action_items = relationship("ActionItem", back_populates="summary", cascade="all, delete-orphan")
 
 
 class ActionItem(Base):
@@ -395,7 +395,7 @@ class ActionItem(Base):
 
     # Relationships
     meeting = relationship("Meeting", back_populates="action_items")
-    summary = relationship("MeetingSummary", back_populates="action_items")
+    summary = relationship("MeetingSummary", back_populates="linked_action_items")
     assigned_to_user = relationship("User", back_populates="assigned_action_items", foreign_keys=[assigned_to])
     created_by_user = relationship("User", back_populates="created_action_items", foreign_keys=[created_by])
 

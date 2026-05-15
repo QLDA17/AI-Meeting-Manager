@@ -1,7 +1,9 @@
 import os
 import sys
 import time
+import json
 import logging
+import re
 from typing import List, Optional, Dict, Any
 from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, BackgroundTasks, status, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -161,32 +163,60 @@ ADMIN_PROMPTS: Dict[str, Dict[str, Any]] = {
         "key": "summary_vi",
         "name": "Tom tat cuoc hop (VI)",
         "description": "Prompt tao tom tat cuoc hop bang tieng Viet",
-        "content": "Dựa trên transcript cuộc họp dưới đây, hãy tạo bản tóm tắt ngắn gọn bằng tiếng Việt. Chỉ trả về nội dung tóm tắt, không giải thích.",
-        "version": "1.0.0",
+        "content": (
+            "Dựa trên transcript cuộc họp dưới đây, hãy tạo bản tóm tắt CHI TIẾT bằng tiếng Việt. "
+            "Bản tóm tắt phải dài ít nhất 3 đoạn văn, bao quát đầy đủ các chủ đề được thảo luận, "
+            "kết luận và hướng đi tiếp theo. Không tóm tắt quá ngắn gọn."
+        ),
+        "version": "2.0.0",
         "last_updated": datetime.utcnow().isoformat(),
     },
-    "action_items": {
-        "key": "action_items",
-        "name": "Trich xuat cong viec",
-        "description": "Prompt trich xuat action items tu transcript",
-        "content": "Dựa trên transcript cuộc họp, hãy trích xuất các công việc cần làm (action items). Trả về JSON array với format: [{\"task\": \"mô tả công việc\", \"owner\": \"người phụ trách hoặc Unassigned\", \"deadline\": \"hạn chót hoặc N/A\"}]. Chỉ trả về JSON, không giải thích.",
-        "version": "1.0.0",
+    "summary_en": {
+        "key": "summary_en",
+        "name": "Meeting Summary (EN)",
+        "description": "Meeting summary prompt in English",
+        "content": (
+            "Based on the meeting transcript below, create a DETAILED summary in English. "
+            "The summary must be at least 3 paragraphs long, covering all topics discussed, "
+            "conclusions reached, and next steps. Do not summarize too briefly."
+        ),
+        "version": "2.0.0",
         "last_updated": datetime.utcnow().isoformat(),
     },
-    "key_points": {
-        "key": "key_points",
-        "name": "Diem chinh cuoc hop",
-        "description": "Prompt trich xuat cac diem chinh tu transcript",
-        "content": "Dựa trên transcript cuộc họp, hãy liệt kê các điểm chính được thảo luận. Trả về JSON array: [\"điểm 1\", \"điểm 2\", ...]. Chỉ trả về JSON.",
-        "version": "1.0.0",
+    "summary_zh": {
+        "key": "summary_zh",
+        "name": "会议摘要 (ZH)",
+        "description": "Meeting summary prompt in Chinese",
+        "content": (
+            "根据以下会议记录，请用中文创建一份详细的会议摘要。"
+            "摘要至少需要3段文字，涵盖所有讨论的主题、结论和后续步骤。"
+            "请不要过于简短地总结。"
+        ),
+        "version": "2.0.0",
         "last_updated": datetime.utcnow().isoformat(),
     },
-    "decisions": {
-        "key": "decisions",
-        "name": "Quyet dinh cuoc hop",
-        "description": "Prompt trich xuat cac quyet dinh tu transcript",
-        "content": "Dựa trên transcript cuộc họp, hãy liệt kê các quyết định đã được đưa ra. Trả về JSON array: [\"quyết định 1\", \"quyết định 2\", ...]. Chỉ trả về JSON.",
-        "version": "1.0.0",
+    "summary_ja": {
+        "key": "summary_ja",
+        "name": "会議サマリー (JA)",
+        "description": "Meeting summary prompt in Japanese",
+        "content": (
+            "以下の会議記録に基づいて、日本語で詳細な会議サマリーを作成してください。"
+            "サマリーは少なくとも3段落以上で、議論されたすべてのトピック、結論、"
+            "次のステップを網羅してください。短すぎる要約は避けてください。"
+        ),
+        "version": "2.0.0",
+        "last_updated": datetime.utcnow().isoformat(),
+    },
+    "summary_ko": {
+        "key": "summary_ko",
+        "name": "회의 요약 (KO)",
+        "description": "Meeting summary prompt in Korean",
+        "content": (
+            "아래 회의록을 바탕으로 한국어로 상세한 회의 요약을 작성해 주세요. "
+            "요약은 최소 3단락 이상이어야 하며, 논의된 모든 주제, 결론, "
+            "다음 단계를 포괄해야 합니다. 너무 간략하게 요약하지 마세요."
+        ),
+        "version": "2.0.0",
         "last_updated": datetime.utcnow().isoformat(),
     },
 }
@@ -438,6 +468,86 @@ def summarize_json_items(items: Any) -> List[str]:
     return [str(items)]
 
 
+def _latest_processed_record(
+    items: List[Any],
+    success_status: str = "COMPLETED",
+    fallback_to_any: bool = True,
+) -> Optional[Any]:
+    successful = [item for item in items or [] if getattr(item, "processing_status", None) == success_status]
+    pool = successful or (list(items or []) if fallback_to_any else [])
+    return max(pool, key=lambda item: item.created_at or datetime.min, default=None)
+
+
+def _extract_json_object(raw_text: str) -> Dict[str, Any]:
+    if not raw_text or not raw_text.strip():
+        raise ValueError("Router returned empty response")
+
+    try:
+        parsed = json.loads(raw_text)
+        if isinstance(parsed, dict):
+            return parsed
+    except json.JSONDecodeError:
+        pass
+
+    match = re.search(r"\{.*\}", raw_text, re.DOTALL)
+    if not match:
+        raise ValueError("Router response did not contain a JSON object")
+
+    parsed = json.loads(match.group())
+    if not isinstance(parsed, dict):
+        raise ValueError("Router JSON payload must be an object")
+    return parsed
+
+
+def _normalize_analysis_payload(payload: Dict[str, Any]) -> schemas.MeetingAnalysisOutput:
+    normalized_action_items = []
+    for item in payload.get("action_items") or []:
+        if isinstance(item, dict):
+            normalized_action_items.append(
+                {
+                    "task": str(item.get("task") or "").strip(),
+                    "owner": str(item.get("owner") or "Unassigned").strip() or "Unassigned",
+                    "deadline": str(item.get("deadline") or "N/A").strip() or "N/A",
+                }
+            )
+
+    normalized = {
+        "meeting_summary": str(payload.get("meeting_summary") or "").strip(),
+        "key_points": [str(point).strip() for point in payload.get("key_points") or [] if str(point).strip()],
+        "decisions": [str(item).strip() for item in payload.get("decisions") or [] if str(item).strip()],
+        "action_items": [item for item in normalized_action_items if item["task"]],
+    }
+    return schemas.MeetingAnalysisOutput.model_validate(normalized)
+
+
+def build_structured_summary_prompts(transcript: str, custom_instruction: str, language: str = "vi") -> tuple[str, str]:
+    lang_names = {"vi": "Vietnamese", "en": "English", "zh": "Chinese", "ja": "Japanese", "ko": "Korean"}
+    lang_name = lang_names.get(language, "Vietnamese")
+
+    system_prompt = (
+        f"You are an AI assistant specialized in analyzing meeting transcripts. "
+        f"Respond ONLY in {lang_name}. "
+        f"Return ONLY a valid JSON object, no markdown, no explanation, no extra text. "
+        f"JSON must have exactly 4 keys: meeting_summary, key_points, decisions, action_items. "
+        f"meeting_summary is a string (at least 3 paragraphs, detailed). "
+        f"key_points and decisions are arrays of strings. "
+        f"action_items is an array of objects with keys: task, owner, deadline."
+    )
+    user_prompt = (
+        f"{custom_instruction.strip()}\n\n"
+        f"Return JSON in exactly this schema:\n"
+        "{\n"
+        '  "meeting_summary": "string (detailed, at least 3 paragraphs)",\n'
+        '  "key_points": ["string"],\n'
+        '  "decisions": ["string"],\n'
+        '  "action_items": [{"task": "string", "owner": "string", "deadline": "string"}]\n'
+        "}\n\n"
+        f"If the transcript lacks information for action items or decisions, return empty arrays.\n\n"
+        f"Transcript:\n{transcript}"
+    )
+    return system_prompt, user_prompt
+
+
 def enrich_organization_payload(org: models.Organization) -> Dict[str, Any]:
     meetings = org.meetings or []
     total_minutes = sum((meeting.duration or 0) for meeting in meetings)
@@ -482,8 +592,15 @@ def enrich_group_payload(group: models.Group) -> Dict[str, Any]:
 
 
 def build_meeting_detail_payload(meeting: models.Meeting) -> Dict[str, Any]:
-    latest_transcript = max(meeting.transcripts or [], key=lambda item: item.created_at or datetime.min, default=None)
-    latest_summary = max(meeting.summaries or [], key=lambda item: item.created_at or datetime.min, default=None)
+    latest_transcript = _latest_processed_record(meeting.transcripts or [])
+    latest_summary_any = _latest_processed_record(meeting.summaries or [], fallback_to_any=True)
+    latest_summary = _latest_processed_record(meeting.summaries or [], fallback_to_any=False)
+    summary_status = latest_summary_any.processing_status if latest_summary_any else None
+    summary_error_text = (
+        latest_summary_any.meeting_summary
+        if latest_summary_any and latest_summary_any.processing_status == "FAILED"
+        else None
+    )
 
     return {
         "id": meeting.id,
@@ -520,6 +637,10 @@ def build_meeting_detail_payload(meeting: models.Meeting) -> Dict[str, Any]:
         "meeting_summary_text": latest_summary.meeting_summary if latest_summary else None,
         "key_points_text": summarize_json_items(latest_summary.key_points if latest_summary else None),
         "decisions_text": summarize_json_items(latest_summary.decisions if latest_summary else None),
+        "summary_status": summary_status,
+        "summary_error_text": summary_error_text,
+        "summary_provider": latest_summary_any.ai_provider if latest_summary_any else None,
+        "summary_model_name": latest_summary_any.model_name if latest_summary_any else None,
     }
 
 
@@ -1806,34 +1927,44 @@ async def transcribe_chunk(
                 logger.warning(f"Failed to cleanup audio file: {e}")
 
 
-@app.post("/api/meetings/{meeting_id}/finalize")
+@app.post("/api/meetings/{meeting_id}/finalize", response_model=schemas.MeetingFinalizeResponse)
 async def finalize_meeting(
     meeting_id: str,
     request: Request,
     db: Session = Depends(get_db),
     current_user=Depends(auth.get_current_user),
 ):
-    """Save full transcript to DB, optionally summarize via Router API."""
-    import json as json_mod
+    """Save full transcript to DB, then summarize via a single Router LLM call."""
     from src.providers.router_llm import RouterLLMAdapter
 
     body = await request.json()
     full_text = body.get("transcript", "")
     segments = body.get("segments", [])
+    req_language = body.get("language", "")
+    errors: List[str] = []
 
     # Verify meeting exists
     meeting = db.query(models.Meeting).filter(models.Meeting.id == meeting_id).first()
     if not meeting:
         raise HTTPException(status_code=404, detail="Meeting not found")
 
+    # Determine language: request body > meeting > user > default "vi"
+    language = req_language or getattr(meeting, "language", None) or getattr(current_user, "language", None) or "vi"
+    language = language.lower().strip() if language else "vi"
+    if language not in ("vi", "en", "zh", "ja", "ko"):
+        language = "vi"
+
     # Validate user has access to this meeting's organization
     auth.require_org_member(db, current_user, meeting.organization_id)
+
+    if not isinstance(full_text, str) or not full_text.strip():
+        raise HTTPException(status_code=400, detail="Transcript is required for finalize")
 
     # Save transcript
     transcript_data = {
         "meeting_id": meeting_id,
         "content": full_text,
-        "language": "vi",
+        "language": language,
         "word_count": len(full_text.split()),
         "processing_status": "COMPLETED",
         "stt_provider": os.getenv("STT_PROVIDER", "deepgram"),
@@ -1858,90 +1989,105 @@ async def finalize_meeting(
     update_meeting(db, meeting_id, {"status": "completed"})
     db.commit()
 
-    # Try LLM summarization via Router API
-    summary_data = {"meeting_summary": "", "key_points": [], "decisions": [], "action_items": []}
+    summary_status = "FAILED"
+    summary_payload = schemas.MeetingAnalysisOutput(
+        meeting_summary="",
+        key_points=[],
+        decisions=[],
+        action_items=[],
+    )
+    summary_error_message = ""
+    ai_provider_name = "router"
     router = RouterLLMAdapter()
 
+    prompt_key = f"summary_{language}"
+    custom_instruction = ADMIN_PROMPTS.get(prompt_key, ADMIN_PROMPTS.get("summary_vi", {})).get(
+        "content",
+        "Summarize the meeting transcript below in detail.",
+    )
+    system_prompt, user_prompt = build_structured_summary_prompts(full_text, custom_instruction, language)
+
+    raw_response = None
+
+    # Try Router LLM first (with built-in model fallback for content-blocked)
     if router.enabled:
         try:
-            # Get prompts from ADMIN_PROMPTS
-            summary_prompt = ADMIN_PROMPTS.get("summary_vi", {}).get("content", "")
-            key_points_prompt = ADMIN_PROMPTS.get("key_points", {}).get("content", "")
-            decisions_prompt = ADMIN_PROMPTS.get("decisions", {}).get("content", "")
-            action_items_prompt = ADMIN_PROMPTS.get("action_items", {}).get("content", "")
+            raw_response = router.structured_completion(system_prompt, user_prompt)
+            if not raw_response:
+                raise ValueError(router.last_error or "Router LLM returned empty response")
+        except Exception as e:
+            error_message = f"Router LLM summarization failed: {e}"
+            logger.error(error_message, exc_info=True)
+            errors.append(error_message)
+            summary_error_message = error_message
+            raw_response = None
+    else:
+        summary_error_message = router.last_error or "Router LLM is not configured"
+        errors.append(summary_error_message)
 
-            system_prompt = "Bạn là trợ lý AI chuyên tóm tắt cuộc họp. Chỉ trả về nội dung được yêu cầu, không giải thích thêm."
+    # Fallback to Google Gemini if Router failed
+    if not raw_response:
+        google_key = os.getenv("GOOGLE_API_KEY")
+        if google_key:
+            logger.info("Router LLM failed, falling back to Google Gemini for summarization")
+            try:
+                from src.providers.google_llm import GoogleLLMAdapter
+                google = GoogleLLMAdapter(api_key=google_key)
+                if google.client:
+                    raw_response = google.chat_completion(system_prompt, user_prompt)
+                    if raw_response:
+                        ai_provider_name = "google-gemini"
+                        errors.pop() if errors else None
+                        logger.info("Google Gemini fallback succeeded")
+            except Exception as ge:
+                fallback_error = f"Google Gemini fallback also failed: {ge}"
+                logger.error(fallback_error, exc_info=True)
+                errors.append(fallback_error)
 
-            # Summary
-            summary_result = router.chat_completion(system_prompt, f"{summary_prompt}\n\nTranscript:\n{full_text}")
-            if summary_result:
-                summary_data["meeting_summary"] = summary_result.strip()
+    # Parse the response if we got one
+    if raw_response:
+        try:
+            structured_payload = _extract_json_object(raw_response)
+            summary_payload = _normalize_analysis_payload(structured_payload)
+            summary_status = "COMPLETED"
+        except Exception as parse_error:
+            error_message = f"Failed to parse LLM response: {parse_error}"
+            logger.error(error_message, exc_info=True)
+            errors.append(error_message)
+            summary_error_message = error_message
 
-            # Key points
-            kp_result = router.chat_completion(system_prompt, f"{key_points_prompt}\n\nTranscript:\n{full_text}")
-            if kp_result:
-                try:
-                    json_match = __import__('re').search(r'\[.*\]', kp_result, __import__('re').DOTALL)
-                    if json_match:
-                        summary_data["key_points"] = json_mod.loads(json_match.group())
-                except Exception:
-                    summary_data["key_points"] = [kp_result.strip()]
-
-            # Decisions
-            dec_result = router.chat_completion(system_prompt, f"{decisions_prompt}\n\nTranscript:\n{full_text}")
-            if dec_result:
-                try:
-                    json_match = __import__('re').search(r'\[.*\]', dec_result, __import__('re').DOTALL)
-                    if json_match:
-                        summary_data["decisions"] = json_mod.loads(json_match.group())
-                except Exception:
-                    summary_data["decisions"] = [dec_result.strip()]
-
-            # Action items
-            ai_result = router.chat_completion(system_prompt, f"{action_items_prompt}\n\nTranscript:\n{full_text}")
-            if ai_result:
-                try:
-                    json_match = __import__('re').search(r'\[.*\]', ai_result, __import__('re').DOTALL)
-                    if json_match:
-                        summary_data["action_items"] = json_mod.loads(json_match.group())
-                except Exception:
-                    pass
-
-            # Save summary to DB
-            summary_db = create_meeting_summary(db, {
+    summary_db = create_meeting_summary(db, {
                 "meeting_id": meeting_id,
-                "language": "vi",
-                "key_points": summary_data["key_points"],
-                "decisions": summary_data["decisions"],
-                "action_items": summary_data["action_items"],
-                "meeting_summary": summary_data["meeting_summary"],
-                "ai_provider": "router",
-                "model_name": router.model,
-                "processing_status": "COMPLETED",
+                "language": language,
+                "key_points": summary_payload.key_points,
+                "decisions": summary_payload.decisions,
+                "action_items": [item.model_dump() for item in summary_payload.action_items],
+                "meeting_summary": summary_payload.meeting_summary if summary_status == "COMPLETED" else summary_error_message,
+                "ai_provider": ai_provider_name,
+                "model_name": router.model if ai_provider_name == "router" else ai_provider_name,
+                "processing_status": summary_status,
             })
 
-            # Save action items to DB
-            for ai in summary_data["action_items"]:
-                if isinstance(ai, dict):
-                    create_action_item(db, {
-                        "meeting_id": meeting_id,
-                        "summary_id": summary_db.id,
-                        "title": ai.get("task", "Untitled"),
-                        "description": ai.get("description", ""),
-                        "assigned_email": ai.get("owner", "Unassigned"),
-                        "status": "PENDING",
-                        "priority": "MEDIUM",
-                    }, created_by=current_user.id)
+    if summary_status == "COMPLETED":
+        for ai in summary_payload.action_items:
+            create_action_item(db, {
+                "meeting_id": meeting_id,
+                "summary_id": summary_db.id,
+                "title": ai.task,
+                "description": "",
+                "assigned_email": None,
+                "status": "PENDING",
+                "priority": "MEDIUM",
+            }, created_by=current_user.id)
 
-            db.commit()
-
-        except Exception as e:
-            logger.error(f"Router LLM summarization failed: {e}")
+    db.commit()
 
     return {
         "meeting_id": meeting_id,
-        "transcript": full_text,
-        "summary": summary_data,
+        "transcript_status": "COMPLETED",
+        "summary_status": summary_status,
+        "summary": summary_payload,
+        "errors": errors,
     }
 
 

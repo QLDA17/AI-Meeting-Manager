@@ -337,27 +337,32 @@ const MeetingRoomInner: React.FC = () => {
   const [isFinalizing, setIsFinalizing] = useState(false);
 
   const leaveMeeting = async () => {
-    stopCameraHardware();
-    localStream?.getAudioTracks().forEach(t => t.stop());
-    screenStream?.getTracks().forEach(t => t.stop());
-
-    // Finalize recording if we have a meeting and transcripts
-    if (meetingId && liveTranscripts.length > 0) {
+    if (meetingId) {
       setIsFinalizing(true);
       showToast.info("Đang lưu transcript và tóm tắt AI...");
       try {
-        await finalize(meetingId);
-        showToast.success("Đã lưu transcript thành công!");
+        const result = await finalize(meetingId, meeting?.language || user?.language || "vi");
+        if (result?.transcript_status === "EMPTY") {
+          showToast.info("Không có giọng nói rõ để lưu transcript.");
+        } else if (result?.summary_status === "FAILED") {
+          showToast.error("Đã lưu transcript, nhưng AI Notes chưa tạo được.");
+        } else {
+          showToast.success("Đã lưu transcript và AI Notes thành công!");
+        }
         navigate(`/meetings/${meetingId}`);
       } catch {
         showToast.error("Lưu transcript thất bại, nhưng meeting vẫn được tạo");
         navigate("/meetings");
       } finally {
         setIsFinalizing(false);
+        stopCameraHardware();
+        localStream?.getAudioTracks().forEach(t => t.stop());
+        screenStream?.getTracks().forEach(t => t.stop());
       }
-    } else if (meetingId) {
-      navigate(`/meetings/${meetingId}`);
     } else {
+      stopCameraHardware();
+      localStream?.getAudioTracks().forEach(t => t.stop());
+      screenStream?.getTracks().forEach(t => t.stop());
       navigate("/meetings");
     }
   };
@@ -779,6 +784,34 @@ const MeetingRoomInner: React.FC = () => {
                                {fullTranscript}
                             </div>
                          </div>
+                      )}
+
+                      {/* Generate AI Notes Button */}
+                      {fullTranscript && meetingId && (
+                         <button
+                           onClick={async () => {
+                             setIsFinalizing(true);
+                             try {
+                               const result = await finalize(meetingId, meeting?.language || user?.language || "vi");
+                               if (result?.summary_status === "COMPLETED") {
+                                 showToast.success("Đã tạo AI Notes thành công!");
+                               } else if (result?.summary_status === "FAILED") {
+                                 showToast.error("Tạo AI Notes thất bại. Thử lại sau.");
+                               } else {
+                                 showToast.info("Đã lưu transcript.");
+                               }
+                             } catch {
+                               showToast.error("Lỗi khi tạo AI Notes");
+                             } finally {
+                               setIsFinalizing(false);
+                             }
+                           }}
+                           disabled={isFinalizing}
+                           className="w-full flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-indigo-600 to-purple-600 px-5 py-3.5 text-sm font-black text-white transition hover:from-indigo-500 hover:to-purple-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                         >
+                           <Sparkles size={18} className={isFinalizing ? "animate-spin" : ""} />
+                           {isFinalizing ? "Đang tạo AI Notes..." : "Tạo AI Notes"}
+                         </button>
                       )}
                    </>
                  ) : (

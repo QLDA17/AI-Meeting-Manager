@@ -9,9 +9,18 @@ interface TranscriptSegment {
 
 interface LiveTranscript {
   id: string;
+  chunkIndex: number;
   text: string;
   segments: TranscriptSegment[];
   timestamp: number;
+}
+
+interface WorkletChunkMessage {
+  type: "chunk";
+  samples: Float32Array;
+  startMs: number;
+  endMs: number;
+  reason: string;
 }
 
 interface UseAudioRecorderReturn {
@@ -20,12 +29,16 @@ interface UseAudioRecorderReturn {
   fullTranscript: string;
   allSegments: TranscriptSegment[];
   startRecording: () => void;
-  stopRecording: () => void;
-  finalize: (meetingId: string) => Promise<any>;
+  stopRecording: () => Promise<void>;
+  finalize: (meetingId: string, language?: string) => Promise<any>;
   error: string | null;
 }
 
-const CHUNK_INTERVAL_SECONDS = 5;
+const MAX_CHUNK_SECONDS = 8;
+const SILENCE_THRESHOLD = 0.008;
+const MIN_SPEECH_SECONDS = 0.3;
+const PRE_ROLL_MS = 300;
+const HANGOVER_MS = 1500;
 
 function writeString(view: DataView, offset: number, str: string) {
   for (let i = 0; i < str.length; i++) {
@@ -88,8 +101,11 @@ export function useAudioRecorder(
   const filterNodeRef = useRef<BiquadFilterNode | null>(null);
   const chunkCounterRef = useRef(0);
   const pendingChunksRef = useRef(0);
+  const flushResolverRef = useRef<(() => void) | null>(null);
   const fullTranscriptRef = useRef("");
   const allSegmentsRef = useRef<TranscriptSegment[]>([]);
+  const chunksByIndexRef = useRef<Map<number, LiveTranscript>>(new Map());
+  const segmentsByIndexRef = useRef<Map<number, TranscriptSegment[]>>(new Map());
   const sampleRateRef = useRef(16000);
 
   // Cleanup on unmount
@@ -101,8 +117,24 @@ export function useAudioRecorder(
     };
   }, []);
 
+  const rebuildTranscriptState = useCallback(() => {
+    const orderedTranscripts = Array.from(chunksByIndexRef.current.values()).sort(
+      (a, b) => a.chunkIndex - b.chunkIndex
+    );
+    const orderedSegments = Array.from(segmentsByIndexRef.current.entries())
+      .sort(([a], [b]) => a - b)
+      .flatMap(([, segments]) => segments);
+    const nextFullTranscript = orderedTranscripts.map((item) => item.text).join("\n");
+
+    fullTranscriptRef.current = nextFullTranscript;
+    allSegmentsRef.current = orderedSegments;
+    setLiveTranscripts(orderedTranscripts);
+    setFullTranscript(nextFullTranscript);
+    setAllSegments(orderedSegments);
+  }, []);
+
   const sendChunkToBackend = useCallback(
-    async (blob: Blob, chunkIndex: number) => {
+    async (blob: Blob, chunkIndex: number, startMs: number) => {
       if (!meetingId) return;
 
       pendingChunksRef.current++;
@@ -110,58 +142,59 @@ export function useAudioRecorder(
       const formData = new FormData();
       formData.append("audio", blob, `chunk_${chunkIndex}.wav`);
 
-      for (let attempt = 1; attempt <= maxRetries; attempt++) {
-        try {
-          const response = await api.post(
-            `/api/meetings/${meetingId}/transcribe-chunk`,
-            formData,
-            {
-              headers: { "Content-Type": "multipart/form-data" },
-              timeout: 120000,
-            }
-          );
-
-          const { text, segments } = response.data;
-
-          if (text && text.trim()) {
-            const transcript: LiveTranscript = {
-              id: `chunk_${chunkIndex}_${Date.now()}`,
-              text: text.trim(),
-              segments: segments || [],
-              timestamp: Date.now(),
-            };
-
-            setLiveTranscripts((prev) => [...prev, transcript]);
-            setFullTranscript((prev) => {
-              const newVal = prev ? `${prev}\n${text.trim()}` : text.trim();
-              fullTranscriptRef.current = newVal;
-              return newVal;
-            });
-            setAllSegments((prev) => {
-              const newVal = [...prev, ...(segments || [])];
-              allSegmentsRef.current = newVal;
-              return newVal;
-            });
-          }
-          break;
-        } catch (err: any) {
-          const isLastAttempt = attempt === maxRetries;
-          console.error(
-            `Chunk ${chunkIndex} transcription failed (attempt ${attempt}/${maxRetries}):`,
-            err
-          );
-          if (isLastAttempt) {
-            setError(
-              `Chunk ${chunkIndex} failed after ${maxRetries} attempts: ${err.response?.data?.detail || err.message}`
+      try {
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+          try {
+            const response = await api.post(
+              `/api/meetings/${meetingId}/transcribe-chunk`,
+              formData,
+              {
+                headers: { "Content-Type": "multipart/form-data" },
+                timeout: 120000,
+              }
             );
-          } else {
-            await new Promise((resolve) => setTimeout(resolve, 1000 * attempt));
+
+            const { text, segments } = response.data;
+
+            if (text && text.trim()) {
+              const normalizedSegments = (segments || []).map((segment: TranscriptSegment) => ({
+                ...segment,
+                start: segment.start + startMs / 1000,
+                end: segment.end + startMs / 1000,
+              }));
+              const transcript: LiveTranscript = {
+                id: `chunk_${chunkIndex}_${Date.now()}`,
+                chunkIndex,
+                text: text.trim(),
+                segments: normalizedSegments,
+                timestamp: Date.now(),
+              };
+
+              chunksByIndexRef.current.set(chunkIndex, transcript);
+              segmentsByIndexRef.current.set(chunkIndex, normalizedSegments);
+              rebuildTranscriptState();
+            }
+            break;
+          } catch (err: any) {
+            const isLastAttempt = attempt === maxRetries;
+            console.error(
+              `Chunk ${chunkIndex} transcription failed (attempt ${attempt}/${maxRetries}):`,
+              err
+            );
+            if (isLastAttempt) {
+              setError(
+                `Chunk ${chunkIndex} failed after ${maxRetries} attempts: ${err.response?.data?.detail || err.message}`
+              );
+            } else {
+              await new Promise((resolve) => setTimeout(resolve, 1000 * attempt));
+            }
           }
         }
+      } finally {
+        pendingChunksRef.current--;
       }
-      pendingChunksRef.current--;
     },
-    [meetingId]
+    [meetingId, rebuildTranscriptState]
   );
 
   const startRecording = useCallback(async () => {
@@ -174,6 +207,8 @@ export function useAudioRecorder(
     chunkCounterRef.current = 0;
     fullTranscriptRef.current = "";
     allSegmentsRef.current = [];
+    chunksByIndexRef.current.clear();
+    segmentsByIndexRef.current.clear();
     setLiveTranscripts([]);
     setFullTranscript("");
     setAllSegments([]);
@@ -195,18 +230,34 @@ export function useAudioRecorder(
       // Highpass filter for noise reduction
       const highpass = audioContext.createBiquadFilter();
       highpass.type = "highpass";
-      highpass.frequency.value = 300;
+      highpass.frequency.value = 80;
       highpass.Q.value = 0.7;
 
       // AudioWorkletNode for PCM capture
       const workletNode = new AudioWorkletNode(audioContext, "audio-processor");
 
       workletNode.port.onmessage = (event) => {
-        const pcmSamples = event.data as Float32Array;
+        const data = event.data as WorkletChunkMessage;
+        if (!data || data.type !== "chunk") return;
+        const pcmSamples = data.samples;
         const chunkIndex = chunkCounterRef.current++;
         const wavBlob = encodeWAV(pcmSamples, sampleRateRef.current);
-        sendChunkToBackend(wavBlob, chunkIndex);
+        sendChunkToBackend(wavBlob, chunkIndex, data.startMs || 0);
+        if (data.reason === "manual" && flushResolverRef.current) {
+          flushResolverRef.current();
+          flushResolverRef.current = null;
+        }
       };
+      workletNode.port.postMessage({
+        type: "config",
+        config: {
+          silenceThreshold: SILENCE_THRESHOLD,
+          minSpeechSeconds: MIN_SPEECH_SECONDS,
+          maxChunkSeconds: MAX_CHUNK_SECONDS,
+          preRollMs: PRE_ROLL_MS,
+          hangoverMs: HANGOVER_MS,
+        },
+      });
 
       // Connect: source -> highpass -> workletNode
       source.connect(highpass);
@@ -219,7 +270,7 @@ export function useAudioRecorder(
 
       setIsRecording(true);
       console.log(
-        `AudioWorklet recording started, chunking every ${CHUNK_INTERVAL_SECONDS}s at ${audioContext.sampleRate}Hz`
+        `AudioWorklet recording started, VAD max chunk ${MAX_CHUNK_SECONDS}s at ${audioContext.sampleRate}Hz`
       );
     } catch (err: any) {
       console.error("Failed to start AudioWorklet recording:", err);
@@ -227,7 +278,27 @@ export function useAudioRecorder(
     }
   }, [localStream, sendChunkToBackend]);
 
-  const stopRecording = useCallback(() => {
+  const flushRecording = useCallback(async () => {
+    if (!workletNodeRef.current) return;
+
+    await new Promise<void>((resolve) => {
+      const timer = window.setTimeout(() => {
+        if (flushResolverRef.current) {
+          flushResolverRef.current = null;
+          resolve();
+        }
+      }, 1200);
+      flushResolverRef.current = () => {
+        window.clearTimeout(timer);
+        resolve();
+      };
+      workletNodeRef.current?.port.postMessage({ type: "flush" });
+    });
+  }, []);
+
+  const stopRecording = useCallback(async () => {
+    await flushRecording();
+
     // Disconnect worklet node
     if (workletNodeRef.current) {
       workletNodeRef.current.disconnect();
@@ -253,12 +324,12 @@ export function useAudioRecorder(
 
     setIsRecording(false);
     console.log("Recording stopped");
-  }, []);
+  }, [flushRecording]);
 
   const finalize = useCallback(
-    async (finalizeMeetingId: string) => {
+    async (finalizeMeetingId: string, language?: string) => {
       try {
-        stopRecording();
+        await stopRecording();
 
         // Wait for all pending chunks to finish (max 60s)
         const maxWait = 60000;
@@ -272,11 +343,22 @@ export function useAudioRecorder(
           );
         }
 
+        if (!fullTranscriptRef.current.trim()) {
+          return {
+            meeting_id: finalizeMeetingId,
+            transcript_status: "EMPTY",
+            summary_status: "SKIPPED",
+            summary: null,
+            errors: [],
+          };
+        }
+
         const response = await api.post(
           `/api/meetings/${finalizeMeetingId}/finalize`,
           {
             transcript: fullTranscriptRef.current,
             segments: allSegmentsRef.current,
+            language: language || "vi",
           },
           { timeout: 120000 }
         );

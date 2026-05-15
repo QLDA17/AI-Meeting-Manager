@@ -45,6 +45,7 @@ class DeepgramProvider:
                 diarize=True,
                 utterances=True,
                 paragraphs=True,
+                filler_words=True,
             )
 
             results = response.results

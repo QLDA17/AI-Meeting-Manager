@@ -13,6 +13,7 @@ import {
   Key,
   MessageSquare,
   Pencil,
+  RefreshCw,
   Share2,
   Sparkles,
   Star,
@@ -27,6 +28,7 @@ import type { MeetingDetail as MeetingDetailType } from '../types';
 import AudioPlayer from '../components/meeting/AudioPlayer';
 import { useAuth } from '../context/AuthContext';
 import { usePermission } from '../hooks/usePermission';
+import { showToast } from '../components/ui';
 
 type DetailTab = 'summary' | 'transcript' | 'actions' | 'ai-notes';
 
@@ -36,6 +38,8 @@ const MeetingDetail: React.FC = () => {
   const { user } = useAuth();
   const { isSystemAdmin, isOrgAdmin, isGroupAdmin, isViewer } = usePermission();
   const [activeTab, setActiveTab] = useState<DetailTab>('summary');
+  const [isRegenerating, setIsRegenerating] = useState(false);
+  const [summaryLanguage, setSummaryLanguage] = useState<string>('vi');
 
   const query = useQuery({
     queryKey: ['meeting-detail', id],
@@ -55,6 +59,9 @@ const MeetingDetail: React.FC = () => {
     return meeting.transcriptContent || meeting.transcripts[0]?.content || '';
   }, [meeting]);
   const summary = meeting?.meetingSummaryText || meeting?.summary || '';
+  const summaryFailed = meeting?.summaryStatus === 'FAILED';
+  const summaryErrorText = meeting?.summaryErrorText || 'AgentRouter khong tao duoc AI Notes. Kiem tra token, model hoac log backend.';
+  const currentLanguage = meeting?.transcriptLanguage || summaryLanguage;
 
   const nowMs = Date.now();
   const startMs = meeting ? new Date(meeting.startTime).getTime() : nowMs;
@@ -67,6 +74,30 @@ const MeetingDetail: React.FC = () => {
       !isViewer &&
       (isSystemAdmin || isOrgAdmin || isGroupAdmin || meeting.createdBy === user.id),
   );
+
+  const handleRegenerateAINotes = async (lang?: string) => {
+    if (!id || !transcript) return;
+    const targetLang = lang || summaryLanguage;
+    setIsRegenerating(true);
+    try {
+      const response = await api.post(`/api/meetings/${id}/finalize`, {
+        transcript,
+        segments: [],
+        language: targetLang,
+      });
+      const result = response.data;
+      if (result?.summary_status === "COMPLETED") {
+        showToast.success("Đã tạo lại AI Notes thành công!");
+        query.refetch();
+      } else {
+        showToast.error("Tạo AI Notes thất bại. Kiểm tra log backend.");
+      }
+    } catch (err: any) {
+      showToast.error(err?.response?.data?.detail || "Lỗi khi tạo lại AI Notes");
+    } finally {
+      setIsRegenerating(false);
+    }
+  };
 
   if (query.isLoading) {
     return (
@@ -352,15 +383,133 @@ const MeetingDetail: React.FC = () => {
                   )}
 
                   {activeTab === 'ai-notes' && (
-                    <motion.div key="ai-notes" initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 10 }} className="space-y-4">
-                      <h3 className="text-lg font-black text-gray-900 dark:text-slate-100">AI Notes</h3>
-                      <div className="rounded-2xl border border-gray-100 bg-gray-50 p-6 text-sm leading-7 text-gray-700 dark:border-slate-800 dark:bg-slate-800/50 dark:text-slate-300">
-                        Ngon ngu ban ghi: {meeting.transcriptLanguage || 'Chua xac dinh'}
-                        <br />
-                        So action items: {actionItems.length}
-                        <br />
-                        So diem chinh: {keyPoints.length}
+                    <motion.div key="ai-notes" initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 10 }} className="space-y-6">
+                      <div>
+                        <h3 className="flex items-center gap-2 text-lg font-black text-gray-900 dark:text-slate-100">
+                          <Sparkles size={20} className="text-primary-500" />
+                          AI Notes
+                        </h3>
+                        <p className="mt-1 text-xs font-semibold uppercase tracking-widest text-gray-400">
+                          {meeting.transcriptLanguage || 'vi'} / {keyPoints.length} diem chinh / {actionItems.length} viec can lam
+                        </p>
                       </div>
+
+                      {summaryFailed && (
+                        <div className="rounded-2xl border border-red-200 bg-red-50 p-5 text-red-800 dark:border-red-900/40 dark:bg-red-950/30 dark:text-red-200">
+                          <div className="flex items-start gap-3">
+                            <AlertCircle size={20} className="mt-0.5 shrink-0" />
+                            <div className="flex-1">
+                              <p className="text-sm font-black uppercase tracking-widest">AI Notes dang loi</p>
+                              <p className="mt-2 text-sm leading-6">{summaryErrorText}</p>
+                              {(meeting.summaryProvider || meeting.summaryModelName) && (
+                                <p className="mt-3 text-xs font-bold uppercase tracking-widest text-red-500 dark:text-red-300">
+                                  {meeting.summaryProvider || 'router'} / {meeting.summaryModelName || 'unknown-model'}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Language Selector + Generate/Regenerate Button */}
+                      {transcript && (
+                        <div className="flex items-center gap-3">
+                          <select
+                            value={summaryLanguage}
+                            onChange={(e) => setSummaryLanguage(e.target.value)}
+                            className="rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-sm font-bold text-gray-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
+                          >
+                            <option value="vi">🇻🇳 Tiếng Việt</option>
+                            <option value="en">🇺🇸 English</option>
+                            <option value="zh">🇨🇳 中文</option>
+                            <option value="ja">🇯🇵 日本語</option>
+                            <option value="ko">🇰🇷 한국어</option>
+                          </select>
+                          <button
+                            onClick={() => handleRegenerateAINotes(summaryLanguage)}
+                            disabled={isRegenerating}
+                            className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 px-5 py-2.5 text-sm font-black text-white transition hover:from-indigo-500 hover:to-purple-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            <RefreshCw size={16} className={isRegenerating ? "animate-spin" : ""} />
+                            {isRegenerating ? "Đang tạo AI Notes..." : summaryFailed ? "Thử lại tạo AI Notes" : "Tạo lại AI Notes"}
+                          </button>
+                        </div>
+                      )}
+
+                      {!summary && keyPoints.length === 0 && decisions.length === 0 && actionItems.length === 0 ? (
+                        <div className="rounded-2xl border border-dashed border-gray-200 bg-gray-50 p-10 text-center dark:border-slate-700 dark:bg-slate-800/30">
+                          <Sparkles size={32} className="mx-auto mb-3 text-gray-300 dark:text-slate-600" />
+                          <p className="text-sm font-bold text-gray-500 dark:text-slate-400">
+                            {summaryFailed ? 'Transcript da luu, nhung AI Notes chua tao duoc.' : 'Chua co AI Notes cho cuoc hop nay.'}
+                          </p>
+                        </div>
+                      ) : (
+                        <>
+                          {summary && (
+                            <section className="rounded-2xl border border-primary-100 bg-primary-50/30 p-5 dark:border-primary-900/20 dark:bg-primary-900/10">
+                              <h4 className="mb-3 flex items-center gap-2 text-sm font-black uppercase tracking-widest text-primary-700 dark:text-primary-300">
+                                <FileText size={16} />
+                                Tom tat
+                              </h4>
+                              <p className="text-sm leading-7 text-gray-800 dark:text-slate-300">{summary}</p>
+                            </section>
+                          )}
+
+                          {keyPoints.length > 0 && (
+                            <section className="space-y-3">
+                              <h4 className="flex items-center gap-2 text-sm font-black uppercase tracking-widest text-blue-600 dark:text-blue-300">
+                                <Key size={16} />
+                                Diem chinh
+                              </h4>
+                              {keyPoints.map((point, index) => (
+                                <div key={`${point}-${index}`} className="flex items-start gap-3 rounded-xl border border-gray-100 bg-gray-50/60 p-4 dark:border-slate-800 dark:bg-slate-800/30">
+                                  <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-blue-100 text-xs font-black text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">
+                                    {index + 1}
+                                  </span>
+                                  <p className="text-sm font-medium leading-relaxed text-gray-700 dark:text-slate-300">{point}</p>
+                                </div>
+                              ))}
+                            </section>
+                          )}
+
+                          {decisions.length > 0 && (
+                            <section className="space-y-3">
+                              <h4 className="flex items-center gap-2 text-sm font-black uppercase tracking-widest text-emerald-600 dark:text-emerald-300">
+                                <Target size={16} />
+                                Quyet dinh
+                              </h4>
+                              {decisions.map((decision, index) => (
+                                <div key={`${decision}-${index}`} className="flex items-start gap-3 rounded-xl border border-emerald-100 bg-emerald-50/40 p-4 dark:border-emerald-900/20 dark:bg-emerald-900/10">
+                                  <CheckCircle2 size={18} className="mt-0.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                                  <p className="text-sm font-bold leading-relaxed text-emerald-900 dark:text-emerald-100">{decision}</p>
+                                </div>
+                              ))}
+                            </section>
+                          )}
+
+                          {actionItems.length > 0 && (
+                            <section className="space-y-3">
+                              <h4 className="flex items-center gap-2 text-sm font-black uppercase tracking-widest text-amber-600 dark:text-amber-300">
+                                <CheckCircle2 size={16} />
+                                Viec can lam
+                              </h4>
+                              {actionItems.map((item) => (
+                                <div key={item.id} className="rounded-xl border border-gray-100 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
+                                  <div className="flex items-start justify-between gap-3">
+                                    <p className="text-sm font-bold text-gray-900 dark:text-slate-100">{item.title}</p>
+                                    <span className="rounded-full bg-amber-50 px-2 py-1 text-[10px] font-black text-amber-700 dark:bg-amber-900/20 dark:text-amber-300">
+                                      {item.status}
+                                    </span>
+                                  </div>
+                                  {item.assigned_email && (
+                                    <p className="mt-2 text-xs font-semibold text-gray-500 dark:text-slate-400">{item.assigned_email}</p>
+                                  )}
+                                </div>
+                              ))}
+                            </section>
+                          )}
+                        </>
+                      )}
                     </motion.div>
                   )}
                 </AnimatePresence>
@@ -392,4 +541,3 @@ const MeetingDetail: React.FC = () => {
 };
 
 export default MeetingDetail;
-

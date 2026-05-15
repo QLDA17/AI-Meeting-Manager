@@ -426,8 +426,8 @@ class TranscriptSegment(TranscriptSegmentBase, TimestampMixin):
 
 class MeetingSummaryBase(BaseSchema):
     language: str = Field(default="vi", max_length=10)
-    key_points: Optional[List[Dict[str, Any]]] = None
-    decisions: Optional[List[Dict[str, Any]]] = None
+    key_points: Optional[List[Any]] = None
+    decisions: Optional[List[Any]] = None
     action_items: Optional[List[Dict[str, Any]]] = None
     meeting_summary: Optional[str] = None
     ai_provider: str = Field(default="openai", max_length=50)
@@ -440,8 +440,8 @@ class MeetingSummaryCreate(MeetingSummaryBase):
 
 
 class MeetingSummaryUpdate(BaseSchema):
-    key_points: Optional[List[Dict[str, Any]]] = None
-    decisions: Optional[List[Dict[str, Any]]] = None
+    key_points: Optional[List[Any]] = None
+    decisions: Optional[List[Any]] = None
     action_items: Optional[List[Dict[str, Any]]] = None
     meeting_summary: Optional[str] = None
     processing_status: Optional[str] = Field(None, pattern="^(PENDING|PROCESSING|COMPLETED|FAILED)$")
@@ -597,3 +597,28 @@ class MeetingDetailResponse(Meeting):
     meeting_summary_text: Optional[str] = None
     key_points_text: List[str] = Field(default_factory=list)
     decisions_text: List[str] = Field(default_factory=list)
+    summary_status: Optional[str] = None
+    summary_error_text: Optional[str] = None
+    summary_provider: Optional[str] = None
+    summary_model_name: Optional[str] = None
+
+
+class MeetingAnalysisActionItem(BaseSchema):
+    task: str
+    owner: str
+    deadline: str
+
+
+class MeetingAnalysisOutput(BaseSchema):
+    meeting_summary: str
+    key_points: List[str] = Field(default_factory=list)
+    decisions: List[str] = Field(default_factory=list)
+    action_items: List[MeetingAnalysisActionItem] = Field(default_factory=list)
+
+
+class MeetingFinalizeResponse(BaseSchema):
+    meeting_id: str
+    transcript_status: str
+    summary_status: str
+    summary: MeetingAnalysisOutput
+    errors: List[str] = Field(default_factory=list)
