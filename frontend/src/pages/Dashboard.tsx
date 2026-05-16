@@ -27,36 +27,76 @@ import { MeetingCard } from "../features/meeting/components/MeetingCard";
 import { clsx } from "clsx";
 
 const Dashboard: React.FC = () => {
-  const { user } = useAuth();
+  const { user, session, isAuthReady, refreshUser } = useAuth();
   const navigate = useNavigate();
-  const { currentOrg, loadGroups } = useOrgStore();
+  const { currentOrg, currentOrgId, loadGroups, loadOrgDetails } = useOrgStore();
   const { isOrgAdmin } = usePermission();
   const { meetings, fetchStats, loadMeetings } = useAppStore();
   const [stats, setStats] = useState({ totalMeetings: 0, totalHours: 0, processingCount: 0 });
   const [loading, setLoading] = useState(true);
+  const [orgLoadFailed, setOrgLoadFailed] = useState(false);
   const [weekOffset, setWeekOffset] = useState(0);
 
+  const approvedOrgId = useMemo(
+    () => user?.orgMemberships?.find((membership) => membership.approvalStatus !== 'pending')?.orgId || '',
+    [user?.orgMemberships],
+  );
+  const targetOrgId = currentOrg?.id || currentOrgId || session?.currentOrgId || approvedOrgId;
+  const hasApprovedOrg = Boolean(approvedOrgId);
+
   useEffect(() => {
+    let isCancelled = false;
+
     const initDashboard = async () => {
+      if (!isAuthReady) {
+        setLoading(true);
+        return;
+      }
+
       setLoading(true);
-      if (currentOrg?.id) {
+      setOrgLoadFailed(false);
+
+      if (!targetOrgId) {
+        setLoading(false);
+        return;
+      }
+
+      try {
+        if (!currentOrg?.id) {
+          await loadOrgDetails(targetOrgId);
+        }
+
         await Promise.all([
-          loadGroups(currentOrg.id),
-          loadMeetings(currentOrg.id)
+          loadGroups(targetOrgId),
+          loadMeetings(targetOrgId)
         ]);
         const realStats = await fetchStats();
-        setStats(realStats);
+        if (!isCancelled) {
+          setStats(realStats);
+        }
+      } catch (err) {
+        console.error('Failed to initialize dashboard:', err);
+        if (!isCancelled) {
+          setOrgLoadFailed(true);
+        }
+      } finally {
+        if (!isCancelled) {
+          setLoading(false);
+        }
       }
-      setLoading(false);
     };
     
     initDashboard();
-  }, [currentOrg?.id, loadGroups, loadMeetings, fetchStats]);
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [currentOrg?.id, fetchStats, isAuthReady, loadGroups, loadMeetings, loadOrgDetails, targetOrgId]);
 
   const appStats = stats;
 
   const processingCount = useMemo(
-    () => meetings.filter((m) => (m as any).status === "processing" || (m as any).status === "queued").length,
+    () => meetings.filter((m) => m.status === "processing" || m.status === "queued").length,
     [meetings]
   );
 
@@ -84,26 +124,28 @@ const Dashboard: React.FC = () => {
 
   const calendarDays = useMemo(() => {
     const today = new Date();
+    const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
     const days = [];
     const startOffset = -2 + (weekOffset * 7);
     const endOffset = 4 + (weekOffset * 7);
-    
+
     for (let i = startOffset; i <= endOffset; i++) {
       const d = new Date();
       d.setDate(today.getDate() + i);
-      const dateStr = d.toISOString().split('T')[0];
+      const dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
       days.push({
         date: d.getDate(),
         dayName: d.toLocaleDateString('vi-VN', { weekday: 'short' }),
         fullDate: dateStr,
-        isToday: i === 0,
+        isToday: dateStr === todayStr,
         hasMeeting: meetings.some(m => {
           const mDate = m.scheduled_start || m.startTime;
           if (!mDate) return false;
           try {
             const dObj = new Date(mDate);
             if (isNaN(dObj.getTime())) return false;
-            return dObj.toISOString().split('T')[0] === dateStr;
+            const mDateStr = `${dObj.getFullYear()}-${String(dObj.getMonth() + 1).padStart(2, '0')}-${String(dObj.getDate()).padStart(2, '0')}`;
+            return mDateStr === dateStr;
           } catch (e) {
             return false;
           }
@@ -114,14 +156,41 @@ const Dashboard: React.FC = () => {
   }, [meetings, weekOffset]);
 
   const hoursSaved = useMemo(() => {
-    const estimatedHours = meetings.length * 2;
-    return `${estimatedHours.toFixed(0)}h`;
-  }, [meetings.length]);
+    const totalMinutes = meetings.reduce((sum, m) => sum + (m.duration || 0), 0);
+    const hours = Math.round(totalMinutes / 60);
+    return `${hours}h`;
+  }, [meetings]);
 
-  if (loading) {
+  if (!isAuthReady || loading) {
     return (
       <div className="flex min-h-[60vh] items-center justify-center">
         <Loader2 className="h-9 w-9 animate-spin text-primary-500" />
+      </div>
+    );
+  }
+
+  if (!currentOrg && hasApprovedOrg && targetOrgId) {
+    return (
+      <div className="flex min-h-[60vh] items-center justify-center p-6">
+        <div className="max-w-md rounded-2xl border border-amber-200 bg-amber-50 p-6 text-center text-amber-900 dark:border-amber-900/40 dark:bg-amber-900/20 dark:text-amber-100">
+          <Building2 className="mx-auto mb-3 h-9 w-9" />
+          <h2 className="text-lg font-bold">Đang đồng bộ tổ chức</h2>
+          <p className="mt-2 text-sm">
+            Tài khoản đã có tổ chức, nhưng dashboard chưa tải được dữ liệu mới nhất.
+          </p>
+          <Button
+            className="mt-5 rounded-xl"
+            onClick={async () => {
+              setOrgLoadFailed(false);
+              setLoading(true);
+              await refreshUser();
+              await loadOrgDetails(targetOrgId);
+              setLoading(false);
+            }}
+          >
+            {orgLoadFailed ? 'Tải lại' : 'Đồng bộ lại'}
+          </Button>
+        </div>
       </div>
     );
   }
@@ -149,7 +218,7 @@ const Dashboard: React.FC = () => {
               <span>Workspace của bạn đã sẵn sàng</span>
             </div>
             <h1 className="text-4xl font-extrabold tracking-tight text-gray-900 dark:text-white sm:text-5xl">
-              Chào buổi sáng, <span className="text-gradient">{user?.displayName?.split(' ')[0] || user?.email?.split('@')[0]}</span>
+              {(() => { const h = new Date().getHours(); return h < 12 ? 'Chào buổi sáng' : h < 18 ? 'Chào buổi chiều' : 'Chào buổi tối'; })()}, <span className="text-gradient">{user?.displayName?.split(' ')[0] || user?.email?.split('@')[0]}</span>
             </h1>
             <p className="mt-4 text-lg text-gray-600 dark:text-slate-400">
               Hôm nay là một ngày tuyệt vời để tối ưu hóa các cuộc họp của bạn. Bạn có <span className="font-semibold text-gray-900 dark:text-white">{processingCount}</span> bản ghi đang xử lý.
@@ -296,21 +365,25 @@ const Dashboard: React.FC = () => {
             <div className="space-y-4">
               <p className="text-[10px] font-black uppercase tracking-widest text-gray-400">Cuộc họp sắp tới</p>
               {upcomingMeetings.length > 0 ? (
-                upcomingMeetings.map((m) => (
+                upcomingMeetings.map((m) => {
+                  const mDate = m.scheduled_start || m.startTime;
+                  const parsedDate = mDate ? new Date(mDate) : null;
+                  const isValidDate = parsedDate && !isNaN(parsedDate.getTime());
+                  return (
                   <div key={m.id} className="group relative flex items-start gap-3 rounded-2xl border border-gray-50 p-3 transition-all hover:bg-gray-50 dark:border-slate-800 dark:hover:bg-slate-800/50">
                     <div className={clsx(
                       "flex h-10 w-10 shrink-0 flex-col items-center justify-center rounded-xl font-bold",
                       m.status === 'live' ? "bg-red-50 text-red-600 dark:bg-red-900/20 dark:text-red-400 animate-pulse" : "bg-primary-50 text-primary-600 dark:bg-primary-900/20 dark:text-primary-400"
                     )}>
-                      <span className="text-sm leading-none">{new Date(m.scheduled_start || m.startTime || 0).getDate()}</span>
-                      <span className="text-[8px] uppercase">{new Date(m.scheduled_start || m.startTime || 0).toLocaleDateString('vi-VN', { month: 'short' })}</span>
+                      <span className="text-sm leading-none">{isValidDate ? parsedDate.getDate() : '--'}</span>
+                      <span className="text-[8px] uppercase">{isValidDate ? parsedDate.toLocaleDateString('vi-VN', { month: 'short' }) : '--'}</span>
                     </div>
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm font-bold text-gray-900 dark:text-white group-hover:text-primary-600">{m.title}</p>
                       <div className="mt-1 flex items-center gap-3 text-xs text-gray-500 dark:text-slate-400">
                         <span className="flex items-center gap-1 font-medium">
                           <Clock3 size={12} />
-                          {new Date(m.scheduled_start || m.startTime || 0).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', hour12: false })}
+                          {isValidDate ? parsedDate.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', hour12: false }) : 'Chưa lên lịch'}
                         </span>
                         {m.status === 'live' && (
                           <span className="flex items-center gap-1 font-black text-red-500">
@@ -321,7 +394,7 @@ const Dashboard: React.FC = () => {
                       </div>
                     </div>
                   </div>
-                ))
+                )})
               ) : (
                 <div className="py-6 text-center">
                   <p className="text-xs text-gray-400">Tuyệt vời! Không có lịch họp nào.</p>
@@ -394,7 +467,9 @@ const NoOrgView: React.FC = () => {
     try {
       await createOrg(orgName);
       await refreshUser();
-    } catch (e) {}
+    } catch (e) {
+      console.error('Tạo tổ chức thất bại:', e);
+    }
   };
 
   const handleJoin = async (e: React.FormEvent) => {
@@ -404,7 +479,9 @@ const NoOrgView: React.FC = () => {
       const organizationId = await acceptInvitation(token);
       await refreshUser();
       setCurrentOrg(organizationId);
-    } catch (e) {}
+    } catch (e) {
+      console.error('Tham gia tổ chức thất bại:', e);
+    }
   };
 
   return (

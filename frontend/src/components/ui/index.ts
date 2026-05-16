@@ -8,6 +8,7 @@ export { default as Tooltip } from './Tooltip';
 export { default as MultiSelect } from './MultiSelect';
 export { default as Logo } from './Logo';
 export { default as FloatingSaveBar } from './FloatingSaveBar';
+export { default as EditTitleModal } from './EditTitleModal';
 
 export { showToast, toast } from "./Toast";
 

@@ -36,6 +36,7 @@ const GroupDetail: React.FC = () => {
   const navigate = useNavigate();
   const { user } = useAuth();
   const { currentGroup, group: groupData, loadGroup, loadMembers, loadMeetings, members, meetings } = useGroupStore();
+  const { loadGroups } = useOrgStore();
   const { isGroupAdmin, isOrgAdmin } = usePermission();
 
   const [activeTab, setActiveTab] = useState<TabKey>('meetings');
@@ -101,6 +102,24 @@ const GroupDetail: React.FC = () => {
   };
 
   const hasSettingsAccess = isGroupAdmin || isOrgAdmin;
+  const visibleMembers = members.slice(0, 3);
+  const totalMemberCount = Math.max(groupData.memberCount || 0, members.length);
+  const extraMemberCount = Math.max(0, totalMemberCount - visibleMembers.length);
+  const getMemberRoleLabel = (memberId: string) => {
+    const role = members
+      .find((member) => member.id === memberId)
+      ?.groupMemberships?.find((membership) => membership.groupId === groupData.id)
+      ?.role;
+
+    switch (role) {
+      case 'group-admin':
+        return 'Quản trị nhóm';
+      case 'viewer':
+        return 'Người xem';
+      default:
+        return 'Thành viên';
+    }
+  };
 
   const tabs: Array<{ key: TabKey; label: string; icon: React.ReactNode }> = [
     { key: 'meetings', label: 'Cuộc họp', icon: <FileText size={16} /> },
@@ -223,13 +242,34 @@ const GroupDetail: React.FC = () => {
               ))}
             </div>
             
-            <div className="hidden items-center gap-2 border-l border-gray-100 pl-4 dark:border-slate-800 md:flex pr-2">
-               <div className="flex -space-x-2">
-                  {[1, 2, 3].map(i => (
-                    <div key={i} className="h-8 w-8 rounded-full border-2 border-white bg-gray-200 shadow-sm dark:border-slate-900" />
-                  ))}
-               </div>
-               <span className="text-xs font-black text-gray-400">+{Math.max(0, (groupData.memberCount || 0) - 3)}</span>
+            <div className="hidden items-center gap-2 border-l border-gray-100 pl-4 pr-2 dark:border-slate-800 md:flex">
+              <div className="flex -space-x-2">
+                {visibleMembers.map((member) => (
+                  <div
+                    key={member.id}
+                    className="group relative flex h-8 w-8 items-center justify-center rounded-full border-2 border-white bg-primary-100 text-xs font-black text-primary-700 shadow-sm dark:border-slate-900 dark:bg-primary-900/40 dark:text-primary-200"
+                  >
+                    {(member.displayName?.[0] || member.email?.[0] || 'U').toUpperCase()}
+                    <div className="pointer-events-none absolute right-0 top-10 z-50 hidden w-56 rounded-2xl border border-gray-100 bg-white p-3 text-left shadow-xl group-hover:block dark:border-slate-700 dark:bg-slate-900">
+                      <p className="truncate text-sm font-black text-gray-900 dark:text-white">
+                        {member.displayName || `${member.firstName || ''} ${member.lastName || ''}`.trim() || member.email}
+                      </p>
+                      <p className="mt-0.5 truncate text-xs font-semibold text-gray-500 dark:text-slate-400">{member.email}</p>
+                      <p className="mt-2 inline-flex rounded-full bg-primary-50 px-2 py-1 text-[11px] font-black text-primary-700 dark:bg-primary-900/30 dark:text-primary-200">
+                        {getMemberRoleLabel(member.id)}
+                      </p>
+                    </div>
+                  </div>
+                ))}
+                {visibleMembers.length === 0 && (
+                  <div className="h-8 w-8 rounded-full border-2 border-white bg-gray-200 shadow-sm dark:border-slate-900 dark:bg-slate-800" />
+                )}
+              </div>
+              {extraMemberCount > 0 && (
+                <span className="text-xs font-black text-gray-400">
+                  +{extraMemberCount}
+                </span>
+              )}
             </div>
           </div>
         </div>
@@ -253,6 +293,12 @@ const GroupDetail: React.FC = () => {
                 <GroupMembersTab
                   groupId={groupData.id}
                   members={members}
+                  currentUserId={user?.id}
+                  onInviteMember={() => {
+                    loadMembers(groupData.id);
+                    loadGroup(groupData.id);
+                    loadGroups(groupData.orgId || groupData.organization_id);
+                  }}
                 />
               )}
 

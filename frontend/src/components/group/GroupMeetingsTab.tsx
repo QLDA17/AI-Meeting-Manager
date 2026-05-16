@@ -58,12 +58,7 @@ const GroupMeetingsTab: React.FC<GroupMeetingsTabProps> = ({ meetings }) => {
 
     // Status filter
     if (statusFilter !== 'all') {
-      // Mock status - in real app would come from meeting.status
-      result = result.filter(() => {
-        if (statusFilter === 'completed') return true;
-        if (statusFilter === 'processing') return false;
-        return true;
-      });
+      result = result.filter((m) => m.status === statusFilter);
     }
 
     // Sort

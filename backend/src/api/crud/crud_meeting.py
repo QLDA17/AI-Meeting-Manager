@@ -1,7 +1,52 @@
 from sqlalchemy.orm import Session, joinedload
 from typing import List, Optional
+from datetime import datetime
 import uuid
 from .. import models
+
+
+def check_meeting_overlap(
+    db: Session,
+    participant_ids: List[str],
+    scheduled_start: datetime,
+    scheduled_end: datetime,
+    exclude_meeting_id: Optional[str] = None,
+) -> List[dict]:
+    if not participant_ids or not scheduled_start or not scheduled_end:
+        return []
+
+    overlapping = (
+        db.query(models.Meeting)
+        .filter(
+            models.Meeting.status.in_(["upcoming", "live"]),
+            models.Meeting.scheduled_start.isnot(None),
+            models.Meeting.scheduled_end.isnot(None),
+            models.Meeting.scheduled_start < scheduled_end,
+            models.Meeting.scheduled_end > scheduled_start,
+        )
+    )
+    if exclude_meeting_id:
+        overlapping = overlapping.filter(models.Meeting.id != exclude_meeting_id)
+
+    overlapping = overlapping.all()
+    if not overlapping:
+        return []
+
+    conflicts = []
+    participant_set = set(participant_ids)
+    for m in overlapping:
+        meeting_participant_ids = {p.user_id for p in m.participants if p.user_id}
+        conflicting_users = meeting_participant_ids.intersection(participant_set)
+        if conflicting_users:
+            conflicts.append({
+                "meeting_id": m.id,
+                "meeting_title": m.title,
+                "scheduled_start": m.scheduled_start.isoformat(),
+                "scheduled_end": m.scheduled_end.isoformat(),
+                "conflicting_user_ids": list(conflicting_users),
+            })
+
+    return conflicts
 
 
 def get_meeting_by_id(db: Session, meeting_id: str) -> Optional[models.Meeting]:
@@ -9,7 +54,7 @@ def get_meeting_by_id(db: Session, meeting_id: str) -> Optional[models.Meeting]:
         joinedload(models.Meeting.organization),
         joinedload(models.Meeting.group).joinedload(models.Group.memberships),
         joinedload(models.Meeting.created_by_user),
-        joinedload(models.Meeting.participants),
+        joinedload(models.Meeting.participants).joinedload(models.MeetingParticipant.user),
         joinedload(models.Meeting.audio_files),
         joinedload(models.Meeting.transcripts),
         joinedload(models.Meeting.summaries),

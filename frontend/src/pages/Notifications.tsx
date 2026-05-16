@@ -1,7 +1,7 @@
 /**
  * Trang Thông báo - kết nối với API thật
  */
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -18,8 +18,10 @@ import {
   Loader2,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { useOrgStore } from '../stores';
+import api from '../services/api';
 
-type NotificationType = 'meeting' | 'mention' | 'system' | 'user';
+type NotificationType = 'meeting' | 'mention' | 'system' | 'user' | 'invitation';
 type NotificationPriority = 'urgent' | 'today' | 'recent';
 
 interface Notification {
@@ -38,51 +40,89 @@ interface Notification {
     assignedBy?: string;
     meeting_id?: string;
     meetingId?: string;
+    invitationId?: string;
+    organizationId?: string;
+    organizationName?: string;
+    role?: string;
+    type?: string;
   };
 }
 
 const Notifications: React.FC = () => {
   const navigate = useNavigate();
-  const { session } = useAuth();
+  const { session, refreshUser } = useAuth();
+  const { setCurrentOrg } = useOrgStore();
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
+  const fetchNotifications = useCallback(async (showLoading = false) => {
     if (!session?.token) {
       setLoading(false);
       return;
     }
-    const fetchNotifications = async () => {
+    if (showLoading) {
       setLoading(true);
-      setError(null);
-      try {
-        const res = await fetch('/api/notifications', {
-          headers: { Authorization: `Bearer ${session.token}` },
-        });
-        if (!res.ok) throw new Error(`Lỗi ${res.status}: Không thể tải thông báo`);
-        const data = await res.json();
-        const mapped: Notification[] = data.map((n: any) => ({
+    }
+    setError(null);
+    try {
+      const res = await api.get('/api/notifications');
+      const mapped: Notification[] = res.data.map((n: any) => {
+        const metadata = n.metadata || {};
+        return {
           ...n,
+          metadata,
           timestamp: new Date(n.timestamp),
-          actions: n.type === 'meeting' ? [{
+          actions: n.type === 'invitation' ? [
+            {
+              label: 'Chấp nhận',
+              variant: 'primary' as const,
+              onClick: async () => {
+                const invitationId = metadata.invitationId;
+                const organizationId = metadata.organizationId;
+                if (!invitationId) return;
+
+                await api.post(`/api/invitations/${invitationId}/accept`);
+                await refreshUser();
+                if (organizationId) {
+                  setCurrentOrg(organizationId);
+                }
+                await api.patch(`/api/notifications/${n.id}/read`);
+                setNotifications((prev) => prev.filter((item) => item.id !== n.id));
+                navigate('/dashboard');
+              },
+            },
+            {
+              label: 'Ẩn',
+              variant: 'secondary' as const,
+              onClick: async () => {
+                await api.delete(`/api/notifications/${n.id}`);
+                setNotifications((prev) => prev.filter((item) => item.id !== n.id));
+              },
+            },
+          ] : n.type === 'meeting' ? [{
             label: 'Xem cuộc họp',
             variant: 'primary' as const,
             onClick: () => {
-              const meetingId = n?.metadata?.meeting_id || n?.metadata?.meetingId;
+              const meetingId = metadata.meeting_id || metadata.meetingId;
               if (meetingId) navigate(`/meetings/${meetingId}`);
             },
           }] : [],
-        }));
-        setNotifications(mapped);
-      } catch (err: any) {
-        setError(err.message || 'Lỗi không xác định');
-      } finally {
-        setLoading(false);
-      }
-    };
-    fetchNotifications();
-  }, [session?.token]);
+        };
+      });
+      setNotifications(mapped);
+    } catch (err: any) {
+      setError(err.response?.data?.detail || err.message || 'Lỗi không xác định');
+    } finally {
+      setLoading(false);
+    }
+  }, [navigate, refreshUser, session?.token, setCurrentOrg]);
+
+  useEffect(() => {
+    fetchNotifications(true);
+    const timer = window.setInterval(() => fetchNotifications(false), 20000);
+    return () => window.clearInterval(timer);
+  }, [fetchNotifications]);
 
 
   const [filterType, setFilterType] = useState<string>('all');
@@ -104,18 +144,36 @@ const Notifications: React.FC = () => {
   const unreadCount = notifications.filter((n) => !n.isRead).length;
   const urgentCount = groupedNotifications.urgent.length;
 
-  const handleMarkAllRead = () => {
+  const handleMarkAllRead = async () => {
+    const prev = notifications;
     setNotifications((prev) => prev.map((n) => ({ ...n, isRead: true })));
+    try {
+      await api.post('/api/notifications/read-all');
+    } catch {
+      setNotifications(prev);
+    }
   };
 
-  const handleMarkRead = (id: string) => {
+  const handleMarkRead = async (id: string) => {
+    const prev = notifications;
     setNotifications((prev) =>
       prev.map((n) => (n.id === id ? { ...n, isRead: true } : n))
     );
+    try {
+      await api.patch(`/api/notifications/${id}/read`);
+    } catch {
+      setNotifications(prev);
+    }
   };
 
-  const handleDismiss = (id: string) => {
+  const handleDismiss = async (id: string) => {
+    const prev = notifications;
     setNotifications((prev) => prev.filter((n) => n.id !== id));
+    try {
+      await api.delete(`/api/notifications/${id}`);
+    } catch {
+      setNotifications(prev);
+    }
   };
 
   const getNotificationIcon = (type: NotificationType) => {
@@ -126,6 +184,8 @@ const Notifications: React.FC = () => {
         return <MessageSquare size={18} className="text-purple-600 dark:text-purple-400" />;
       case 'user':
         return <UserPlus size={18} className="text-cyan-600 dark:text-cyan-400" />;
+      case 'invitation':
+        return <UserPlus size={18} className="text-primary-600 dark:text-primary-400" />;
       case 'system':
         return <Settings size={18} className="text-gray-600 dark:text-gray-400" />;
     }
@@ -162,7 +222,7 @@ const Notifications: React.FC = () => {
           ? 'border-gray-200 bg-white dark:border-slate-700 dark:bg-slate-900'
           : 'border-primary-200 bg-primary-50/50 dark:border-primary-900/40 dark:bg-primary-900/10'
       }`}
-      onClick={() => handleMarkRead(notification.id)}
+      onClick={() => void handleMarkRead(notification.id)}
     >
       <div className="flex items-start gap-3">
         {/* Icon */}
@@ -216,7 +276,7 @@ const Notifications: React.FC = () => {
               <button
                 onClick={(e) => {
                   e.stopPropagation();
-                  handleDismiss(notification.id);
+                  void handleDismiss(notification.id);
                 }}
                 className="opacity-0 transition group-hover:opacity-100 rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-slate-800 dark:hover:text-slate-200"
               >
@@ -423,7 +483,7 @@ const Notifications: React.FC = () => {
               Không có thông báo
             </p>
             <p className="mt-1 text-sm text-gray-500 dark:text-slate-400">
-              You're all xem hết thông báo! We'll notify you when something new arrives.
+              Bạn đã xem hết thông báo! Chúng tôi sẽ thông báo khi có nội dung mới.
             </p>
           </div>
         )}

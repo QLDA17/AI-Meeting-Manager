@@ -20,6 +20,13 @@ const asIsoString = (value: unknown, fallback?: string): string => {
   return fallback || new Date().toISOString();
 };
 
+// Backend stores naive UTC datetimes (no timezone suffix). Append 'Z' so JS parses them as UTC.
+const ensureUtc = (value: unknown): string | undefined => {
+  if (typeof value !== 'string' || !value) return undefined;
+  if (value.endsWith('Z') || /[+-]\d{2}:\d{2}$/.test(value)) return value;
+  return value + 'Z';
+};
+
 const asNumber = (value: unknown, fallback = 0): number => {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
   if (typeof value === 'string') {
@@ -74,6 +81,9 @@ export const normalizeUser = (user: any): User => {
     lastName,
     displayName: displayName || user.email,
     avatarUrl: user.avatarUrl ?? user.avatar_url,
+    phone: user.phone ?? undefined,
+    gender: user.gender ?? undefined,
+    dateOfBirth: user.dateOfBirth ?? user.date_of_birth ?? undefined,
     createdAt: asIsoString(user.createdAt ?? user.created_at),
     updatedAt: asIsoString(user.updatedAt ?? user.updated_at),
     lastLoginAt: user.lastLoginAt ?? user.last_login ?? undefined,
@@ -152,10 +162,10 @@ export const normalizeMeeting = (meeting: any): Meeting => ({
   group_id: meeting.group_id ?? meeting.groupId ?? undefined,
   title: meeting.title,
   description: meeting.description ?? undefined,
-  scheduled_start: meeting.scheduled_start ?? undefined,
-  scheduled_end: meeting.scheduled_end ?? undefined,
-  startTime: asIsoString(meeting.startTime ?? meeting.scheduled_start ?? meeting.created_at),
-  endTime: asIsoString(meeting.endTime ?? meeting.scheduled_end ?? meeting.created_at),
+  scheduled_start: ensureUtc(meeting.scheduled_start),
+  scheduled_end: ensureUtc(meeting.scheduled_end),
+  startTime: ensureUtc(meeting.startTime) || ensureUtc(meeting.scheduled_start) || asIsoString(meeting.created_at),
+  endTime: ensureUtc(meeting.endTime) || ensureUtc(meeting.scheduled_end) || asIsoString(meeting.created_at),
   duration: asNumber(meeting.duration),
   status: meeting.status ?? 'upcoming',
   code: meeting.code ?? undefined,
@@ -165,21 +175,29 @@ export const normalizeMeeting = (meeting: any): Meeting => ({
   attendees: Array.isArray(meeting.attendees)
     ? meeting.attendees.map(normalizeUser)
     : Array.isArray(meeting.participants)
-      ? meeting.participants.map((participant: any) => ({
-          id: participant.user_id ?? participant.id ?? participant.email ?? participant.name ?? `participant-${Math.random().toString(36).slice(2)}`,
-          username: participant.name ?? participant.email ?? 'participant',
-          email: participant.email ?? '',
-          firstName: participant.name ?? participant.email ?? '',
-          lastName: '',
-          displayName: participant.name ?? participant.email ?? participant.speaker_label ?? 'Participant',
-          createdAt: asIsoString(participant.created_at),
-          updatedAt: asIsoString(participant.updated_at),
-          isActive: true,
-          isVerified: false,
-          orgMemberships: [],
-          groupMemberships: [],
-          systemRole: 'member',
-        }))
+      ? meeting.participants.map((participant: any) => {
+          const u = participant.user;
+          const name = participant.name
+            ?? (u ? `${u.first_name || ''} ${u.last_name || ''}`.trim() || u.username || u.email : null)
+            ?? participant.email
+            ?? 'Thành viên';
+          return {
+            id: participant.user_id ?? participant.id ?? participant.email ?? `participant-${Math.random().toString(36).slice(2)}`,
+            username: name,
+            email: participant.email ?? u?.email ?? '',
+            firstName: u?.first_name ?? participant.name ?? '',
+            lastName: u?.last_name ?? '',
+            displayName: name,
+            avatarUrl: u?.avatar_url,
+            createdAt: asIsoString(participant.created_at ?? u?.created_at),
+            updatedAt: asIsoString(participant.updated_at ?? u?.updated_at),
+            isActive: true,
+            isVerified: false,
+            orgMemberships: [],
+            groupMemberships: [],
+            systemRole: 'member',
+          };
+        })
       : [],
   createdBy: meeting.createdBy ?? meeting.created_by ?? '',
   createdAt: asIsoString(meeting.createdAt ?? meeting.created_at),
@@ -204,6 +222,18 @@ export const normalizeMeetingDetail = (meeting: any): MeetingDetail => ({
         language: transcript.language ?? 'vi',
         processingStatus: transcript.processing_status ?? 'PENDING',
         createdAt: asIsoString(transcript.created_at),
+      }))
+    : [],
+  transcriptSegments: Array.isArray(meeting.transcript_segments)
+    ? meeting.transcript_segments.map((segment: any) => ({
+        id: segment.id,
+        transcriptId: segment.transcript_id,
+        speakerLabel: segment.speaker_label ?? 'Speaker_01',
+        startTime: asNumber(segment.start_time),
+        endTime: asNumber(segment.end_time),
+        text: segment.text ?? '',
+        language: segment.language ?? 'auto',
+        confidenceScore: segment.confidence_score != null ? asNumber(segment.confidence_score) : undefined,
       }))
     : [],
   summaries: Array.isArray(meeting.summaries)
@@ -256,6 +286,10 @@ export const normalizeGroupMessage = (message: any): GroupMessage => ({
   reactions: Array.isArray(message.reactions) ? message.reactions : [],
   isPinned: asBoolean(message.isPinned ?? message.is_pinned),
   is_pinned: asBoolean(message.is_pinned ?? message.isPinned),
+  replyToId: message.replyToId ?? message.reply_to_id ?? undefined,
+  reply_to_id: message.reply_to_id ?? message.replyToId ?? undefined,
+  replyTo: message.replyTo ? normalizeGroupMessage(message.replyTo) : message.reply_to ? normalizeGroupMessage(message.reply_to) : undefined,
+  reply_to: message.reply_to ? normalizeGroupMessage(message.reply_to) : message.replyTo ? normalizeGroupMessage(message.replyTo) : undefined,
   createdAt: asIsoString(message.createdAt ?? message.created_at),
   created_at: asIsoString(message.created_at ?? message.createdAt),
   updatedAt: asIsoString(message.updatedAt ?? message.updated_at),

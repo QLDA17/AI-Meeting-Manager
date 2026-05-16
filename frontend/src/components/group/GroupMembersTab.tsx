@@ -2,11 +2,11 @@
  * GroupMembersTab Component
  * Quản lý thành viên trong group với vai trò (roles)
  */
-import React, { useState } from 'react';
-import { Search, Plus, Crown, User, Eye, MoreVertical, Mail, Users, Filter, ShieldCheck, Shield } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { Search, Plus, Eye, MoreVertical, Users, Filter, ShieldCheck, Shield, Loader2 } from 'lucide-react';
 import type { User as UserType, SystemRole } from '../../types';
 import { getRoleDisplayInfo } from '../../data';
-import { Button, Badge, Input, Card } from '../ui';
+import { Button, Badge } from '../ui';
 import { toast } from '../ui/Toast';
 import { usePermission } from '../../hooks';
 import api from '../../services/api';
@@ -20,6 +20,15 @@ interface GroupMembersTabProps {
 }
 
 type RoleFilter = 'all' | 'group-admin' | 'member' | 'viewer';
+type AssignableGroupRole = 'member' | 'group-admin';
+
+interface SearchableUser {
+  id: string;
+  email: string;
+  displayName?: string;
+  username?: string;
+  avatarUrl?: string;
+}
 
 const GroupMembersTab: React.FC<GroupMembersTabProps> = ({
   groupId,
@@ -31,12 +40,55 @@ const GroupMembersTab: React.FC<GroupMembersTabProps> = ({
   const [searchTerm, setSearchTerm] = useState('');
   const [roleFilter, setRoleFilter] = useState<RoleFilter>('all');
   const [showInviteModal, setShowInviteModal] = useState(false);
-  const [inviteEmail, setInviteEmail] = useState('');
-  const [inviteRole, setInviteRole] = useState('member');
+  const [inviteQuery, setInviteQuery] = useState('');
+  const [inviteResults, setInviteResults] = useState<SearchableUser[]>([]);
+  const [selectedUser, setSelectedUser] = useState<SearchableUser | null>(null);
+  const [inviteRole, setInviteRole] = useState<AssignableGroupRole>('member');
   const [isInviting, setIsInviting] = useState(false);
+  const [isSearchingInvitees, setIsSearchingInvitees] = useState(false);
+  const [inviteError, setInviteError] = useState('');
   const { group } = useGroupStore();
 
   const canInvite = isGroupAdmin || isOrgAdmin;
+
+  useEffect(() => {
+    if (!showInviteModal) return;
+
+    const term = inviteQuery.trim();
+    if (selectedUser) {
+      setInviteResults([]);
+      setIsSearchingInvitees(false);
+      return;
+    }
+
+    let cancelled = false;
+    setIsSearchingInvitees(true);
+    const timer = window.setTimeout(async () => {
+      try {
+        const response = await api.get(`/api/groups/${groupId}/users/search`, {
+          params: term ? { q: term } : {},
+        });
+        if (!cancelled) {
+          setInviteError('');
+          setInviteResults(Array.isArray(response.data) ? response.data : []);
+        }
+      } catch (err: any) {
+        if (!cancelled) {
+          setInviteResults([]);
+          setInviteError(err.response?.data?.detail || 'Không tìm được thành viên phù hợp.');
+        }
+      } finally {
+        if (!cancelled) {
+          setIsSearchingInvitees(false);
+        }
+      }
+    }, 300);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [groupId, inviteQuery, selectedUser, showInviteModal]);
 
   // Group members by role with filtering
   const groupedMembers = React.useMemo(() => {
@@ -72,23 +124,40 @@ const GroupMembersTab: React.FC<GroupMembersTabProps> = ({
 
   const handleInvite = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!inviteEmail || !groupId) return;
+    if (!selectedUser || !groupId) {
+      setInviteError('Vui lòng chọn một thành viên trong tổ chức.');
+      return;
+    }
 
     setIsInviting(true);
+    setInviteError('');
     try {
-      await api.post(`/api/groups/${groupId}/members/invite-by-email`, {
-        email: inviteEmail,
-        role: inviteRole
+      await api.post(`/api/groups/${groupId}/members`, {
+        user_id: selectedUser.id,
+        role: inviteRole,
       });
-      if (onInviteMember) onInviteMember(inviteEmail);
-      toast.success(`Đã gửi lời mời tới ${inviteEmail}`);
-      setInviteEmail('');
+      if (onInviteMember) onInviteMember(selectedUser.email);
+      toast.success(`Đã thêm ${selectedUser.email} vào nhóm`);
+      setInviteQuery('');
+      setInviteResults([]);
+      setSelectedUser(null);
       setShowInviteModal(false);
     } catch (err: any) {
-      toast.error(err.response?.data?.detail || 'Lỗi khi gửi lời mời');
+      const message = err.response?.data?.detail || 'Lỗi khi thêm thành viên';
+      setInviteError(message);
+      toast.error(message);
     } finally {
       setIsInviting(false);
     }
+  };
+
+  const closeInviteModal = () => {
+    setShowInviteModal(false);
+    setInviteQuery('');
+    setInviteResults([]);
+    setSelectedUser(null);
+    setInviteRole('member');
+    setInviteError('');
   };
 
   const roleIcon = (role: string) => {
@@ -275,33 +344,103 @@ const GroupMembersTab: React.FC<GroupMembersTabProps> = ({
           <div className="w-full max-w-md overflow-hidden rounded-[2rem] border border-white/20 bg-white shadow-2xl dark:bg-slate-900">
             <div className="bg-primary-600 p-8 text-white">
               <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-white/20">
-                <Mail size={24} />
+                <Users size={24} />
               </div>
               <h3 className="text-2xl font-black">Mời thành viên</h3>
-              <p className="mt-2 text-sm text-primary-100">Mời đồng nghiệp tham gia nhóm để cùng thảo luận và quản lý cuộc họp.</p>
+              <p className="mt-2 text-sm text-primary-100">Chỉ thêm những thành viên đã thuộc tổ chức nhưng chưa có trong nhóm này.</p>
             </div>
             
             <form onSubmit={handleInvite} className="p-8">
               <div className="space-y-4">
-                <Input
-                  label="Địa chỉ Email"
-                  type="email"
-                  value={inviteEmail}
-                  onChange={(e) => setInviteEmail(e.target.value)}
-                  placeholder="name@company.com"
-                  required
-                  autoFocus
-                />
+                {inviteError && (
+                  <div className="rounded-xl bg-red-50 p-3 text-xs font-bold text-red-600 dark:bg-red-900/20 dark:text-red-300">
+                    {inviteError}
+                  </div>
+                )}
                 <div className="space-y-1.5">
-                  <label className="text-xs font-bold uppercase tracking-wider text-gray-400">Gán vai trò mặc định</label>
+                  <label className="text-xs font-bold uppercase tracking-wider text-gray-400">Tìm thành viên trong tổ chức</label>
+                  <input
+                    autoFocus
+                    value={selectedUser ? selectedUser.email : inviteQuery}
+                    onChange={(e) => {
+                      setSelectedUser(null);
+                      setInviteQuery(e.target.value);
+                      setInviteError('');
+                    }}
+                    placeholder="Nhập Gmail hoặc tên thành viên..."
+                    className="h-11 w-full rounded-xl border border-gray-200 bg-white px-3 text-sm font-medium outline-none transition focus:border-primary-400 dark:border-slate-800 dark:bg-slate-800"
+                  />
+                  <div className="min-h-[96px] rounded-xl border border-gray-100 bg-gray-50 p-2 dark:border-slate-800 dark:bg-slate-800/60">
+                    {isSearchingInvitees ? (
+                      <div className="flex h-20 items-center justify-center gap-2 text-xs font-semibold text-slate-500">
+                        <Loader2 size={14} className="animate-spin" />
+                        Đang tìm...
+                      </div>
+                    ) : selectedUser ? (
+                      <div className="flex items-center justify-between rounded-lg bg-white p-3 dark:bg-slate-900">
+                        <div className="flex items-center gap-3">
+                          <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary-100 text-sm font-bold text-primary-700 dark:bg-primary-900/40 dark:text-primary-200">
+                            {(selectedUser.displayName?.[0] || selectedUser.email[0]).toUpperCase()}
+                          </div>
+                          <div>
+                            <p className="text-sm font-bold text-gray-900 dark:text-white">
+                              {selectedUser.displayName || selectedUser.email}
+                            </p>
+                            <p className="text-xs text-slate-500">{selectedUser.email}</p>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedUser(null);
+                            setInviteQuery('');
+                          }}
+                          className="text-xs font-bold text-slate-500 hover:text-red-500"
+                        >
+                          Đổi
+                        </button>
+                      </div>
+                    ) : inviteResults.length === 0 ? (
+                      <div className="flex h-20 items-center justify-center text-center text-xs font-semibold text-slate-500">
+                        Không có thành viên phù hợp, hoặc người này đã ở trong nhóm.
+                      </div>
+                    ) : (
+                      <div className="max-h-44 space-y-1 overflow-y-auto">
+                        {inviteResults.map((user) => (
+                          <button
+                            key={user.id}
+                            type="button"
+                            onClick={() => {
+                              setSelectedUser(user);
+                              setInviteQuery(user.email);
+                              setInviteResults([]);
+                            }}
+                            className="flex w-full items-center gap-3 rounded-lg p-2 text-left transition hover:bg-white dark:hover:bg-slate-900"
+                          >
+                            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary-100 text-xs font-bold text-primary-700 dark:bg-primary-900/40 dark:text-primary-200">
+                              {(user.displayName?.[0] || user.email[0]).toUpperCase()}
+                            </div>
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-semibold text-gray-900 dark:text-white">
+                                {user.displayName || user.email}
+                              </p>
+                              <p className="truncate text-xs text-slate-500">{user.email}</p>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold uppercase tracking-wider text-gray-400">Vai trò trong nhóm</label>
                   <select 
                     value={inviteRole}
-                    onChange={(e) => setInviteRole(e.target.value)}
+                    onChange={(e) => setInviteRole(e.target.value as AssignableGroupRole)}
                     className="h-11 w-full rounded-xl border border-gray-200 bg-white px-3 text-sm font-medium outline-none dark:border-slate-800 dark:bg-slate-800"
                   >
                     <option value="member">Thành viên (Member)</option>
-                    <option value="viewer">Người xem (Viewer)</option>
-                    <option value="group-admin">Quản trị viên (Admin)</option>
+                    {isOrgAdmin && <option value="group-admin">Quản trị nhóm (Group Admin)</option>}
                   </select>
                 </div>
               </div>
@@ -310,7 +449,7 @@ const GroupMembersTab: React.FC<GroupMembersTabProps> = ({
                 <Button
                   variant="ghost"
                   className="flex-1 rounded-xl"
-                  onClick={() => setShowInviteModal(false)}
+                  onClick={closeInviteModal}
                   type="button"
                 >
                   Hủy
@@ -320,8 +459,9 @@ const GroupMembersTab: React.FC<GroupMembersTabProps> = ({
                   className="flex-1 rounded-xl shadow-lg shadow-primary-500/20"
                   type="submit"
                   isLoading={isInviting}
+                  disabled={!selectedUser}
                 >
-                  Gửi lời mời
+                  Thêm vào nhóm
                 </Button>
               </div>
             </form>

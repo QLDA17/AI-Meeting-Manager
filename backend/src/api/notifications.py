@@ -15,6 +15,10 @@ from jinja2 import Template
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
 
+
+# Import auth for dependency injection
+from . import auth
+
 # Email configuration
 SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
@@ -306,35 +310,35 @@ def send_export_ready(request: ExportReadyRequest):
 
 
 @router.post("/meeting-reminder")
-async def meeting_reminder(request: MeetingReminderRequest, background_tasks: BackgroundTasks):
+async def meeting_reminder(request: MeetingReminderRequest, background_tasks: BackgroundTasks, current_user = Depends(auth.get_current_user)):
     """Send meeting reminder notification"""
     background_tasks.add_task(send_meeting_reminder, request)
     return {"message": "Meeting reminder emails queued for sending"}
 
 
 @router.post("/meeting-completed")
-async def meeting_completed(request: MeetingCompletedRequest, background_tasks: BackgroundTasks):
+async def meeting_completed(request: MeetingCompletedRequest, background_tasks: BackgroundTasks, current_user = Depends(auth.get_current_user)):
     """Send meeting completed notification"""
     background_tasks.add_task(send_meeting_completed, request)
     return {"message": "Meeting completed emails queued for sending"}
 
 
 @router.post("/action-item-assigned")
-async def action_item_assigned(request: ActionItemAssignedRequest, background_tasks: BackgroundTasks):
+async def action_item_assigned(request: ActionItemAssignedRequest, background_tasks: BackgroundTasks, current_user = Depends(auth.get_current_user)):
     """Send action item assigned notification"""
     background_tasks.add_task(send_action_item_assigned, request)
     return {"message": "Action item notification queued for sending"}
 
 
 @router.post("/export-ready")
-async def export_ready(request: ExportReadyRequest, background_tasks: BackgroundTasks):
+async def export_ready(request: ExportReadyRequest, background_tasks: BackgroundTasks, current_user = Depends(auth.get_current_user)):
     """Send export ready notification"""
     background_tasks.add_task(send_export_ready, request)
     return {"message": "Export ready notification queued for sending"}
 
 
 @router.post("/custom")
-async def custom_notification(request: NotificationRequest, background_tasks: BackgroundTasks):
+async def custom_notification(request: NotificationRequest, background_tasks: BackgroundTasks, current_user = Depends(auth.get_current_user)):
     """Send custom notification"""
     def send_custom():
         # Generic custom notification template
@@ -363,7 +367,7 @@ async def custom_notification(request: NotificationRequest, background_tasks: Ba
 
 
 @router.get("/test")
-async def test_notification():
+async def test_notification(current_user = Depends(auth.get_current_user)):
     """Test email configuration"""
     try:
         test_request = NotificationRequest(

@@ -5,6 +5,9 @@ interface TranscriptSegment {
   start: number;
   end: number;
   text: string;
+  speaker?: string;
+  language?: string;
+  confidence?: number;
 }
 
 interface LiveTranscript {
@@ -31,6 +34,7 @@ interface UseAudioRecorderReturn {
   startRecording: () => void;
   stopRecording: () => Promise<void>;
   finalize: (meetingId: string, language?: string) => Promise<any>;
+  hydrateDraft: (meetingId: string) => Promise<void>;
   error: string | null;
 }
 
@@ -141,6 +145,8 @@ export function useAudioRecorder(
       const maxRetries = 3;
       const formData = new FormData();
       formData.append("audio", blob, `chunk_${chunkIndex}.wav`);
+      formData.append("chunk_index", String(chunkIndex));
+      formData.append("start_ms", String(startMs || 0));
 
       try {
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -154,13 +160,14 @@ export function useAudioRecorder(
               }
             );
 
-            const { text, segments } = response.data;
+            const { text, segments, language } = response.data;
 
             if (text && text.trim()) {
               const normalizedSegments = (segments || []).map((segment: TranscriptSegment) => ({
                 ...segment,
                 start: segment.start + startMs / 1000,
                 end: segment.end + startMs / 1000,
+                language: segment.language || language || "auto",
               }));
               const transcript: LiveTranscript = {
                 id: `chunk_${chunkIndex}_${Date.now()}`,
@@ -343,16 +350,6 @@ export function useAudioRecorder(
           );
         }
 
-        if (!fullTranscriptRef.current.trim()) {
-          return {
-            meeting_id: finalizeMeetingId,
-            transcript_status: "EMPTY",
-            summary_status: "SKIPPED",
-            summary: null,
-            errors: [],
-          };
-        }
-
         const response = await api.post(
           `/api/meetings/${finalizeMeetingId}/finalize`,
           {
@@ -373,6 +370,39 @@ export function useAudioRecorder(
     [stopRecording]
   );
 
+  const hydrateDraft = useCallback(async (draftMeetingId: string) => {
+    try {
+      const response = await api.get(`/api/meetings/${draftMeetingId}/transcript-draft`);
+      const chunks = Array.isArray(response.data?.chunks) ? response.data.chunks : [];
+      chunksByIndexRef.current.clear();
+      segmentsByIndexRef.current.clear();
+
+      chunks.forEach((chunk: any) => {
+        const chunkIndex = Number(chunk.chunkIndex ?? chunk.chunk_index ?? 0);
+        const normalizedSegments = (chunk.segments || []).map((segment: any) => ({
+          start: Number(segment.start ?? segment.start_time ?? 0),
+          end: Number(segment.end ?? segment.end_time ?? 0),
+          text: segment.text || "",
+          speaker: segment.speaker || segment.speaker_label || "Speaker_01",
+          language: segment.language || chunk.language || "auto",
+          confidence: segment.confidence ?? segment.confidence_score,
+        }));
+        chunksByIndexRef.current.set(chunkIndex, {
+          id: chunk.id || `draft_${chunkIndex}`,
+          chunkIndex,
+          text: chunk.text || "",
+          segments: normalizedSegments,
+          timestamp: chunk.timestamp ? new Date(chunk.timestamp).getTime() : Date.now(),
+        });
+        segmentsByIndexRef.current.set(chunkIndex, normalizedSegments);
+      });
+
+      rebuildTranscriptState();
+    } catch (err: any) {
+      setError(err.response?.data?.detail || "Không thể khôi phục transcript nháp");
+    }
+  }, [rebuildTranscriptState]);
+
   return {
     isRecording,
     liveTranscripts,
@@ -381,6 +411,7 @@ export function useAudioRecorder(
     startRecording,
     stopRecording,
     finalize,
+    hydrateDraft,
     error,
   };
 }

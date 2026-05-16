@@ -70,6 +70,7 @@ def create_transcript_segment(db: Session, segment_data: dict) -> models.Transcr
         start_time=segment_data["start_time"],
         end_time=segment_data["end_time"],
         text=segment_data["text"],
+        language=segment_data.get("language", "auto"),
         confidence_score=segment_data.get("confidence_score"),
         word_count=segment_data.get("word_count", 0),
     )
@@ -89,6 +90,7 @@ def create_transcript_segments_bulk(db: Session, segments: List[dict]) -> List[m
             start_time=segment_data["start_time"],
             end_time=segment_data["end_time"],
             text=segment_data["text"],
+            language=segment_data.get("language", "auto"),
             confidence_score=segment_data.get("confidence_score"),
             word_count=segment_data.get("word_count", 0),
         )

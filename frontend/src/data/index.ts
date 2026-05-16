@@ -17,16 +17,6 @@ export {
     getGroupsByOrgId,
 } from './groups';
 
-// Meetings
-export {
-    mockMeetings,
-    meetingMap,
-    getMeetingById,
-    getMeetingsByGroupId,
-    getMeetingsByOrgId,
-    getMeetingsByUserId,
-} from './meetings';
-
 // Roles
 export {
     roleDefinitions,

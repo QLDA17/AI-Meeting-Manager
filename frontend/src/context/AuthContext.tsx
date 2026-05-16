@@ -11,10 +11,12 @@ interface AuthContextType {
   user: User | null;
   session: Session | null;
   login: (username: string, password: string) => Promise<User>;
+  registerAndSetSession: (token: string, rawUser: unknown) => User;
   logout: () => void;
   switchOrg: (orgId: string) => void;
   switchGroup: (groupId: string) => void;
   isAuthenticated: boolean;
+  isAuthReady: boolean;
   isLoading: boolean;
   error: string | null;
   refreshUser: () => Promise<void>;
@@ -43,32 +45,135 @@ const toOrganizationFromMembership = (membership: OrgUser) =>
 const getFirstApprovedOrgId = (memberships: OrgUser[] = []) =>
   memberships.find((membership) => membership.approvalStatus !== 'pending')?.orgId || '';
 
+const canUseOrgId = (memberships: OrgUser[] = [], orgId?: string | null) =>
+  Boolean(
+    orgId &&
+      memberships.some(
+        (membership) => membership.orgId === orgId && membership.approvalStatus !== 'pending',
+      ),
+  );
+
+const pickApprovedOrgId = (memberships: OrgUser[] = [], preferredOrgId?: string | null) =>
+  canUseOrgId(memberships, preferredOrgId)
+    ? preferredOrgId || ''
+    : getFirstApprovedOrgId(memberships);
+
+const parseSavedJson = <T,>(key: string): T | null => {
+  const saved = localStorage.getItem(key);
+  if (!saved) return null;
+
+  try {
+    return JSON.parse(saved) as T;
+  } catch (err) {
+    console.warn(`Invalid ${key} in localStorage, clearing it.`, err);
+    localStorage.removeItem(key);
+    return null;
+  }
+};
+
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { setCurrentOrg, setOrgs, clearOrgContext } = useOrgStore();
-  const [user, setUser] = useState<User | null>(() => {
-    const saved = localStorage.getItem('user');
-    return saved ? JSON.parse(saved) : null;
-  });
-  const [session, setSession] = useState<Session | null>(() => {
-    const saved = localStorage.getItem('session');
-    return saved ? JSON.parse(saved) : null;
-  });
+  const [user, setUser] = useState<User | null>(() => parseSavedJson<User>('user'));
+  const [session, setSession] = useState<Session | null>(() => parseSavedJson<Session>('session'));
+  const [isAuthReady, setIsAuthReady] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (user?.orgMemberships?.length) {
-      const firstApprovedOrgId = getFirstApprovedOrgId(user.orgMemberships);
-      const approvedOrgs = user.orgMemberships
-        .filter((membership) => membership.approvalStatus !== 'pending')
-        .map(toOrganizationFromMembership);
+  const clearSessionState = useCallback(() => {
+    setUser(null);
+    setSession(null);
+    clearOrgContext();
+    localStorage.removeItem('user');
+    localStorage.removeItem('session');
+    localStorage.removeItem('auth-storage');
+  }, [clearOrgContext]);
 
-      if (!approvedOrgs.length) {
-        clearOrgContext();
+  const applyAuthenticatedUser = useCallback((
+    rawUser: unknown,
+    token: string,
+    preferredOrgId?: string | null,
+    previousSession?: Session | null,
+  ) => {
+    const nextUser = normalizeUser(rawUser);
+    const nextOrgId = pickApprovedOrgId(nextUser.orgMemberships, preferredOrgId);
+    const nextOrgs = nextUser.orgMemberships.map(toOrganizationFromMembership);
+    const nextSession: Session = {
+      userId: nextUser.id,
+      currentOrgId: nextOrgId,
+      token,
+      expiresAt: previousSession?.expiresAt
+        ? new Date(previousSession.expiresAt)
+        : new Date(Date.now() + 24 * 60 * 60 * 1000),
+      createdAt: previousSession?.createdAt ? new Date(previousSession.createdAt) : new Date(),
+    };
+
+    setUser(nextUser);
+    setSession(nextSession);
+
+    if (nextOrgs.length) {
+      setOrgs(nextOrgs);
+      if (nextOrgId) {
+        setCurrentOrg(nextOrgId);
+      }
+    } else {
+      clearOrgContext();
+    }
+
+    return nextUser;
+  }, [clearOrgContext, setCurrentOrg, setOrgs]);
+
+  useEffect(() => {
+    let isCancelled = false;
+
+    const bootstrapAuth = async () => {
+      const savedSession = parseSavedJson<Session>('session');
+      if (!savedSession?.token) {
+        clearSessionState();
+        if (!isCancelled) {
+          setIsAuthReady(true);
+        }
         return;
       }
 
-      setOrgs(approvedOrgs);
+      setIsLoading(true);
+      try {
+        const response = await api.get('/api/auth/me');
+        if (isCancelled) return;
+        applyAuthenticatedUser(
+          response.data,
+          savedSession.token,
+          savedSession.currentOrgId,
+          savedSession,
+        );
+      } catch (err: any) {
+        if (isCancelled) return;
+        if (err?.response?.status === 401) {
+          clearSessionState();
+        } else {
+          console.error('Failed to bootstrap auth:', err);
+        }
+      } finally {
+        if (!isCancelled) {
+          setIsLoading(false);
+          setIsAuthReady(true);
+        }
+      }
+    };
+
+    bootstrapAuth();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [applyAuthenticatedUser, clearSessionState]);
+
+  useEffect(() => {
+    if (user?.orgMemberships?.length) {
+      const preferredOrgId = useOrgStore.getState().currentOrgId || session?.currentOrgId;
+      const firstApprovedOrgId = pickApprovedOrgId(user.orgMemberships, preferredOrgId);
+      const nextOrgs = user.orgMemberships.map(toOrganizationFromMembership);
+
+      setOrgs(nextOrgs);
       const { currentOrgId } = useOrgStore.getState();
       if (!currentOrgId && firstApprovedOrgId) {
         setCurrentOrg(firstApprovedOrgId);
@@ -76,7 +181,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } else {
       clearOrgContext();
     }
-  }, [clearOrgContext, user, setCurrentOrg, setOrgs]);
+  }, [clearOrgContext, session?.currentOrgId, user, setCurrentOrg, setOrgs]);
 
   useEffect(() => {
     if (user) {
@@ -94,6 +199,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, [session]);
 
+  const registerAndSetSession = useCallback((token: string, rawUser: unknown) => {
+    return applyAuthenticatedUser(rawUser, token, undefined, null);
+  }, [applyAuthenticatedUser]);
+
   const login = useCallback(async (username: string, password: string) => {
     setIsLoading(true);
     setError(null);
@@ -101,29 +210,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       const response = await api.post('/api/auth/login', { username, password });
       const { access_token, user: rawUser } = response.data;
-      const nextUser = normalizeUser(rawUser);
-      const firstApprovedOrgId = getFirstApprovedOrgId(nextUser.orgMemberships);
-      const nextSession: Session = {
-        userId: nextUser.id,
-        currentOrgId: firstApprovedOrgId,
-        token: access_token,
-        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
-        createdAt: new Date(),
-      };
-
-      setUser(nextUser);
-      setSession(nextSession);
-      const approvedOrgs = nextUser.orgMemberships
-        .filter((membership) => membership.approvalStatus !== 'pending')
-        .map(toOrganizationFromMembership);
-
-      if (approvedOrgs.length) {
-        setOrgs(approvedOrgs);
-        setCurrentOrg(firstApprovedOrgId);
-      } else {
-        clearOrgContext();
-      }
-
+      const nextUser = registerAndSetSession(access_token, rawUser);
       return nextUser;
     } catch (err) {
       console.error('Login failed:', err);
@@ -132,41 +219,30 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } finally {
       setIsLoading(false);
     }
-  }, [clearOrgContext, setCurrentOrg, setOrgs]);
+  }, [registerAndSetSession]);
 
   const logout = useCallback(() => {
-    setUser(null);
-    setSession(null);
-    clearOrgContext();
-    localStorage.removeItem('user');
-    localStorage.removeItem('session');
-    localStorage.removeItem('auth-storage');
-  }, [clearOrgContext]);
+    clearSessionState();
+    setIsAuthReady(true);
+  }, [clearSessionState]);
 
   const refreshUser = useCallback(async () => {
     try {
       const response = await api.get('/api/auth/me');
-      const nextUser = normalizeUser(response.data);
-      const firstApprovedOrgId = getFirstApprovedOrgId(nextUser.orgMemberships);
-      const approvedOrgs = nextUser.orgMemberships
-        .filter((membership) => membership.approvalStatus !== 'pending')
-        .map(toOrganizationFromMembership);
-
-      setUser(nextUser);
-      if (session) {
-        setSession({ ...session, currentOrgId: firstApprovedOrgId });
+      applyAuthenticatedUser(
+        response.data,
+        session?.token || parseSavedJson<Session>('session')?.token || '',
+        session?.currentOrgId || useOrgStore.getState().currentOrgId,
+        session,
+      );
+    } catch (err: any) {
+      if (err?.response?.status === 401) {
+        clearSessionState();
+        return;
       }
-
-      if (approvedOrgs.length && firstApprovedOrgId) {
-        setOrgs(approvedOrgs);
-        setCurrentOrg(firstApprovedOrgId);
-      } else {
-        clearOrgContext();
-      }
-    } catch (err) {
       console.error('Failed to refresh user:', err);
     }
-  }, [clearOrgContext, session, setCurrentOrg, setOrgs]);
+  }, [applyAuthenticatedUser, clearSessionState, session]);
 
   const switchOrg = useCallback((orgId: string) => {
     if (!session || !user) return;
@@ -294,10 +370,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     user,
     session,
     login,
+    registerAndSetSession,
     logout,
     switchOrg,
     switchGroup,
     isAuthenticated: !!user && !!session,
+    isAuthReady,
     isLoading,
     error,
     hasPermission,

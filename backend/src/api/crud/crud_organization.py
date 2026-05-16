@@ -12,7 +12,7 @@ def get_organizations(db: Session, skip: int = 0, limit: int = 100) -> List[mode
     return db.query(models.Organization).offset(skip).limit(limit).all()
 
 
-def create_organization(db: Session, org_data: dict) -> models.Organization:
+def create_organization(db: Session, org_data: dict, commit: bool = True) -> models.Organization:
     db_org = models.Organization(
         id=org_data.get("id", str(uuid.uuid4())),
         name=org_data["name"],
@@ -22,7 +22,10 @@ def create_organization(db: Session, org_data: dict) -> models.Organization:
         settings=org_data.get("settings"),
     )
     db.add(db_org)
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     db.refresh(db_org)
     return db_org
 
@@ -51,7 +54,13 @@ def delete_organization(db: Session, org_id: str) -> bool:
     return True
 
 
-def add_user_to_organization(db: Session, user_id: str, org_id: str, role: str = "member") -> Optional[models.UserOrganization]:
+def add_user_to_organization(
+    db: Session,
+    user_id: str,
+    org_id: str,
+    role: str = "member",
+    commit: bool = True,
+) -> Optional[models.UserOrganization]:
     # Check if already exists
     existing = db.query(models.UserOrganization).filter(
         models.UserOrganization.user_id == user_id,
@@ -68,7 +77,10 @@ def add_user_to_organization(db: Session, user_id: str, org_id: str, role: str =
         role=role,
     )
     db.add(db_user_org)
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     db.refresh(db_user_org)
     return db_user_org
 

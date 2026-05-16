@@ -54,15 +54,24 @@ const queryClient = new QueryClient({
 const hasApprovedOrganizations = (user: ReturnType<typeof useAuth>['user']) =>
   Boolean(user?.orgMemberships?.some((membership) => membership.approvalStatus !== 'pending'));
 
+const PageLoader: React.FC = () => (
+  <div className="flex min-h-[60vh] items-center justify-center">
+    <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary-500 border-t-transparent" />
+  </div>
+);
+
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, isAuthReady } = useAuth();
+  if (!isAuthReady) return <PageLoader />;
   if (!isAuthenticated) return <Navigate to="/login" replace />;
   return <>{children}</>;
 };
 
 const ApprovedOrganizationRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { user } = useAuth();
+  const { user, isAuthReady } = useAuth();
   const { isSystemAdmin } = usePermission();
+
+  if (!isAuthReady) return <PageLoader />;
 
   if (!hasApprovedOrganizations(user)) {
     return <Navigate to={isSystemAdmin ? '/admin/console' : '/setup-organization'} replace />;
@@ -72,8 +81,10 @@ const ApprovedOrganizationRoute: React.FC<{ children: React.ReactNode }> = ({ ch
 };
 
 const PublicOnlyRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { isAuthenticated, user } = useAuth();
+  const { isAuthenticated, isAuthReady, user } = useAuth();
   const { isSystemAdmin } = usePermission();
+
+  if (!isAuthReady) return <PageLoader />;
 
   if (isAuthenticated) {
     return (
@@ -119,15 +130,13 @@ const RoleGuard: React.FC<{ children: React.ReactNode; roles: string[] }> = ({
   return <>{children}</>;
 };
 
-const PageLoader: React.FC = () => (
-  <div className="flex min-h-[60vh] items-center justify-center">
-    <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary-500 border-t-transparent" />
-  </div>
-);
-
 const AppRoutes: React.FC = () => {
-  const { isAuthenticated, user } = useAuth();
+  const { isAuthenticated, isAuthReady, user } = useAuth();
   const { isSystemAdmin } = usePermission();
+
+  if (!isAuthReady) {
+    return <PageLoader />;
+  }
 
   return (
     <Routes>

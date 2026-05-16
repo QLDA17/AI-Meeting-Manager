@@ -2,7 +2,7 @@
  * Cá nhân Page (v2)
  * User profile với multi-org support, notification preferences, security
  */
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { useAuth } from '../../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
@@ -17,18 +17,47 @@ import {
   LogOut,
   Edit,
   Check,
+  X,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 import { useOrgStore } from '../../stores';
+import api from '../../services/api';
 import type { Organization } from '../../types';
 
 type ProfileTab = 'profile' | 'organizations' | 'notifications' | 'security';
 
 const Profile: React.FC = () => {
-  const { user, logout } = useAuth();
+  const { user, logout, refreshUser } = useAuth();
   const navigate = useNavigate();
   const { orgs, setCurrentOrg } = useOrgStore();
   const [activeTab, setActiveTab] = useState<ProfileTab>('profile');
   const [isEditing, setIsEditing] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveMsg, setSaveMsg] = useState('');
+
+  // Profile form refs
+  const displayNameRef = useRef<HTMLInputElement>(null);
+  const languageRef = useRef<HTMLSelectElement>(null);
+  const timezoneRef = useRef<HTMLSelectElement>(null);
+
+  // Change password state
+  const [showPasswordModal, setShowPasswordModal] = useState(false);
+  const [oldPassword, setOldPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [showOldPass, setShowOldPass] = useState(false);
+  const [showNewPass, setShowNewPass] = useState(false);
+  const [passwordMsg, setPasswordMsg] = useState('');
+  const [passwordLoading, setPasswordLoading] = useState(false);
+
+  // Notification preferences state
+  const [notifPrefs, setNotifPrefs] = useState({
+    meetingSummaries: user?.notificationPreferences?.meetingSummaries ?? true,
+    groupAnnouncements: user?.notificationPreferences?.groupAnnouncements ?? true,
+    slackIntegration: user?.notificationPreferences?.slackIntegration ?? false,
+  });
+  const [notifSaving, setNotifSaving] = useState(false);
 
   const tabs: Array<{ key: ProfileTab; label: string; icon: React.ReactNode }> = [
     { key: 'profile', label: 'Cá nhân', icon: <User size={16} /> },
@@ -50,6 +79,79 @@ const Profile: React.FC = () => {
   const handleLogout = () => {
     logout();
     navigate('/login');
+  };
+
+  const handleSave = async () => {
+    if (!displayNameRef.current || !languageRef.current || !timezoneRef.current) return;
+    setIsSaving(true);
+    setSaveMsg('');
+    try {
+      const displayName = displayNameRef.current.value.trim();
+      const [firstName, ...rest] = displayName.split(' ');
+      await api.patch('/api/profile', {
+        first_name: firstName || '',
+        last_name: rest.join(' ') || '',
+        language: languageRef.current.value,
+        timezone: timezoneRef.current.value,
+      });
+      await refreshUser();
+      setSaveMsg('Đã lưu thành công!');
+      setIsEditing(false);
+      setTimeout(() => setSaveMsg(''), 3000);
+    } catch {
+      setSaveMsg('Lưu thất bại. Vui lòng thử lại.');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleChangePassword = async () => {
+    if (!oldPassword || !newPassword) {
+      setPasswordMsg('Vui lòng nhập đầy đủ thông tin.');
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setPasswordMsg('Mật khẩu mới không khớp.');
+      return;
+    }
+    if (newPassword.length < 6) {
+      setPasswordMsg('Mật khẩu mới phải ít nhất 6 ký tự.');
+      return;
+    }
+    setPasswordLoading(true);
+    setPasswordMsg('');
+    try {
+      await api.post('/api/profile/change-password', {
+        old_password: oldPassword,
+        new_password: newPassword,
+      });
+      setPasswordMsg('Đổi mật khẩu thành công!');
+      setOldPassword('');
+      setNewPassword('');
+      setConfirmPassword('');
+      setTimeout(() => {
+        setShowPasswordModal(false);
+        setPasswordMsg('');
+      }, 2000);
+    } catch (err: any) {
+      setPasswordMsg(err?.response?.data?.detail || 'Đổi mật khẩu thất bại.');
+    } finally {
+      setPasswordLoading(false);
+    }
+  };
+
+  const handleNotifPrefChange = async (key: string, value: boolean) => {
+    const updated = { ...notifPrefs, [key]: value };
+    setNotifPrefs(updated);
+    setNotifSaving(true);
+    try {
+      await api.patch('/api/profile', { notification_preferences: updated });
+    } catch {
+      // Revert on failure
+      setNotifPrefs((prev) => ({ ...prev, [key]: !value }));
+    } finally {
+      setNotifSaving(false);
+    }
   };
 
   return (
@@ -110,13 +212,40 @@ const Profile: React.FC = () => {
                 <h3 className="text-lg font-bold text-gray-900 dark:text-slate-100">
                   Thông tin cá nhân
                 </h3>
-                <button
-                  onClick={() => setIsEditing(!isEditing)}
-                  className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-semibold text-gray-700 transition hover:bg-gray-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
-                >
-                  {isEditing ? <Check size={14} /> : <Edit size={14} />}
-                  {isEditing ? 'Save' : 'Edit'}
-                </button>
+                <div className="flex items-center gap-2">
+                  {saveMsg && (
+                    <span className={`text-sm ${saveMsg.includes('thành công') ? 'text-green-600' : 'text-red-600'}`}>
+                      {saveMsg}
+                    </span>
+                  )}
+                  {isEditing ? (
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => setIsEditing(false)}
+                        className="inline-flex items-center gap-1 rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-semibold text-gray-700 transition hover:bg-gray-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+                      >
+                        <X size={14} />
+                        Hủy
+                      </button>
+                      <button
+                        onClick={handleSave}
+                        disabled={isSaving}
+                        className="inline-flex items-center gap-1 rounded-lg bg-primary-600 px-3 py-1.5 text-sm font-semibold text-white transition hover:bg-primary-700 disabled:opacity-50"
+                      >
+                        <Check size={14} />
+                        {isSaving ? 'Đang lưu...' : 'Lưu'}
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => setIsEditing(true)}
+                      className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-semibold text-gray-700 transition hover:bg-gray-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+                    >
+                      <Edit size={14} />
+                      Edit
+                    </button>
+                  )}
+                </div>
               </div>
 
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -127,6 +256,7 @@ const Profile: React.FC = () => {
                   </label>
                   <input
                     type="text"
+                    ref={displayNameRef}
                     defaultValue={user?.displayName || ''}
                     disabled={!isEditing}
                     className="w-full rounded-lg border border-gray-200 px-4 py-2.5 text-sm outline-none transition focus:border-primary-400 focus:ring-2 focus:ring-primary-100 disabled:cursor-not-allowed disabled:bg-gray-50 dark:border-slate-700 dark:bg-slate-800 dark:focus:ring-primary-900/30 dark:disabled:bg-slate-900"
@@ -150,8 +280,10 @@ const Profile: React.FC = () => {
                     Ngôn ngữ
                   </label>
                   <select
+                    ref={languageRef}
                     defaultValue={user?.language || 'vi'}
-                    className="w-full rounded-lg border border-gray-200 px-4 py-2.5 text-sm outline-none transition focus:border-primary-400 focus:ring-2 focus:ring-primary-100 dark:border-slate-700 dark:bg-slate-800 dark:focus:ring-primary-900/30"
+                    disabled={!isEditing}
+                    className="w-full rounded-lg border border-gray-200 px-4 py-2.5 text-sm outline-none transition focus:border-primary-400 focus:ring-2 focus:ring-primary-100 disabled:cursor-not-allowed disabled:bg-gray-50 dark:border-slate-700 dark:bg-slate-800 dark:focus:ring-primary-900/30 dark:disabled:bg-slate-900"
                   >
                     <option value="vi">Tiếng Việt</option>
                     <option value="en">English</option>
@@ -163,8 +295,10 @@ const Profile: React.FC = () => {
                     Múi giờ
                   </label>
                   <select
+                    ref={timezoneRef}
                     defaultValue={user?.timezone || 'Asia/Ho_Chi_Minh'}
-                    className="w-full rounded-lg border border-gray-200 px-4 py-2.5 text-sm outline-none transition focus:border-primary-400 focus:ring-2 focus:ring-primary-100 dark:border-slate-700 dark:bg-slate-800 dark:focus:ring-primary-900/30"
+                    disabled={!isEditing}
+                    className="w-full rounded-lg border border-gray-200 px-4 py-2.5 text-sm outline-none transition focus:border-primary-400 focus:ring-2 focus:ring-primary-100 disabled:cursor-not-allowed disabled:bg-gray-50 dark:border-slate-700 dark:bg-slate-800 dark:focus:ring-primary-900/30 dark:disabled:bg-slate-900"
                   >
                     <option value="Asia/Ho_Chi_Minh">Asia/Ho_Chi_Minh (UTC+7)</option>
                     <option value="UTC">UTC</option>
@@ -237,15 +371,20 @@ const Profile: React.FC = () => {
           {/* Notifications Tab */}
           {activeTab === 'notifications' && (
             <div className="space-y-4">
-              <h3 className="text-lg font-bold text-gray-900 dark:text-slate-100">
-                Tùy chọn thông báo
-              </h3>
+              <div className="flex items-center justify-between">
+                <h3 className="text-lg font-bold text-gray-900 dark:text-slate-100">
+                  Tùy chọn thông báo
+                </h3>
+                {notifSaving && (
+                  <span className="text-sm text-gray-500">Đang lưu...</span>
+                )}
+              </div>
 
               <div className="space-y-3">
                 {[
-                  { key: 'meetingSummaries', label: 'Tóm tắt cuộc họp', desc: 'Get AI-generated meeting summaries' },
-                  { key: 'groupAnnouncements', label: 'Thông báo nhóm', desc: 'Notifications for group-wide announcements' },
-                  { key: 'slackIntegration', label: 'Tích hợp Slack', desc: 'Send notifications to Slack' },
+                  { key: 'meetingSummaries', label: 'Tóm tắt cuộc họp', desc: 'Nhận tóm tắt cuộc họp do AI tạo' },
+                  { key: 'groupAnnouncements', label: 'Thông báo nhóm', desc: 'Nhận thông báo chung của nhóm' },
+                  { key: 'slackIntegration', label: 'Tích hợp Slack', desc: 'Gửi thông báo đến Slack' },
                 ].map((pref) => (
                   <div
                     key={pref.key}
@@ -260,7 +399,8 @@ const Profile: React.FC = () => {
                     <label className="relative inline-flex cursor-pointer items-center">
                       <input
                         type="checkbox"
-                        defaultChecked
+                        checked={notifPrefs[pref.key as keyof typeof notifPrefs]}
+                        onChange={(e) => handleNotifPrefChange(pref.key, e.target.checked)}
                         className="peer sr-only"
                       />
                       <div className="peer h-6 w-11 rounded-full bg-gray-200 after:absolute after:start-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:border after:border-gray-300 after:bg-white after:transition-all after:content-[''] peer-checked:bg-primary-600 peer-checked:after:translate-x-full peer-checked:after:border-white peer-focus:ring-2 peer-focus:ring-primary-100 dark:bg-slate-700 dark:peer-focus:ring-primary-900"></div>
@@ -284,9 +424,12 @@ const Profile: React.FC = () => {
                     Đổi mật khẩu
                   </h4>
                   <p className="mt-1 text-xs text-gray-500 dark:text-slate-400">
-                    Update your password to keep your account secure
+                    Cập nhật mật khẩu để bảo mật tài khoản
                   </p>
-                  <button className="mt-3 rounded-lg bg-primary-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-primary-700">
+                  <button
+                    onClick={() => setShowPasswordModal(true)}
+                    className="mt-3 rounded-lg bg-primary-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-primary-700"
+                  >
                     Đổi mật khẩu
                   </button>
                 </div>
@@ -296,22 +439,10 @@ const Profile: React.FC = () => {
                     Two-Factor Authentication (2FA)
                   </h4>
                   <p className="mt-1 text-xs text-gray-500 dark:text-slate-400">
-                    Add an extra layer of security to your account
+                    Thêm lớp bảo mật cho tài khoản
                   </p>
                   <button className="mt-3 rounded-lg border border-gray-200 px-4 py-2 text-sm font-semibold text-gray-700 transition hover:bg-gray-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800">
                     Bật 2FA
-                  </button>
-                </div>
-
-                <div className="rounded-xl border border-red-200 bg-red-50 p-4 dark:border-red-900/40 dark:bg-red-900/20">
-                  <h4 className="text-sm font-semibold text-red-700 dark:text-red-300">
-                    Logout All Sessions
-                  </h4>
-                  <p className="mt-1 text-xs text-red-600 dark:text-red-400">
-                    This will log you out from all devices
-                  </p>
-                  <button className="mt-3 rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-red-700">
-                    Logout All
                   </button>
                 </div>
 
@@ -329,6 +460,97 @@ const Profile: React.FC = () => {
           )}
         </div>
       </div>
+
+      {/* Change Password Modal */}
+      {showPasswordModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl dark:bg-slate-900"
+          >
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-bold text-gray-900 dark:text-slate-100">Đổi mật khẩu</h3>
+              <button
+                onClick={() => { setShowPasswordModal(false); setPasswordMsg(''); }}
+                className="rounded-lg p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-slate-800"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <label className="mb-1 block text-sm font-semibold text-gray-700 dark:text-slate-200">Mật khẩu cũ</label>
+                <div className="relative">
+                  <input
+                    type={showOldPass ? 'text' : 'password'}
+                    value={oldPassword}
+                    onChange={(e) => setOldPassword(e.target.value)}
+                    className="w-full rounded-lg border border-gray-200 px-4 py-2.5 pr-10 text-sm outline-none focus:border-primary-400 focus:ring-2 focus:ring-primary-100 dark:border-slate-700 dark:bg-slate-800"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowOldPass(!showOldPass)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400"
+                  >
+                    {showOldPass ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
+                </div>
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-semibold text-gray-700 dark:text-slate-200">Mật khẩu mới</label>
+                <div className="relative">
+                  <input
+                    type={showNewPass ? 'text' : 'password'}
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    className="w-full rounded-lg border border-gray-200 px-4 py-2.5 pr-10 text-sm outline-none focus:border-primary-400 focus:ring-2 focus:ring-primary-100 dark:border-slate-700 dark:bg-slate-800"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowNewPass(!showNewPass)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400"
+                  >
+                    {showNewPass ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
+                </div>
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-semibold text-gray-700 dark:text-slate-200">Xác nhận mật khẩu mới</label>
+                <input
+                  type="password"
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  className="w-full rounded-lg border border-gray-200 px-4 py-2.5 text-sm outline-none focus:border-primary-400 focus:ring-2 focus:ring-primary-100 dark:border-slate-700 dark:bg-slate-800"
+                />
+              </div>
+
+              {passwordMsg && (
+                <p className={`text-sm ${passwordMsg.includes('thành công') ? 'text-green-600' : 'text-red-600'}`}>
+                  {passwordMsg}
+                </p>
+              )}
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  onClick={() => { setShowPasswordModal(false); setPasswordMsg(''); }}
+                  className="rounded-lg border border-gray-200 px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+                >
+                  Hủy
+                </button>
+                <button
+                  onClick={handleChangePassword}
+                  disabled={passwordLoading}
+                  className="rounded-lg bg-primary-600 px-4 py-2 text-sm font-semibold text-white hover:bg-primary-700 disabled:opacity-50"
+                >
+                  {passwordLoading ? 'Đang đổi...' : 'Đổi mật khẩu'}
+                </button>
+              </div>
+            </div>
+          </motion.div>
+        </div>
+      )}
     </div>
   );
 };

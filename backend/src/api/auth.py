@@ -6,11 +6,19 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 import os
+import logging
 from .database import get_db
 from . import models
 
 # Configuration
-SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-for-development")
+logger = logging.getLogger(__name__)
+ENVIRONMENT = os.getenv("ENVIRONMENT", os.getenv("APP_ENV", "development"))
+SECRET_KEY = os.getenv("SECRET_KEY")
+if not SECRET_KEY:
+    if ENVIRONMENT == "production":
+        raise RuntimeError("SECRET_KEY required in production")
+    SECRET_KEY = "your-secret-key-for-development"
+    logger.warning("SECRET_KEY is not set; using development fallback")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 # 24 hours
 

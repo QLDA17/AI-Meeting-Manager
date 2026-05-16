@@ -67,7 +67,12 @@ export const useGroupStore = create<GroupState>((set, get) => ({
     try {
       const response = await api.get(`/api/groups/${groupId}`);
       const normalizedGroup = normalizeGroup(response.data);
-      set({ group: normalizedGroup, currentGroup: normalizedGroup, isLoading: false });
+      set({
+        group: normalizedGroup,
+        currentGroup: normalizedGroup,
+        currentGroupId: groupId,
+        isLoading: false,
+      });
     } catch (err: any) {
       const errorMsg = err.response?.data?.detail || err.message || 'Group not found';
       set({ group: null, currentGroup: null, error: errorMsg, isLoading: false });
@@ -78,7 +83,15 @@ export const useGroupStore = create<GroupState>((set, get) => ({
     set({ isLoading: true });
     try {
       const response = await api.get(`/api/groups/${groupId}/members`);
-      set({ members: Array.isArray(response.data) ? response.data.map(normalizeUser) : [], isLoading: false });
+      const normalizedMembers = Array.isArray(response.data) ? response.data.map(normalizeUser) : [];
+      set((state) => ({
+        members: normalizedMembers,
+        group: state.group?.id === groupId ? { ...state.group, memberCount: normalizedMembers.length } : state.group,
+        currentGroup: state.currentGroup?.id === groupId
+          ? { ...state.currentGroup, memberCount: normalizedMembers.length }
+          : state.currentGroup,
+        isLoading: false,
+      }));
     } catch (err: any) {
       const errorMsg = err.response?.data?.detail || 'Failed to load members';
       set((state) => ({ error: state.error || errorMsg, isLoading: false }));

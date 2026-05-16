@@ -66,6 +66,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({ meetings: Array.isArray(response.data) ? response.data.map(normalizeMeeting) : [] });
     } catch (err) {
       console.error('Failed to load meetings', err);
+      throw err;
     }
   },
 
@@ -93,7 +94,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     return {
       totalMeetings: meetings.length,
       totalHours: meetings.reduce((sum, m) => sum + m.duration, 0) / 60,
-      processingCount: meetings.filter((m) => (m as any).status === 'processing' || (m as any).status === 'queued').length,
+      processingCount: meetings.filter((m) => m.status === 'processing' || m.status === 'queued').length,
     };
   },
 

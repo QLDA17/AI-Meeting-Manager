@@ -39,6 +39,7 @@ from .crud_group import (
 from .crud_meeting import (
     get_meeting_by_id,
     get_meetings,
+    check_meeting_overlap,
     create_meeting,
     update_meeting,
     delete_meeting,
@@ -114,6 +115,7 @@ __all__ = [
     # Meeting
     "get_meeting_by_id",
     "get_meetings",
+    "check_meeting_overlap",
     "create_meeting",
     "update_meeting",
     "delete_meeting",

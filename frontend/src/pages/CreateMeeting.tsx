@@ -1,552 +1,603 @@
-/**
- * CreateMeeting - Tạo cuộc họp mới với QR, mã tham gia, cài đặt thiết bị
- */
-import React, { useState, useEffect } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion } from "framer-motion";
 import { QRCodeSVG } from "qrcode.react";
 import {
-  Plus,
-  Users,
-  Copy,
-  Check,
+  AlertCircle,
+  ArrowLeft,
   ArrowRight,
-  Mic,
-  Video,
-  Settings,
-  X,
-  UserPlus,
-  Link2,
+  BookOpen,
+  Check,
   ChevronDown,
+  Copy,
+  Link2,
+  Mic,
+  Radio,
+  User,
+  Users,
+  Video,
+  Zap,
 } from "lucide-react";
-import { Card, Button, Input, Tooltip, showToast, MultiSelect, Badge } from "../components/ui";
+import { Badge, Button, Card, Input, MultiSelect, showToast } from "../components/ui";
 import { useAuth } from "../context/AuthContext";
-import { useOrgStore, useGlossaryStore, useAppStore } from "../stores";
+import { useAppStore, useGlossaryStore, useOrgStore } from "../stores";
 import api from "../services/api";
-import { normalizeMeeting } from "../services/mappers";
+
+interface GroupMember {
+  id: string;
+  user_id: string;
+  name: string;
+  email?: string;
+  avatar_url?: string;
+  role: string;
+}
 
 const generateMeetingCode = (): string => {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   let code = "";
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < 3; i += 1) {
     if (i > 0) code += "-";
-    for (let j = 0; j < 3; j++) {
+    for (let j = 0; j < 3; j += 1) {
       code += chars[Math.floor(Math.random() * chars.length)];
     }
   }
   return code;
 };
 
-interface Participant {
-  id: string;
-  name: string;
-  role: "organizer" | "presenter" | "attendee";
-  avatar?: string;
-}
-
 const CreateMeeting: React.FC = () => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const { user } = useAuth();
-  const { groups, currentOrgId } = useOrgStore();
-  const { addMeeting } = useAppStore();
+  const { currentOrgId, currentOrg, groups, loadGroups } = useOrgStore();
+  const { loadMeetings } = useAppStore();
   const { glossaries, loadGlossaries } = useGlossaryStore();
 
-  const [step, setStep] = useState<"setup" | "invite">("setup");
   const [title, setTitle] = useState("");
-  const [selectedGroupId, setSelectedGroupId] = useState<string>("");
+  const [selectedGroupId, setSelectedGroupId] = useState("");
+  const [selectedParticipants, setSelectedParticipants] = useState<string[]>([]);
+  const [groupMembers, setGroupMembers] = useState<GroupMember[]>([]);
+  const [loadingMembers, setLoadingMembers] = useState(false);
   const [selectedGlossaries, setSelectedGlossaries] = useState<string[]>([]);
   const [language, setLanguage] = useState("vi");
-  const [meetingCode] = useState(generateMeetingCode());
-
-  const [copied, setCopied] = useState(false);
-  const [inviteEmail, setInviteEmail] = useState("");
-  const [participants, setParticipants] = useState<Participant[]>([
-    {
-      id: user?.id || "1",
-      name: user?.displayName || user?.email || "Bạn",
-      role: "organizer",
-    },
-  ]);
   const [enableCamera, setEnableCamera] = useState(true);
   const [enableMic, setEnableMic] = useState(true);
   const [enableRecord, setEnableRecord] = useState(true);
+  const [enableSummary, setEnableSummary] = useState(true);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [copiedTarget, setCopiedTarget] = useState<"code" | "link" | null>(null);
+  const [meetingCode] = useState(generateMeetingCode);
 
-  // Set initial group from URL
-  useEffect(() => {
-    loadGlossaries();
-    const groupId = searchParams.get("groupId");
-    if (groupId) {
-      setSelectedGroupId(groupId);
-    } else if (groups.length > 0) {
-      setSelectedGroupId(groups[0].id);
-    }
-  }, [searchParams, groups]);
-
+  const requestedGroupId = searchParams.get("groupId") || "";
+  const selectedGroup = useMemo(
+    () => groups.find((group) => group.id === selectedGroupId),
+    [groups, selectedGroupId],
+  );
   const joinUrl = `${window.location.origin}/join/${meetingCode}`;
+  const allSelected = groupMembers.length > 0 && selectedParticipants.length === groupMembers.length;
 
-  const addParticipant = () => {
-    if (!inviteEmail.trim()) return;
-    if (participants.some((p) => p.name === inviteEmail.trim())) {
-      showToast.error("Thành viên đã có trong danh sách");
+  useEffect(() => {
+    if (!currentOrgId) return;
+    loadGroups(currentOrgId);
+    loadGlossaries(currentOrgId);
+  }, [currentOrgId, loadGlossaries, loadGroups]);
+
+  useEffect(() => {
+    if (requestedGroupId && groups.some((group) => group.id === requestedGroupId)) {
+      setSelectedGroupId(requestedGroupId);
       return;
     }
-    setParticipants((prev) => [
-      ...prev,
-      {
-        id: Date.now().toString(),
-        name: inviteEmail.trim(),
-        role: "attendee",
-      },
-    ]);
-    setInviteEmail("");
-    showToast.success("Đã thêm thành viên");
+    if (!selectedGroupId && groups.length > 0) {
+      setSelectedGroupId(groups[0].id);
+      return;
+    }
+    if (selectedGroupId && groups.length > 0 && !groups.some((group) => group.id === selectedGroupId)) {
+      setSelectedGroupId(groups[0].id);
+    }
+  }, [groups, requestedGroupId, selectedGroupId]);
+
+  useEffect(() => {
+    if (!selectedGroupId) {
+      setGroupMembers([]);
+      setSelectedParticipants([]);
+      return;
+    }
+
+    setLoadingMembers(true);
+    api
+      .get(`/api/groups/${selectedGroupId}/members`)
+      .then((res) => {
+        const members = (res.data || [])
+          .map((member: any) => ({
+            id: member.id || member.user_id || member.userId,
+            user_id: member.id || member.user_id || member.userId,
+            name:
+              `${member.first_name || ""} ${member.last_name || ""}`.trim() ||
+              member.username ||
+              member.email ||
+              "Thành viên",
+            email: member.email,
+            avatar_url: member.avatar_url,
+            role: member.role,
+          }))
+          .filter((member: GroupMember) => member.user_id !== user?.id);
+
+        setGroupMembers(members);
+        setSelectedParticipants(members.map((member: GroupMember) => member.user_id));
+      })
+      .catch(() => {
+        setGroupMembers([]);
+        setSelectedParticipants([]);
+        showToast.error("Không thể tải thành viên trong nhóm");
+      })
+      .finally(() => setLoadingMembers(false));
+  }, [selectedGroupId, user?.id]);
+
+  const toggleSelectAll = () => {
+    setSelectedParticipants(allSelected ? [] : groupMembers.map((member) => member.user_id));
   };
 
-  const removeParticipant = (id: string) => {
-    if (id === user?.id || id === "1") return;
-    setParticipants((prev) => prev.filter((p) => p.id !== id));
-  };
-
-  const changeRole = (id: string, role: Participant["role"]) => {
-    setParticipants((prev) =>
-      prev.map((p) => (p.id === id ? { ...p, role } : p))
+  const toggleParticipant = (userId: string) => {
+    setSelectedParticipants((current) =>
+      current.includes(userId) ? current.filter((id) => id !== userId) : [...current, userId],
     );
   };
 
-  const copyCode = async () => {
+  const copyToClipboard = async (value: string, target: "code" | "link") => {
     try {
-      await navigator.clipboard.writeText(meetingCode);
-      setCopied(true);
-      showToast.success("Đã sao chép mã tham gia!");
-      setTimeout(() => setCopied(false), 2000);
+      await navigator.clipboard.writeText(value);
+      setCopiedTarget(target);
+      showToast.success(target === "code" ? "Đã sao chép mã tham gia" : "Đã sao chép link tham gia");
+      window.setTimeout(() => setCopiedTarget(null), 1800);
     } catch {
       showToast.error("Không thể sao chép");
     }
   };
 
-  const copyLink = async () => {
-    try {
-      await navigator.clipboard.writeText(joinUrl);
-      showToast.success("Đã sao chép link tham gia!");
-    } catch {
-      showToast.error("Không thể sao chép");
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!currentOrgId) {
+      showToast.error("Chưa chọn tổ chức");
+      return;
     }
-  };
-
-  const startMeeting = async () => {
     if (!title.trim()) {
-      showToast.error("Vui lòng nhập tên cuộc họp");
+      showToast.error("Vui lòng nhập tiêu đề cuộc họp");
       return;
     }
     if (!selectedGroupId) {
-      showToast.error("Vui lòng chọn nhóm cho cuộc họp");
+      showToast.error("Vui lòng chọn nhóm/phòng ban");
       return;
     }
 
+    const start = new Date(Date.now() + 5000);
+    const end = new Date(start.getTime() + 60 * 60 * 1000);
+
+    setIsSubmitting(true);
     try {
       const response = await api.post("/api/meetings", {
-        title,
+        title: title.trim(),
         organization_id: currentOrgId,
         group_id: selectedGroupId,
         code: meetingCode,
         status: "live",
+        scheduled_start: start.toISOString(),
+        scheduled_end: end.toISOString(),
+        description: `Cuộc họp live trong nhóm ${selectedGroup?.name || selectedGroupId}`,
+        settings: {
+          enableRecord,
+          enableSummary,
+          language,
+          enableCamera,
+          enableMic,
+          glossaryIds: selectedGlossaries,
+        },
+        participant_ids: selectedParticipants,
       });
-      addMeeting(normalizeMeeting(response.data));
-    } catch (err) {
-      console.error("Failed to create meeting:", err);
-      showToast.error("Không thể tạo cuộc họp. Vui lòng thử lại.");
-      return;
+
+      await loadMeetings(currentOrgId);
+      const roomCode = response.data?.code || meetingCode || response.data?.id;
+      showToast.success("Đã tạo cuộc họp live");
+      navigate(`/room/${roomCode}`, {
+        state: {
+          title: title.trim(),
+          groupId: selectedGroupId,
+          organizer: user?.displayName || user?.email || "Bạn",
+          enableCamera,
+          enableMic,
+          enableRecord,
+          enableSummary,
+          participants: selectedParticipants,
+        },
+      });
+    } catch (err: any) {
+      showToast.error(err?.response?.data?.detail || "Không thể tạo cuộc họp live");
+    } finally {
+      setIsSubmitting(false);
     }
-
-    navigate(`/room/${meetingCode}`, {
-      state: {
-        title,
-        groupId: selectedGroupId,
-        organizer: user?.displayName || user?.email || "Bạn",
-        enableCamera,
-        enableMic,
-        enableRecord,
-        participants,
-      },
-    });
   };
 
-  const roleLabels: Record<string, { label: string; color: string }> = {
-    organizer: { label: "Tổ chức", color: "bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-200" },
-    presenter: { label: "Trình bày", color: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-200" },
-    attendee: { label: "Tham dự", color: "bg-gray-100 text-gray-600 dark:bg-slate-700 dark:text-slate-300" },
-  };
+  if (!currentOrgId) {
+    return (
+      <div className="mx-auto max-w-3xl px-4 py-8">
+        <Card className="p-8 text-center">
+          <AlertCircle className="mx-auto mb-4 h-10 w-10 text-amber-500" />
+          <h1 className="text-2xl font-black text-gray-900 dark:text-slate-100">Chưa chọn tổ chức</h1>
+          <p className="mt-2 text-sm text-gray-500 dark:text-slate-400">
+            Bạn cần chọn hoặc tham gia một tổ chức trước khi tạo cuộc họp live.
+          </p>
+          <Button className="mt-6" onClick={() => navigate("/setup-organization")}>
+            Thiết lập tổ chức
+          </Button>
+        </Card>
+      </div>
+    );
+  }
 
   return (
-    <div className="mx-auto max-w-4xl space-y-6">
+    <div className="mx-auto max-w-4xl space-y-6 px-4 pb-6 pt-6 lg:px-0">
       {/* Header */}
       <motion.section
         initial={{ opacity: 0, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
-        className="panel-glass rounded-3xl border border-gray-200 p-6 shadow-card dark:border-slate-700"
+        className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm dark:border-slate-700 dark:bg-slate-900"
       >
-        <div className="flex items-center justify-between">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h1 className="text-h1 text-gray-900 dark:text-slate-100">
-              {step === "setup" ? "Tạo cuộc họp mới" : "Mời thành viên"}
+            <div className="mb-3 inline-flex items-center gap-2 rounded-full bg-red-50 px-3 py-1 text-xs font-bold uppercase tracking-wide text-red-600 dark:bg-red-900/20 dark:text-red-300">
+              <Radio size={14} className="animate-pulse" />
+              Live meeting
+            </div>
+            <h1 className="text-2xl font-black text-gray-900 dark:text-slate-100 sm:text-3xl">
+              Tạo cuộc họp live
             </h1>
-            <p className="mt-1 text-body text-gray-600 dark:text-slate-300">
-              {step === "setup"
-                ? "Thiết lập phòng họp trực tuyến với AI ghi âm tự động"
-                : "Chia sẻ mã hoặc QR để mời người tham gia"}
+            <p className="mt-1 text-sm text-gray-500 dark:text-slate-400">
+              Chọn nhóm, người tham gia và cấu hình AI trước khi vào phòng họp.
             </p>
           </div>
-          {step === "invite" && (
-            <Button variant="ghost" onClick={() => setStep("setup")}>
-              Quay lại
-            </Button>
-          )}
+          <Button variant="secondary" onClick={() => navigate(-1)} icon={<ArrowLeft size={16} />}>
+            Quay lại
+          </Button>
         </div>
       </motion.section>
 
-      {step === "setup" ? (
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-          {/* Meeting Info */}
-          <motion.div
-            initial={{ opacity: 0, y: 12 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.1 }}
-            className="lg:col-span-2 space-y-4"
-          >
-            <Card>
-              <h2 className="mb-4 text-h3 text-gray-900 dark:text-slate-100">Thông tin cuộc họp</h2>
-              <div className="space-y-4">
-                <Input
-                  label="Tên cuộc họp"
-                  placeholder="VD: Họp dự án Q2, Sprint Review..."
-                  value={title}
-                  onChange={(e) => setTitle(e.target.value)}
+      <form onSubmit={handleSubmit} className="space-y-6">
+        {/* Meeting Info */}
+        <Card>
+          <div className="mb-5 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <h2 className="text-lg font-bold text-gray-900 dark:text-slate-100">Thông tin cuộc họp</h2>
+              <p className="mt-0.5 text-sm text-gray-500 dark:text-slate-400">
+                Tổ chức: <span className="font-medium text-gray-700 dark:text-slate-300">{currentOrg?.name || currentOrgId}</span>
+              </p>
+            </div>
+            <Badge variant="primary" className="w-fit text-[10px]">
+              Tạo ngay
+            </Badge>
+          </div>
+
+          <div className="space-y-4">
+            <Input
+              label="Tiêu đề cuộc họp"
+              placeholder="Ví dụ: Daily sync, Họp xử lý gấp..."
+              value={title}
+              onChange={(event) => setTitle(event.target.value)}
+              required
+            />
+
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium text-gray-700 dark:text-slate-200">
+                Nhóm / Phòng ban
+              </label>
+              <div className="relative group">
+                <select
+                  value={selectedGroupId}
+                  onChange={(event) => {
+                    setSelectedGroupId(event.target.value);
+                    setSelectedParticipants([]);
+                  }}
+                  className="h-11 w-full appearance-none rounded-xl border border-gray-200 bg-white pl-4 pr-10 text-gray-900 transition-all focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                >
+                  {groups.length === 0 ? (
+                    <option value="" disabled>
+                      Chưa có nhóm nào
+                    </option>
+                  ) : (
+                    groups.map((group) => (
+                      <option key={group.id} value={group.id}>
+                        {group.name}
+                      </option>
+                    ))
+                  )}
+                </select>
+                <ChevronDown
+                  className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 transition-colors group-focus-within:text-primary-500"
+                  size={18}
                 />
-                <div className="space-y-1.5">
-                  <label className="text-sm font-medium text-gray-700 dark:text-slate-200 ml-1">
-                    Chọn nhóm
-                  </label>
-                  <div className="relative group">
-                    <select
-                      value={selectedGroupId}
-                      onChange={(e) => setSelectedGroupId(e.target.value)}
-                      className="w-full h-11 pl-4 pr-10 appearance-none rounded-xl border border-gray-200 bg-white text-gray-900 focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20 transition-all dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
-                    >
-                      {groups.length === 0 ? (
-                        <option value="" disabled>Chưa có nhóm nào</option>
-                      ) : (
-                        groups.map((group) => (
-                          <option key={group.id} value={group.id}>
-                            {group.name}
-                          </option>
-                        ))
-                      )}
-                    </select>
-                    <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none group-focus-within:text-primary-500 transition-colors" size={18} />
+              </div>
+              {groups.length === 0 && (
+                <p className="text-xs font-medium text-amber-600 dark:text-amber-300">
+                  Tổ chức này chưa có phòng ban/danh mục. Hãy tạo nhóm trước khi mở cuộc họp live.
+                </p>
+              )}
+            </div>
+          </div>
+        </Card>
+
+        {/* Device + Invite side by side */}
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+          {/* Devices */}
+          <Card>
+            <h2 className="mb-4 text-lg font-bold text-gray-900 dark:text-slate-100">Thiết bị</h2>
+            <div className="grid grid-cols-3 gap-3">
+              {[
+                { label: "Camera", icon: <Video size={20} />, active: enableCamera, toggle: () => setEnableCamera((v) => !v), color: "primary" },
+                { label: "Micro", icon: <Mic size={20} />, active: enableMic, toggle: () => setEnableMic((v) => !v), color: "primary" },
+                { label: "Ghi âm", icon: <Radio size={20} />, active: enableRecord, toggle: () => setEnableRecord((v) => !v), color: "red" },
+              ].map((device) => (
+                <button
+                  key={device.label}
+                  type="button"
+                  onClick={device.toggle}
+                  className={`flex flex-col items-center justify-center gap-2 rounded-xl border-2 p-4 transition-all ${
+                    device.active
+                      ? device.color === "red"
+                        ? "border-red-300 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-200"
+                        : "border-primary-300 bg-primary-50 text-primary-700 dark:border-primary-800 dark:bg-primary-900/20 dark:text-primary-200"
+                      : "border-gray-200 bg-gray-50 text-gray-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-500"
+                  }`}
+                >
+                  <div className={`flex h-10 w-10 items-center justify-center rounded-full ${
+                    device.active
+                      ? device.color === "red" ? "bg-red-100 dark:bg-red-900/30" : "bg-primary-100 dark:bg-primary-900/30"
+                      : "bg-gray-100 dark:bg-slate-700"
+                  }`}>
+                    {device.icon}
                   </div>
-                </div>
+                  <span className="text-xs font-bold">{device.label}</span>
+                  <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                    device.active
+                      ? device.color === "red" ? "bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-300" : "bg-primary-100 text-primary-600 dark:bg-primary-900/30 dark:text-primary-300"
+                      : "bg-gray-100 text-gray-500 dark:bg-slate-700 dark:text-slate-400"
+                  }`}>
+                    {device.active ? "Bật" : "Tắt"}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </Card>
+
+          {/* QR Invite */}
+          <Card>
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="text-lg font-bold text-gray-900 dark:text-slate-100">Mời tham gia</h2>
+              <Badge variant="primary" className="text-[10px]">QR / Link</Badge>
+            </div>
+
+            <div className="flex flex-col items-center gap-4 sm:flex-row sm:items-start">
+              <div className="shrink-0 rounded-2xl border border-gray-200 bg-white p-3 dark:border-slate-700">
+                <QRCodeSVG value={joinUrl} size={120} level="M" />
+              </div>
+              <div className="w-full min-w-0 space-y-3">
                 <div>
-                  <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-slate-200">
+                  <label className="mb-1 block text-xs font-bold uppercase tracking-wider text-gray-500 dark:text-slate-400">
                     Mã tham gia
                   </label>
                   <div className="flex items-center gap-2">
-                    <div className="flex h-10 flex-1 items-center rounded-xl border border-gray-200 bg-gray-50 px-4 font-mono text-lg font-bold tracking-widest text-primary-700 dark:border-slate-700 dark:bg-slate-800 dark:text-primary-300">
+                    <div className="flex h-10 flex-1 items-center rounded-xl border border-gray-200 bg-gray-50 px-3 font-mono text-sm font-bold tracking-wider text-primary-700 dark:border-slate-700 dark:bg-slate-800 dark:text-primary-300">
                       {meetingCode}
                     </div>
-                    <Tooltip content="Sao chép mã" shortcut="Ctrl+C">
-                      <Button variant="secondary" onClick={copyCode} icon={copied ? <Check size={16} /> : <Copy size={16} />} />
-                    </Tooltip>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="lg"
+                      onClick={() => copyToClipboard(meetingCode, "code")}
+                      icon={copiedTarget === "code" ? <Check size={16} className="text-primary-500" /> : <Copy size={16} />}
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="mb-1 block text-xs font-bold uppercase tracking-wider text-gray-500 dark:text-slate-400">
+                    Link tham gia
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <div className="flex h-10 min-w-0 flex-1 items-center rounded-xl border border-gray-200 bg-gray-50 px-3 text-xs font-medium text-gray-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">
+                      <Link2 size={14} className="mr-2 shrink-0 text-gray-400" />
+                      <span className="truncate">{joinUrl}</span>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      onClick={() => copyToClipboard(joinUrl, "link")}
+                      icon={copiedTarget === "link" ? <Check size={16} className="text-primary-500" /> : <Copy size={16} />}
+                    />
                   </div>
                 </div>
               </div>
-            </Card>
+            </div>
+          </Card>
+        </div>
 
-            {/* AI & Knowledge Base Settings */}
-            <Card>
-              <div className="mb-4 flex items-center justify-between">
-                <h2 className="text-h3 text-gray-900 dark:text-slate-100">Cấu hình AI & Kho kiến thức</h2>
-                <Badge variant="primary" className="text-[10px]">Premium</Badge>
+        {/* AI Config */}
+        <Card>
+          <div className="mb-5 flex items-center justify-between">
+            <h2 className="flex items-center gap-2 text-lg font-bold text-gray-900 dark:text-slate-100">
+              <Zap size={18} className="text-primary-500" />
+              Cấu hình AI & Kho kiến thức
+            </h2>
+            <Badge variant="primary" className="text-[10px]">Premium</Badge>
+          </div>
+
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium text-gray-700 dark:text-slate-200">
+                Ngôn ngữ chính
+              </label>
+              <div className="relative group">
+                <select
+                  value={language}
+                  onChange={(event) => setLanguage(event.target.value)}
+                  className="h-11 w-full appearance-none rounded-xl border border-gray-200 bg-white pl-4 pr-10 text-gray-900 transition-all focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                >
+                  <option value="vi">🇻🇳 Tiếng Việt</option>
+                  <option value="en">🇺🇸 Tiếng Anh</option>
+                  <option value="zh">🇨🇳 Tiếng Trung</option>
+                  <option value="ja">🇯🇵 Tiếng Nhật</option>
+                  <option value="ko">🇰🇷 Tiếng Hàn</option>
+                </select>
+                <ChevronDown className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
               </div>
-              
-              <div className="space-y-4">
-                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                  <div className="space-y-1.5">
-                    <label className="text-sm font-medium text-gray-700 dark:text-slate-200">
-                      Ngôn ngữ chính
-                    </label>
-                    <div className="relative group">
-                      <select
-                        value={language}
-                        onChange={(e) => setLanguage(e.target.value)}
-                        className="w-full h-11 pl-4 pr-10 appearance-none rounded-xl border border-gray-200 bg-white text-gray-900 focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20 transition-all dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
-                      >
-                        <option value="vi">Tiếng Việt</option>
-                        <option value="en">Tiếng Anh</option>
-                      </select>
-                      <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" size={18} />
-                    </div>
-                  </div>
-                  <MultiSelect
-                    label="Kho kiến thức áp dụng"
-                    placeholder="Chọn từ điển chuyên ngành..."
-                    options={glossaries.map(g => ({ id: g.id, name: g.name }))}
-                    selectedIds={selectedGlossaries}
-                    onChange={setSelectedGlossaries}
-                  />
+            </div>
+
+            <MultiSelect
+              label="Kho kiến thức áp dụng"
+              placeholder="Chọn từ điển chuyên ngành..."
+              options={glossaries.map((glossary) => ({
+                id: glossary.id,
+                name: `${glossary.name}${glossary.scope === "GLOBAL" ? " (Hệ thống)" : ""}`,
+              }))}
+              selectedIds={selectedGlossaries}
+              onChange={setSelectedGlossaries}
+            />
+          </div>
+
+          <div className="mt-5 flex flex-wrap gap-6 border-t border-gray-100 pt-4 dark:border-slate-800">
+            <label className="flex cursor-pointer items-center gap-2.5">
+              <input
+                type="checkbox"
+                checked={enableRecord}
+                onChange={(event) => setEnableRecord(event.target.checked)}
+                className="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+              />
+              <span className="text-sm font-medium text-gray-700 dark:text-slate-300">Ghi âm & transcribe AI</span>
+            </label>
+            <label className="flex cursor-pointer items-center gap-2.5">
+              <input
+                type="checkbox"
+                checked={enableSummary}
+                onChange={(event) => setEnableSummary(event.target.checked)}
+                className="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+              />
+              <span className="text-sm font-medium text-gray-700 dark:text-slate-300">Tự động tóm tắt biên bản</span>
+            </label>
+          </div>
+
+          <div className="mt-4 flex items-start gap-2 rounded-xl bg-primary-50/50 p-3 text-xs text-primary-700 dark:bg-primary-900/10 dark:text-primary-300">
+            <BookOpen size={14} className="mt-0.5 shrink-0" />
+            <p>
+              Đang áp dụng <span className="font-bold">{selectedGlossaries.length}</span> kho kiến thức cho nhận diện giọng nói và biên bản.
+            </p>
+          </div>
+        </Card>
+
+        {/* Participants */}
+        <Card>
+          <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <h2 className="flex items-center gap-2 text-lg font-bold text-gray-900 dark:text-slate-100">
+              <Users size={18} className="text-primary-500" />
+              Thành viên tham gia
+              {selectedParticipants.length > 0 && (
+                <span className="rounded-full bg-primary-100 px-2 py-0.5 text-xs font-bold text-primary-700 dark:bg-primary-900/30 dark:text-primary-300">
+                  {selectedParticipants.length}
+                </span>
+              )}
+            </h2>
+            <span className="text-xs text-gray-500 dark:text-slate-400">
+              Người tạo được thêm tự động
+            </span>
+          </div>
+
+          {loadingMembers ? (
+            <div className="flex items-center justify-center py-8 text-sm text-gray-400">
+              <div className="mr-2 h-5 w-5 animate-spin rounded-full border-2 border-primary-500 border-t-transparent" />
+              Đang tải thành viên...
+            </div>
+          ) : groupMembers.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-gray-200 py-8 text-center text-sm text-gray-400 dark:border-slate-700">
+              Nhóm chưa có thành viên nào
+            </div>
+          ) : (
+            <div className="overflow-hidden rounded-xl border border-gray-200 dark:border-slate-700">
+              <button
+                type="button"
+                onClick={toggleSelectAll}
+                className="flex w-full cursor-pointer items-center gap-3 border-b border-gray-100 bg-gray-50 px-4 py-3 text-left transition hover:bg-gray-100 dark:border-slate-700 dark:bg-slate-800/50 dark:hover:bg-slate-800"
+              >
+                <div className={`flex h-5 w-5 items-center justify-center rounded border-2 transition ${allSelected ? "border-primary-500 bg-primary-500" : "border-gray-300 dark:border-slate-600"}`}>
+                  {allSelected && <Check size={12} className="text-white" />}
                 </div>
-              </div>
-            </Card>
+                <span className="text-sm font-bold text-gray-800 dark:text-slate-200">Chọn tất cả</span>
+                <span className="ml-auto text-xs text-gray-400">{groupMembers.length} thành viên</span>
+              </button>
 
-            {/* Device Settings */}
-            <Card>
-              <h2 className="mb-4 text-h3 text-gray-900 dark:text-slate-100">Thiết bị</h2>
-              <div className="grid grid-cols-3 gap-3">
-                <button
-                  onClick={() => setEnableCamera(!enableCamera)}
-                  className={`flex flex-col items-center gap-2 rounded-xl border p-4 transition ${
-                    enableCamera
-                      ? "border-primary-300 bg-primary-50 dark:border-primary-800 dark:bg-primary-900/20"
-                      : "border-gray-200 bg-gray-50 dark:border-slate-700 dark:bg-slate-800"
-                  }`}
-                >
-                  <Video size={24} className={enableCamera ? "text-primary-600" : "text-gray-400"} />
-                  <span className="text-caption font-medium">Camera</span>
-                  <span className={`text-caption ${enableCamera ? "text-primary-600" : "text-gray-400"}`}>
-                    {enableCamera ? "Bật" : "Tắt"}
-                  </span>
-                </button>
-                <button
-                  onClick={() => setEnableMic(!enableMic)}
-                  className={`flex flex-col items-center gap-2 rounded-xl border p-4 transition ${
-                    enableMic
-                      ? "border-primary-300 bg-primary-50 dark:border-primary-800 dark:bg-primary-900/20"
-                      : "border-gray-200 bg-gray-50 dark:border-slate-700 dark:bg-slate-800"
-                  }`}
-                >
-                  <Mic size={24} className={enableMic ? "text-primary-600" : "text-gray-400"} />
-                  <span className="text-caption font-medium">Micro</span>
-                  <span className={`text-caption ${enableMic ? "text-primary-600" : "text-gray-400"}`}>
-                    {enableMic ? "Bật" : "Tắt"}
-                  </span>
-                </button>
-                <button
-                  onClick={() => setEnableRecord(!enableRecord)}
-                  className={`flex flex-col items-center gap-2 rounded-xl border p-4 transition ${
-                    enableRecord
-                      ? "border-red-300 bg-red-50 dark:border-red-800 dark:bg-red-900/20"
-                      : "border-gray-200 bg-gray-50 dark:border-slate-700 dark:bg-slate-800"
-                  }`}
-                >
-                  <div className={`flex h-6 w-6 items-center justify-center rounded-full ${enableRecord ? "bg-red-500" : "bg-gray-300"}`}>
-                    <div className={`h-2 w-2 rounded-full ${enableRecord ? "animate-pulse bg-white" : "bg-gray-500"}`} />
-                  </div>
-                  <span className="text-caption font-medium">Ghi âm AI</span>
-                  <span className={`text-caption ${enableRecord ? "text-red-600" : "text-gray-400"}`}>
-                    {enableRecord ? "Bật" : "Tắt"}
-                  </span>
-                </button>
-              </div>
-            </Card>
-
-            {/* Add Participants */}
-            <Card>
-              <h2 className="mb-4 text-h3 text-gray-900 dark:text-slate-100">Thành viên</h2>
-              <div className="flex gap-2">
-                <Input
-                  placeholder="Email hoặc tên thành viên..."
-                  value={inviteEmail}
-                  onChange={(e) => setInviteEmail(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && addParticipant()}
-                  leftIcon={<UserPlus size={16} />}
-                />
-                <Button onClick={addParticipant} icon={<Plus size={16} />}>
-                  Thêm
-                </Button>
-              </div>
-
-              <div className="mt-4 space-y-2">
-                {participants.map((p) => (
-                  <div
-                    key={p.id}
-                    className="flex items-center justify-between rounded-xl border border-gray-100 bg-gray-50 px-4 py-3 dark:border-slate-700 dark:bg-slate-800/50"
-                  >
-                    <div className="flex items-center gap-3">
-                      <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary-100 text-sm font-bold text-primary-700 dark:bg-primary-900/30 dark:text-primary-200">
-                        {p.name[0]?.toUpperCase()}
+              <div className="max-h-64 divide-y divide-gray-50 overflow-y-auto dark:divide-slate-800">
+                {groupMembers.map((member) => {
+                  const isSelected = selectedParticipants.includes(member.user_id);
+                  return (
+                    <button
+                      type="button"
+                      key={member.user_id}
+                      onClick={() => toggleParticipant(member.user_id)}
+                      className="flex w-full cursor-pointer items-center gap-3 px-4 py-2.5 text-left transition hover:bg-gray-50 dark:hover:bg-slate-800/50"
+                    >
+                      <div className={`flex h-5 w-5 shrink-0 items-center justify-center rounded border-2 transition ${isSelected ? "border-primary-500 bg-primary-500" : "border-gray-300 dark:border-slate-600"}`}>
+                        {isSelected && <Check size={12} className="text-white" />}
                       </div>
-                      <div>
-                        <p className="text-body font-medium text-gray-800 dark:text-slate-100">
-                          {p.name}
-                          {p.id === (user?.id || "1") && (
-                            <span className="ml-2 text-caption text-gray-400">(bạn)</span>
-                          )}
-                        </p>
-                        <select
-                          value={p.role}
-                          onChange={(e) => changeRole(p.id, e.target.value as Participant["role"])}
-                          disabled={p.id === (user?.id || "1")}
-                          className="mt-0.5 text-caption text-gray-500 bg-transparent border-none outline-none dark:text-slate-400"
-                        >
-                          <option value="organizer">Tổ chức</option>
-                          <option value="presenter">Trình bày</option>
-                          <option value="attendee">Tham dự</option>
-                        </select>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span className={`rounded-full px-2 py-0.5 text-caption font-medium ${roleLabels[p.role].color}`}>
-                        {roleLabels[p.role].label}
-                      </span>
-                      {p.id !== (user?.id || "1") && (
-                        <button
-                          onClick={() => removeParticipant(p.id)}
-                          className="rounded-lg p-1.5 text-gray-400 transition hover:bg-red-50 hover:text-red-500"
-                        >
-                          <X size={14} />
-                        </button>
+                      {member.avatar_url ? (
+                        <img src={member.avatar_url} alt="" className="h-8 w-8 rounded-full object-cover" />
+                      ) : (
+                        <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary-100 text-primary-600 dark:bg-primary-900/30 dark:text-primary-400">
+                          <User size={14} />
+                        </div>
                       )}
-                    </div>
-                  </div>
-                ))}
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium text-gray-800 dark:text-slate-200">{member.name}</p>
+                        {member.email && <p className="truncate text-xs text-gray-400">{member.email}</p>}
+                      </div>
+                      <span className="shrink-0 rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-medium text-gray-500 dark:bg-slate-700 dark:text-slate-400">
+                        {member.role === "group-admin" ? "Admin" : "Member"}
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
-            </Card>
-          </motion.div>
+            </div>
+          )}
+        </Card>
 
-          {/* Sidebar - Quick Actions */}
-          <motion.div
-            initial={{ opacity: 0, y: 12 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.2 }}
-            className="space-y-4"
-          >
-            <Card className="text-center">
-              <h3 className="mb-3 text-h4 text-gray-900 dark:text-slate-100">Bắt đầu ngay</h3>
-              <p className="mb-4 text-caption text-gray-500">
-                {participants.length} thành viên · {enableRecord ? "Ghi âm AI bật" : "Ghi âm AI tắt"}
-              </p>
-              <Button onClick={startMeeting} className="w-full" size="lg" icon={<ArrowRight size={18} />}>
+        {/* Sticky Footer */}
+        <div className="sticky bottom-0 z-30 -mx-4 border-t border-gray-200 bg-white px-4 py-4 dark:border-slate-700 dark:bg-slate-900 lg:-mx-0 lg:rounded-b-2xl">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            {/* Info row */}
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-1.5 rounded-lg bg-gray-100 px-2.5 py-1.5 dark:bg-slate-800">
+                <Users size={14} className="text-gray-500 dark:text-slate-400" />
+                <span className="text-xs font-bold text-gray-800 dark:text-slate-200">{selectedParticipants.length + 1}</span>
+                <span className="text-xs text-gray-500 dark:text-slate-400">người</span>
+              </div>
+              <div className="flex items-center gap-1.5 rounded-lg bg-primary-50 px-2.5 py-1.5 dark:bg-primary-900/20">
+                <Link2 size={14} className="text-primary-500" />
+                <span className="font-mono text-xs font-bold text-primary-700 dark:text-primary-300">{meetingCode}</span>
+              </div>
+            </div>
+
+            {/* Buttons */}
+            <div className="flex gap-3">
+              <Button type="button" variant="ghost" onClick={() => navigate("/calendar")} className="flex-1 sm:flex-none">
+                Hủy bỏ
+              </Button>
+              <Button
+                type="submit"
+                isLoading={isSubmitting}
+                disabled={!selectedGroupId || groups.length === 0}
+                icon={<ArrowRight size={16} />}
+                className="flex-1 shadow-lg shadow-primary-500/20 sm:flex-none"
+              >
                 Vào phòng họp
               </Button>
-              <div className="mt-3">
-                <Button
-                  variant="secondary"
-                  className="w-full"
-                  onClick={() => setStep("invite")}
-                  icon={<Users size={16} />}
-                >
-                  Mời thành viên
-                </Button>
-              </div>
-            </Card>
-
-            <Card>
-              <h3 className="mb-3 text-h4 text-gray-900 dark:text-slate-100">Tham gia nhanh</h3>
-              <p className="mb-3 text-caption text-gray-500">
-                Người khác có thể nhập mã để tham gia:
-              </p>
-              <div className="rounded-xl border border-dashed border-primary-300 bg-primary-50 p-4 text-center dark:border-primary-800 dark:bg-primary-900/10">
-                <p className="font-mono text-xl font-bold tracking-widest text-primary-700 dark:text-primary-300">
-                  {meetingCode}
-                </p>
-              </div>
-            </Card>
-          </motion.div>
+            </div>
+          </div>
         </div>
-      ) : (
-        /* INVITE STEP */
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-          {/* QR Code */}
-          <motion.div
-            initial={{ opacity: 0, y: 12 }}
-            animate={{ opacity: 1, y: 0 }}
-          >
-            <Card className="flex flex-col items-center py-8">
-              <h2 className="mb-6 text-h3 text-gray-900 dark:text-slate-100">Quét mã QR</h2>
-              <div className="rounded-2xl border-2 border-primary-200 bg-white p-4 dark:border-primary-800 dark:bg-slate-800">
-                <QRCodeSVG
-                  value={joinUrl}
-                  size={220}
-                  level="M"
-                  className="text-gray-900 dark:text-slate-100"
-                  style={{ width: 220, height: 220 }}
-                />
-              </div>
-              <p className="mt-4 text-caption text-gray-500">
-                Quét bằng camera điện thoại để tham gia
-              </p>
-            </Card>
-          </motion.div>
-
-          {/* Share Options */}
-          <motion.div
-            initial={{ opacity: 0, y: 12 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.1 }}
-            className="space-y-4"
-          >
-            <Card>
-              <h2 className="mb-4 text-h3 text-gray-900 dark:text-slate-100">Chia sẻ mã tham gia</h2>
-
-              <div className="space-y-4">
-                {/* Copy Code */}
-                <div className="flex items-center gap-2">
-                  <div className="flex h-12 flex-1 items-center rounded-xl border border-gray-200 bg-gray-50 px-4 font-mono text-lg font-bold tracking-widest text-primary-700 dark:border-slate-700 dark:bg-slate-800 dark:text-primary-300">
-                    {meetingCode}
-                  </div>
-                  <Button onClick={copyCode} icon={copied ? <Check size={16} /> : <Copy size={16} />}>
-                    {copied ? "Đã copy" : "Copy mã"}
-                  </Button>
-                </div>
-
-                {/* Copy Link */}
-                <div className="flex items-center gap-2">
-                  <div className="flex h-10 flex-1 items-center rounded-xl border border-gray-200 bg-gray-50 px-3 text-caption text-gray-600 truncate dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">
-                    <Link2 size={14} className="mr-2 shrink-0" />
-                    {joinUrl}
-                  </div>
-                  <Button variant="secondary" onClick={copyLink} icon={<Copy size={16} />}>
-                    Copy link
-                  </Button>
-                </div>
-              </div>
-            </Card>
-
-            <Card>
-              <h2 className="mb-3 text-h3 text-gray-900 dark:text-slate-100">Thành viên đã mời</h2>
-              <div className="space-y-2">
-                {participants.map((p) => (
-                  <div key={p.id} className="flex items-center gap-3 rounded-lg px-3 py-2">
-                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary-100 text-sm font-bold text-primary-700 dark:bg-primary-900/30 dark:text-primary-200">
-                      {p.name[0]?.toUpperCase()}
-                    </div>
-                    <span className="flex-1 text-body text-gray-800 dark:text-slate-100">{p.name}</span>
-                    <span className={`rounded-full px-2 py-0.5 text-caption font-medium ${roleLabels[p.role].color}`}>
-                      {roleLabels[p.role].label}
-                    </span>
-                  </div>
-                ))}
-              </div>
-              <div className="mt-4">
-                <Input
-                  placeholder="Thêm email hoặc tên..."
-                  value={inviteEmail}
-                  onChange={(e) => setInviteEmail(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && addParticipant()}
-                  leftIcon={<UserPlus size={16} />}
-                />
-                <Button variant="ghost" onClick={addParticipant} className="mt-2 w-full" icon={<Plus size={16} />}>
-                  Thêm thành viên
-                </Button>
-              </div>
-            </Card>
-
-            <Button onClick={startMeeting} className="w-full" size="lg" icon={<ArrowRight size={18} />}>
-              Vào phòng họp ({participants.length} người)
-            </Button>
-          </motion.div>
-        </div>
-      )}
+      </form>
     </div>
   );
 };

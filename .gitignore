@@ -41,5 +41,6 @@ logs/
 # Uploads & Temp
 data/uploads/*
 !data/uploads/.gitkeep
+backend/uploads/
 tmp/
 temp/

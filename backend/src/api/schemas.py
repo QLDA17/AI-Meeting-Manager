@@ -19,7 +19,7 @@ class TimestampMixin(BaseModel):
 class UserBase(BaseSchema):
     username: str = Field(..., min_length=3, max_length=50)
     email: str
-    role: str = Field(default="member", pattern="^(system-admin|org-admin|group-admin|member|viewer)$")
+    role: str = Field(default="member", pattern="^(system-admin|member)$")
     first_name: Optional[str] = Field(None, max_length=100)
     last_name: Optional[str] = Field(None, max_length=100)
     avatar_url: Optional[str] = Field(None, max_length=500)
@@ -28,6 +28,9 @@ class UserBase(BaseSchema):
     notification_preferences: Optional[Dict[str, Any]] = None
     is_active: bool = True
     is_verified: bool = False
+    phone: Optional[str] = Field(None, max_length=20)
+    gender: Optional[str] = Field(None, pattern="^(male|female|other)$")
+    date_of_birth: Optional[datetime] = None
 
 
 class UserCreate(UserBase):
@@ -37,7 +40,7 @@ class UserCreate(UserBase):
 class UserUpdate(BaseSchema):
     username: Optional[str] = Field(None, min_length=3, max_length=50)
     email: Optional[EmailStr] = None
-    role: Optional[str] = Field(None, pattern="^(system-admin|org-admin|group-admin|member|viewer)$")
+    role: Optional[str] = Field(None, pattern="^(system-admin|member)$")
     first_name: Optional[str] = Field(None, max_length=100)
     last_name: Optional[str] = Field(None, max_length=100)
     avatar_url: Optional[str] = Field(None, max_length=500)
@@ -46,6 +49,9 @@ class UserUpdate(BaseSchema):
     notification_preferences: Optional[Dict[str, Any]] = None
     is_active: Optional[bool] = None
     is_verified: Optional[bool] = None
+    phone: Optional[str] = Field(None, max_length=20)
+    gender: Optional[str] = Field(None, pattern="^(male|female|other)$")
+    date_of_birth: Optional[datetime] = None
     password: Optional[str] = Field(None, min_length=8)
 
 
@@ -60,11 +66,14 @@ class UserLogin(BaseSchema):
 
 
 class RegisterRequest(BaseSchema):
-    username: Optional[str] = None
+    username: Optional[str] = Field(None, min_length=3, max_length=50)
     email: EmailStr
     password: str = Field(..., min_length=8)
     firstName: Optional[str] = Field(None, max_length=100)
     lastName: Optional[str] = Field(None, max_length=100)
+    phone: Optional[str] = Field(None, max_length=20)
+    gender: Optional[str] = Field(None, pattern="^(male|female|other)$")
+    dateOfBirth: date
     inviteToken: Optional[str] = None
     orgName: Optional[str] = Field(None, max_length=255)
 
@@ -86,6 +95,9 @@ class ProfileUpdate(BaseSchema):
     language: Optional[str] = Field(None, max_length=10)
     timezone: Optional[str] = Field(None, max_length=100)
     notification_preferences: Optional[Dict[str, Any]] = None
+    phone: Optional[str] = Field(None, max_length=20)
+    gender: Optional[str] = Field(None, pattern="^(male|female|other)$")
+    date_of_birth: Optional[datetime] = None
 
 
 class ChangePasswordRequest(BaseSchema):
@@ -178,10 +190,18 @@ class GroupMessageBase(BaseSchema):
     text: str
     reactions: Optional[List[Dict[str, Any]]] = None
     is_pinned: bool = False
+    reply_to_id: Optional[str] = None
 
 
 class GroupMessageCreate(BaseSchema):
     text: str
+    reply_to_id: Optional[str] = None
+
+
+class GroupMessageUpdate(BaseSchema):
+    text: Optional[str] = None
+    reactions: Optional[List[Dict[str, Any]]] = None
+    is_pinned: Optional[bool] = None
 
 
 class GroupMessage(GroupMessageBase, TimestampMixin):
@@ -189,6 +209,7 @@ class GroupMessage(GroupMessageBase, TimestampMixin):
     group_id: str
     user_id: str
     user: Optional['User'] = None
+    reply_to: Optional['GroupMessage'] = None
 
 
 class GroupMembershipBase(BaseSchema):
@@ -219,7 +240,7 @@ class InvitationCreate(BaseSchema):
     email: EmailStr
     organization_id: str
     group_id: Optional[str] = None
-    role: str = Field(default="member", pattern="^(org-admin|member|viewer)$")
+    role: str = Field(default="member", pattern="^(org-admin|group-admin|member|viewer)$")
 
 
 class InvitationCreateResponse(BaseSchema):
@@ -227,6 +248,17 @@ class InvitationCreateResponse(BaseSchema):
     email: EmailStr
     organization_id: str
     expires_at: datetime
+    invitation_id: Optional[str] = None
+    emailSent: bool = False
+    alreadyPending: bool = False
+
+
+class UserSearchResult(BaseSchema):
+    id: str
+    email: EmailStr
+    displayName: Optional[str] = None
+    username: Optional[str] = None
+    avatarUrl: Optional[str] = None
 
 
 class InvitationPreview(BaseSchema):
@@ -284,6 +316,9 @@ class MeetingBase(BaseSchema):
 class MeetingCreate(MeetingBase):
     organization_id: str
     group_id: Optional[str] = None
+    participant_ids: Optional[List[str]] = None
+    participant_emails: Optional[List[str]] = None
+    settings: Optional[Dict[str, Any]] = None
 
 
 class MeetingUpdate(BaseSchema):
@@ -302,6 +337,7 @@ class MeetingUpdate(BaseSchema):
     transcript_url: Optional[str] = None
     audio_url: Optional[str] = None
     group_id: Optional[str] = None
+    participant_ids: Optional[List[str]] = None
     is_pinned: Optional[bool] = None
 
 
@@ -342,6 +378,7 @@ class MeetingParticipantUpdate(BaseSchema):
 class MeetingParticipant(MeetingParticipantBase, TimestampMixin):
     id: str
     meeting_id: str
+    user: Optional[User] = None
 
 
 # ==================== Audio File Schemas ====================
@@ -409,6 +446,7 @@ class TranscriptSegmentBase(BaseSchema):
     start_time: float
     end_time: float
     text: str
+    language: str = Field(default="auto", max_length=10)
     confidence_score: Optional[float] = None
     word_count: int = 0
 
@@ -574,6 +612,14 @@ class MessageResponse(BaseSchema):
     message: str
 
 
+class RegisterResponse(BaseSchema):
+    access_token: str
+    token_type: str = "bearer"
+    user: Dict[str, Any]
+    nextStep: str
+    acceptedInvitation: bool = False
+
+
 class PaginatedResponse(BaseSchema):
     items: List[Any]
     total: int
@@ -590,6 +636,7 @@ class MeetingDetailResponse(Meeting):
     participants: List[MeetingParticipant] = Field(default_factory=list)
     audio_files: List[AudioFile] = Field(default_factory=list)
     transcripts: List[Transcript] = Field(default_factory=list)
+    transcript_segments: List[Dict[str, Any]] = Field(default_factory=list)
     summaries: List[MeetingSummary] = Field(default_factory=list)
     action_items: List[ActionItem] = Field(default_factory=list)
     transcript_content: Optional[str] = None

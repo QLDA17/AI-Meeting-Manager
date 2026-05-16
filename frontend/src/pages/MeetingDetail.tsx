@@ -24,13 +24,59 @@ import {
 import { format } from 'date-fns';
 import api from '../services/api';
 import { normalizeMeetingDetail } from '../services/mappers';
-import type { MeetingDetail as MeetingDetailType } from '../types';
+import type { MeetingDetail as MeetingDetailType, MeetingTranscriptSegment } from '../types';
 import AudioPlayer from '../components/meeting/AudioPlayer';
 import { useAuth } from '../context/AuthContext';
 import { usePermission } from '../hooks/usePermission';
-import { showToast } from '../components/ui';
+import { showToast, EditTitleModal } from '../components/ui';
 
 type DetailTab = 'summary' | 'transcript' | 'actions' | 'ai-notes';
+
+type TranscriptGroup = {
+  id: string;
+  speakerLabel: string;
+  startTime: number;
+  endTime: number;
+  languages: string[];
+  texts: string[];
+};
+
+const TRANSCRIPT_GROUP_GAP_SECONDS = 3;
+
+const groupTranscriptSegments = (segments: MeetingTranscriptSegment[]): TranscriptGroup[] => {
+  const sortedSegments = [...segments]
+    .filter((segment) => segment.text?.trim())
+    .sort((a, b) => a.startTime - b.startTime);
+
+  return sortedSegments.reduce<TranscriptGroup[]>((groups, segment) => {
+    const speakerLabel = segment.speakerLabel || 'Speaker_01';
+    const language = segment.language || 'auto';
+    const lastGroup = groups[groups.length - 1];
+    const shouldMerge =
+      lastGroup &&
+      lastGroup.speakerLabel === speakerLabel &&
+      segment.startTime - lastGroup.endTime <= TRANSCRIPT_GROUP_GAP_SECONDS;
+
+    if (shouldMerge) {
+      lastGroup.endTime = Math.max(lastGroup.endTime, segment.endTime || segment.startTime);
+      lastGroup.texts.push(segment.text.trim());
+      if (!lastGroup.languages.includes(language)) {
+        lastGroup.languages.push(language);
+      }
+      return groups;
+    }
+
+    groups.push({
+      id: segment.id,
+      speakerLabel,
+      startTime: segment.startTime,
+      endTime: segment.endTime || segment.startTime,
+      languages: [language],
+      texts: [segment.text.trim()],
+    });
+    return groups;
+  }, []);
+};
 
 const MeetingDetail: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -40,6 +86,8 @@ const MeetingDetail: React.FC = () => {
   const [activeTab, setActiveTab] = useState<DetailTab>('summary');
   const [isRegenerating, setIsRegenerating] = useState(false);
   const [summaryLanguage, setSummaryLanguage] = useState<string>('vi');
+  const [isEditTitleOpen, setIsEditTitleOpen] = useState(false);
+  const [selectedTranscriptSpeaker, setSelectedTranscriptSpeaker] = useState('all');
 
   const query = useQuery({
     queryKey: ['meeting-detail', id],
@@ -58,10 +106,29 @@ const MeetingDetail: React.FC = () => {
     if (!meeting) return '';
     return meeting.transcriptContent || meeting.transcripts[0]?.content || '';
   }, [meeting]);
+  const transcriptSegments = meeting?.transcriptSegments || [];
+  const transcriptGroups = useMemo(() => groupTranscriptSegments(transcriptSegments), [transcriptSegments]);
+  const transcriptSpeakers = useMemo(
+    () => Array.from(new Set(transcriptGroups.map((group) => group.speakerLabel))).sort(),
+    [transcriptGroups],
+  );
+  const visibleTranscriptGroups = useMemo(
+    () =>
+      selectedTranscriptSpeaker === 'all'
+        ? transcriptGroups
+        : transcriptGroups.filter((group) => group.speakerLabel === selectedTranscriptSpeaker),
+    [selectedTranscriptSpeaker, transcriptGroups],
+  );
   const summary = meeting?.meetingSummaryText || meeting?.summary || '';
   const summaryFailed = meeting?.summaryStatus === 'FAILED';
   const summaryErrorText = meeting?.summaryErrorText || 'AgentRouter khong tao duoc AI Notes. Kiem tra token, model hoac log backend.';
   const currentLanguage = meeting?.transcriptLanguage || summaryLanguage;
+  const formatSegmentTime = (seconds: number) => {
+    const safeSeconds = Number.isFinite(seconds) ? Math.max(0, seconds) : 0;
+    const minutes = Math.floor(safeSeconds / 60);
+    const secs = Math.floor(safeSeconds % 60);
+    return `${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  };
 
   const nowMs = Date.now();
   const startMs = meeting ? new Date(meeting.startTime).getTime() : nowMs;
@@ -74,6 +141,7 @@ const MeetingDetail: React.FC = () => {
       !isViewer &&
       (isSystemAdmin || isOrgAdmin || isGroupAdmin || meeting.createdBy === user.id),
   );
+  const canJoinRoom = meeting?.status === 'upcoming' || meeting?.status === 'live';
 
   const handleRegenerateAINotes = async (lang?: string) => {
     if (!id || !transcript) return;
@@ -82,8 +150,16 @@ const MeetingDetail: React.FC = () => {
     try {
       const response = await api.post(`/api/meetings/${id}/finalize`, {
         transcript,
-        segments: [],
+        segments: transcriptSegments.map((segment) => ({
+          speaker: segment.speakerLabel,
+          start: segment.startTime,
+          end: segment.endTime,
+          text: segment.text,
+          language: segment.language,
+          confidence: segment.confidenceScore,
+        })),
         language: targetLang,
+        regenerate: true,
       });
       const result = response.data;
       if (result?.summary_status === "COMPLETED") {
@@ -129,20 +205,24 @@ const MeetingDetail: React.FC = () => {
   }
 
   const tabs: Array<{ key: DetailTab; label: string; icon: React.ReactNode }> = [
-    { key: 'summary', label: 'Tom tat', icon: <FileText size={16} /> },
-    { key: 'transcript', label: 'Ban ghi', icon: <MessageSquare size={16} /> },
-    { key: 'actions', label: 'Viec can lam', icon: <CheckCircle2 size={16} /> },
+    { key: 'summary', label: 'Tóm tắt', icon: <FileText size={16} /> },
+    { key: 'transcript', label: 'Bản ghi', icon: <MessageSquare size={16} /> },
+    { key: 'actions', label: 'Việc cần làm', icon: <CheckCircle2 size={16} /> },
     { key: 'ai-notes', label: 'AI Notes', icon: <Sparkles size={16} /> },
   ];
 
-  const handleEditMeeting = async () => {
-    const nextTitle = window.prompt('Nhap tieu de moi cho cuoc hop', meeting.title);
-    if (!nextTitle || !nextTitle.trim()) return;
+  const handleEditMeeting = () => {
+    setIsEditTitleOpen(true);
+  };
+
+  const handleSaveTitle = async (newTitle: string) => {
     try {
-      await api.put(`/api/meetings/${meeting.id}`, { title: nextTitle.trim() });
-      window.location.reload();
+      await api.put(`/api/meetings/${meeting.id}`, { title: newTitle });
+      query.refetch();
+      setIsEditTitleOpen(false);
+      showToast.success('Đã cập nhật tiêu đề');
     } catch (err: any) {
-      window.alert(err?.response?.data?.detail || 'Khong the cap nhat cuoc hop');
+      showToast.error(err?.response?.data?.detail || 'Không thể cập nhật cuộc họp');
     }
   };
 
@@ -156,8 +236,39 @@ const MeetingDetail: React.FC = () => {
       window.alert(err?.response?.data?.detail || 'Khong the xoa cuoc hop');
     }
   };
+  const handleExportMeeting = async (format: 'pdf' | 'docx') => {
+    if (!meeting) return;
+    try {
+      const res = await api.post('/api/export/generate', {
+        meeting_id: meeting.id,
+        format,
+        include_transcript: true,
+        include_summary: true,
+        include_action_items: true,
+      });
+      const blob = await api.get(res.data.download_url, { responseType: 'blob' });
+      const url = window.URL.createObjectURL(blob.data);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = res.data.filename;
+      a.click();
+      window.URL.revokeObjectURL(url);
+    } catch (err: any) {
+      showToast.error(err?.response?.data?.detail || 'Xuất file thất bại. Vui lòng thử lại.');
+    }
+  };
+  const handleUpdateActionItem = async (actionId: string, updates: Record<string, string>) => {
+    try {
+      await api.patch(`/api/action-items/${actionId}`, updates);
+      query.refetch();
+      showToast.success('Đã cập nhật việc cần làm');
+    } catch (err: any) {
+      showToast.error(err?.response?.data?.detail || 'Không thể cập nhật việc cần làm');
+    }
+  };
 
   return (
+    <>
     <div className="mx-auto max-w-5xl space-y-6">
       <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="space-y-4">
         <div className="flex items-center justify-between">
@@ -206,6 +317,15 @@ const MeetingDetail: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-2">
+            {canJoinRoom && (
+              <button
+                onClick={() => navigate(`/room/${meeting.code || meeting.id}`)}
+                className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-emerald-700"
+              >
+                <Sparkles size={16} />
+                Vào phòng họp
+              </button>
+            )}
             {canManageMeeting && (
               <>
                 <button
@@ -226,14 +346,33 @@ const MeetingDetail: React.FC = () => {
             )}
             <button
               disabled={isUpcomingMeeting}
+              onClick={() => handleExportMeeting('pdf')}
               className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-sm font-bold text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800"
             >
               <Download size={16} />
-              Xuat
+              PDF
             </button>
-            <button className="inline-flex items-center gap-2 rounded-xl bg-primary-600 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-primary-700">
+            <button
+              disabled={isUpcomingMeeting}
+              onClick={() => handleExportMeeting('docx')}
+              className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-sm font-bold text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800"
+            >
+              <Download size={16} />
+              DOCX
+            </button>
+            <button
+              onClick={() => {
+                const url = window.location.href;
+                navigator.clipboard.writeText(url).then(() => {
+                  alert('Đã sao chép liên kết!');
+                }).catch(() => {
+                  prompt('Sao chép liên kết:', url);
+                });
+              }}
+              className="inline-flex items-center gap-2 rounded-xl bg-primary-600 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-primary-700"
+            >
               <Share2 size={16} />
-              Chia se
+              Chia sẻ
             </button>
           </div>
         </div>
@@ -331,22 +470,69 @@ const MeetingDetail: React.FC = () => {
 
                   {activeTab === 'transcript' && (
                     <motion.div key="transcript" initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 10 }} className="space-y-6">
-                      <div className="flex items-center justify-between">
-                        <h3 className="text-lg font-black text-gray-900 dark:text-slate-100">Ban ghi chi tiet</h3>
-                        {meeting.transcriptUrl && (
-                          <a href={meeting.transcriptUrl} target="_blank" rel="noreferrer" className="text-sm font-bold text-primary-600 hover:text-primary-700">
-                            Tai ban ghi
-                          </a>
-                        )}
+                      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                        <div>
+                          <h3 className="text-lg font-black text-gray-900 dark:text-slate-100">Bản ghi chi tiết</h3>
+                          <p className="mt-1 text-xs font-bold text-gray-500 dark:text-slate-400">
+                            {transcriptGroups.length > 0
+                              ? `${visibleTranscriptGroups.length}/${transcriptGroups.length} lượt nói`
+                              : 'Timeline cuộc họp'}
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          {transcriptSpeakers.length > 1 && (
+                            <select
+                              value={selectedTranscriptSpeaker}
+                              onChange={(event) => setSelectedTranscriptSpeaker(event.target.value)}
+                              className="h-10 rounded-xl border border-gray-200 bg-white px-3 text-sm font-bold text-gray-700 outline-none transition focus:border-primary-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                            >
+                              <option value="all">Tất cả người nói</option>
+                              {transcriptSpeakers.map((speaker) => (
+                                <option key={speaker} value={speaker}>
+                                  {speaker}
+                                </option>
+                              ))}
+                            </select>
+                          )}
+                          {meeting.transcriptUrl && (
+                            <a href={meeting.transcriptUrl} target="_blank" rel="noreferrer" className="text-sm font-bold text-primary-600 hover:text-primary-700">
+                              Tải bản ghi
+                            </a>
+                          )}
+                        </div>
                       </div>
-                      {transcript ? (
-                        <div className="rounded-2xl border border-gray-100 bg-gray-50 p-6 text-sm leading-7 text-gray-700 dark:border-slate-800 dark:bg-slate-800/50 dark:text-slate-300">
+                      {visibleTranscriptGroups.length > 0 ? (
+                        <div className="max-h-[68vh] space-y-4 overflow-y-auto pr-2">
+                          {visibleTranscriptGroups.map((group) => (
+                            <div key={group.id} className="rounded-2xl border border-gray-100 bg-gray-50 p-5 dark:border-slate-800 dark:bg-slate-800/50">
+                              <div className="mb-3 flex flex-wrap items-center gap-2 text-xs font-bold text-gray-500 dark:text-slate-400">
+                                <span className="rounded-full bg-white px-2.5 py-1 dark:bg-slate-900">{formatSegmentTime(group.startTime)}</span>
+                                <span className="text-gray-800 dark:text-slate-200">{group.speakerLabel}</span>
+                                {group.languages.map((language) => (
+                                  <span key={language} className="rounded-full bg-primary-50 px-2 py-1 uppercase text-primary-700 dark:bg-primary-900/20 dark:text-primary-300">
+                                    {language}
+                                  </span>
+                                ))}
+                              </div>
+                              <p className="whitespace-pre-wrap text-sm leading-7 text-gray-700 dark:text-slate-300">
+                                {group.texts.join(' ')}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      ) : transcriptGroups.length > 0 ? (
+                        <div className="rounded-2xl border border-dashed border-gray-200 bg-gray-50 p-10 text-center dark:border-slate-700 dark:bg-slate-800/30">
+                          <MessageSquare size={32} className="mx-auto mb-3 text-gray-300 dark:text-slate-600" />
+                          <p className="text-sm font-bold text-gray-500 dark:text-slate-400">Không có bản ghi của người nói này</p>
+                        </div>
+                      ) : transcript ? (
+                        <div className="max-h-[68vh] overflow-y-auto whitespace-pre-wrap rounded-2xl border border-gray-100 bg-gray-50 p-6 pr-4 text-sm leading-7 text-gray-700 dark:border-slate-800 dark:bg-slate-800/50 dark:text-slate-300">
                           {transcript}
                         </div>
                       ) : (
                         <div className="rounded-2xl border border-dashed border-gray-200 bg-gray-50 p-10 text-center dark:border-slate-700 dark:bg-slate-800/30">
                           <MessageSquare size={32} className="mx-auto mb-3 text-gray-300 dark:text-slate-600" />
-                          <p className="text-sm font-bold text-gray-500 dark:text-slate-400">Chua co ban ghi cho cuoc hop nay</p>
+                          <p className="text-sm font-bold text-gray-500 dark:text-slate-400">Chưa có bản ghi cho cuộc họp này</p>
                         </div>
                       )}
                     </motion.div>
@@ -371,9 +557,38 @@ const MeetingDetail: React.FC = () => {
                                     <p className="mt-1 text-sm text-gray-600 dark:text-slate-400">{item.description}</p>
                                   )}
                                 </div>
-                                <span className="rounded-full bg-primary-50 px-2.5 py-1 text-[10px] font-black uppercase tracking-wider text-primary-700 dark:bg-primary-900/20 dark:text-primary-300">
-                                  {item.status}
-                                </span>
+                                <select
+                                  value={item.status}
+                                  onChange={(event) => handleUpdateActionItem(item.id, { status: event.target.value })}
+                                  className="rounded-full border border-primary-100 bg-primary-50 px-2.5 py-1 text-[10px] font-black uppercase tracking-wider text-primary-700 outline-none dark:border-primary-900/30 dark:bg-primary-900/20 dark:text-primary-300"
+                                >
+                                  <option value="PENDING">PENDING</option>
+                                  <option value="IN_PROGRESS">IN_PROGRESS</option>
+                                  <option value="COMPLETED">COMPLETED</option>
+                                  <option value="CANCELLED">CANCELLED</option>
+                                </select>
+                              </div>
+                              <div className="mt-3 flex flex-wrap gap-2">
+                                <input
+                                  defaultValue={item.assigned_email || ''}
+                                  placeholder="Email người phụ trách"
+                                  onBlur={(event) => {
+                                    if (event.target.value !== (item.assigned_email || '')) {
+                                      handleUpdateActionItem(item.id, { assigned_email: event.target.value });
+                                    }
+                                  }}
+                                  className="h-9 min-w-52 rounded-xl border border-gray-200 bg-white px-3 text-xs font-semibold outline-none dark:border-slate-700 dark:bg-slate-900"
+                                />
+                                <input
+                                  type="date"
+                                  defaultValue={item.due_date || ''}
+                                  onBlur={(event) => {
+                                    if (event.target.value !== (item.due_date || '')) {
+                                      handleUpdateActionItem(item.id, { due_date: event.target.value });
+                                    }
+                                  }}
+                                  className="h-9 rounded-xl border border-gray-200 bg-white px-3 text-xs font-semibold outline-none dark:border-slate-700 dark:bg-slate-900"
+                                />
                               </div>
                             </div>
                           ))}
@@ -537,6 +752,13 @@ const MeetingDetail: React.FC = () => {
         </aside>
       </div>
     </div>
+    <EditTitleModal
+      isOpen={isEditTitleOpen}
+      currentTitle={meeting.title}
+      onClose={() => setIsEditTitleOpen(false)}
+      onSave={handleSaveTitle}
+    />
+    </>
   );
 };
 

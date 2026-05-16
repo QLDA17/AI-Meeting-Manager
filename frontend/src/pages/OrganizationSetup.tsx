@@ -32,13 +32,16 @@ interface PendingInvitation {
   created_at?: string;
 }
 
+const SETUP_REQUEST_TIMEOUT_MS = 8000;
+
 const OrganizationSetup: React.FC = () => {
   const navigate = useNavigate();
   const { user, refreshUser, logout } = useAuth();
-  const { createOrg, setCurrentOrg } = useOrgStore();
+  const { createOrg, setCurrentOrg, setOrgs, clearOrgContext } = useOrgStore();
   const [organizations, setOrganizations] = React.useState<Organization[]>([]);
   const [pendingInvitations, setPendingInvitations] = React.useState<PendingInvitation[]>([]);
   const [isLoading, setIsLoading] = React.useState(true);
+  const [loadError, setLoadError] = React.useState('');
   const [inviteCode, setInviteCode] = React.useState('');
   const [orgName, setOrgName] = React.useState('');
   const [orgDescription, setOrgDescription] = React.useState('');
@@ -56,32 +59,64 @@ const OrganizationSetup: React.FC = () => {
   };
 
   React.useEffect(() => {
+    let cancelled = false;
+
     const loadSetupData = async () => {
+      setIsLoading(true);
+      setLoadError('');
+      const controller = new AbortController();
+      const timeoutId = window.setTimeout(() => controller.abort(), SETUP_REQUEST_TIMEOUT_MS);
+
       try {
-        const [orgResponse, inviteResponse] = await Promise.all([
-          api.get('/api/organizations'),
-          api.get('/api/invitations/pending'),
-        ]);
+        const orgResponse = await api.get('/api/organizations', { signal: controller.signal });
+        if (cancelled) return;
+
         const nextOrganizations = Array.isArray(orgResponse.data)
           ? orgResponse.data.map(normalizeOrganization)
           : [];
-        const nextInvitations = Array.isArray(inviteResponse.data) ? inviteResponse.data : [];
         setOrganizations(nextOrganizations);
-        setPendingInvitations(nextInvitations);
+        setOrgs(nextOrganizations);
 
-        if (nextOrganizations.some((org) => org.approvalStatus === 'active')) {
+        const activeOrg = nextOrganizations.find((org) => org.approvalStatus === 'active');
+        if (activeOrg) {
+          setCurrentOrg(activeOrg.id);
           navigate('/dashboard', { replace: true });
+          return;
         }
-      } catch {
+
+        api
+          .get('/api/invitations/pending', { signal: controller.signal })
+          .then((inviteResponse) => {
+            if (!cancelled) {
+              setPendingInvitations(Array.isArray(inviteResponse.data) ? inviteResponse.data : []);
+            }
+          })
+          .catch(() => {
+            if (!cancelled) {
+              setPendingInvitations([]);
+            }
+          });
+      } catch (err: any) {
+        if (cancelled) return;
         setOrganizations([]);
         setPendingInvitations([]);
+        clearOrgContext();
+        setLoadError(
+          err?.response?.data?.detail || 'Khong tai duoc du lieu thiet lap to chuc. Vui long thu lai.',
+        );
       } finally {
-        setIsLoading(false);
+        if (!cancelled) {
+          setIsLoading(false);
+        }
+        window.clearTimeout(timeoutId);
       }
     };
 
     loadSetupData();
-  }, [navigate]);
+    return () => {
+      cancelled = true;
+    };
+  }, [clearOrgContext, navigate, setCurrentOrg, setOrgs]);
 
   const pendingOrganizations = organizations.filter((org) => org.approvalStatus === 'pending');
 
@@ -147,7 +182,10 @@ const OrganizationSetup: React.FC = () => {
   if (isLoading) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-slate-950 text-slate-200">
-        Dang tai thiet lap to chuc...
+        <div className="flex items-center gap-3">
+          <div className="h-6 w-6 animate-spin rounded-full border-2 border-primary-400 border-t-transparent" />
+          Dang tai thiet lap to chuc...
+        </div>
       </div>
     );
   }
@@ -179,6 +217,21 @@ const OrganizationSetup: React.FC = () => {
             Neu tao to chuc moi, he thong se chuyen yeu cau sang system admin de duyet.
           </p>
         </div>
+
+        {loadError && (
+          <div className="rounded-3xl border border-red-500/30 bg-red-500/10 p-5 text-sm font-semibold text-red-200">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <span>{loadError}</span>
+              <button
+                type="button"
+                onClick={() => window.location.reload()}
+                className="rounded-xl bg-red-500 px-4 py-2 text-white transition hover:bg-red-400"
+              >
+                Tai lai
+              </button>
+            </div>
+          </div>
+        )}
 
         {pendingOrganizations.length > 0 && (
           <div className="rounded-3xl border border-amber-500/30 bg-amber-500/10 p-6">

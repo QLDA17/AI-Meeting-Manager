@@ -13,6 +13,7 @@ import {
   EyeIcon,
   CheckCircle2,
   Mail,
+  Loader2,
 } from 'lucide-react';
 import type { User as UserType } from '../../types';
 import { useOrgStore } from '../../stores';
@@ -44,7 +45,7 @@ const roleConfig = {
 } as const;
 
 const OrgUsersTab: React.FC<OrgUsersTabProps> = ({ orgId }) => {
-  const { members, currentOrg, loadMembers } = useOrgStore();
+  const { members, currentOrg, loadMembers, loadOrgDetails } = useOrgStore();
   const [searchTerm, setSearchTerm] = useState('');
   const [roleFilter, setRoleFilter] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<string>('all');
@@ -53,7 +54,27 @@ const OrgUsersTab: React.FC<OrgUsersTabProps> = ({ orgId }) => {
 
   useEffect(() => {
     loadMembers(orgId);
-  }, [loadMembers, orgId]);
+    loadOrgDetails(orgId);
+  }, [loadMembers, loadOrgDetails, orgId]);
+
+  useEffect(() => {
+    const refreshOrgUsers = () => {
+      if (document.visibilityState === 'visible') {
+        loadMembers(orgId);
+        loadOrgDetails(orgId);
+      }
+    };
+
+    window.addEventListener('focus', refreshOrgUsers);
+    document.addEventListener('visibilitychange', refreshOrgUsers);
+    const timer = window.setInterval(refreshOrgUsers, 5000);
+
+    return () => {
+      window.removeEventListener('focus', refreshOrgUsers);
+      document.removeEventListener('visibilitychange', refreshOrgUsers);
+      window.clearInterval(timer);
+    };
+  }, [loadMembers, loadOrgDetails, orgId]);
 
   const orgUsers = useMemo(() => {
     return members.filter((user) => user.orgMemberships?.some((membership) => membership.orgId === orgId));
@@ -276,29 +297,118 @@ const OrgUsersTab: React.FC<OrgUsersTabProps> = ({ orgId }) => {
         </div>
       </div>
 
-      {showInviteModal && <InviteModal orgId={orgId} onClose={() => setShowInviteModal(false)} />}
+      {showInviteModal && (
+        <InviteModal
+          orgId={orgId}
+          onClose={() => setShowInviteModal(false)}
+          onInvited={() => {
+            loadMembers(orgId);
+            loadOrgDetails(orgId);
+          }}
+        />
+      )}
     </div>
   );
 };
 
-const InviteModal: React.FC<{ orgId: string; onClose: () => void }> = ({ orgId, onClose }) => {
-  const [email, setEmail] = useState('');
+interface SearchableUser {
+  id: string;
+  email: string;
+  displayName?: string;
+  username?: string;
+  avatarUrl?: string;
+}
+
+const InviteModal: React.FC<{ orgId: string; onClose: () => void; onInvited: () => void }> = ({
+  orgId,
+  onClose,
+  onInvited,
+}) => {
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState<SearchableUser[]>([]);
+  const [selectedUser, setSelectedUser] = useState<SearchableUser | null>(null);
   const [role, setRole] = useState<'member' | 'viewer' | 'org-admin'>('member');
   const [loading, setLoading] = useState(false);
+  const [searching, setSearching] = useState(false);
   const [success, setSuccess] = useState(false);
+  const [emailSent, setEmailSent] = useState(false);
+  const [alreadyPending, setAlreadyPending] = useState(false);
   const [error, setError] = useState('');
+
+  useEffect(() => {
+    const term = query.trim();
+    if (selectedUser || term.length < 2) {
+      setResults([]);
+      setSearching(false);
+      return;
+    }
+
+    let cancelled = false;
+    setSearching(true);
+    const timer = window.setTimeout(async () => {
+      try {
+        let response;
+        try {
+          response = await api.get(`/api/organizations/${orgId}/users/search`, {
+            params: { q: term },
+          });
+        } catch (primaryErr: any) {
+          if (![404, 405].includes(primaryErr?.response?.status)) {
+            throw primaryErr;
+          }
+          response = await api.get('/api/users/search', {
+            params: { organization_id: orgId, q: term },
+          });
+        }
+        if (!cancelled) {
+          setError('');
+          setResults(Array.isArray(response.data) ? response.data : []);
+        }
+      } catch (err: any) {
+        if (!cancelled) {
+          const detail = err.response?.data?.detail;
+          const status = err.response?.status;
+          setError(
+            detail
+              ? `${detail}`
+              : status
+                ? `Không tìm được người dùng. API trả lỗi ${status}.`
+                : 'Không tìm được người dùng. Kiểm tra backend đã reload chưa.',
+          );
+          setResults([]);
+        }
+      } finally {
+        if (!cancelled) {
+          setSearching(false);
+        }
+      }
+    }, 300);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [orgId, query, selectedUser]);
 
   const handleInvite = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    if (!selectedUser) {
+      setError('Vui lòng chọn một user đã đăng ký trong danh sách.');
+      return;
+    }
+
     setLoading(true);
     setError('');
     try {
-      await api.post('/api/invitations', {
-        email,
+      const response = await api.post('/api/invitations', {
+        email: selectedUser.email,
         organization_id: orgId,
         role,
       });
+      setEmailSent(Boolean(response.data?.emailSent));
+      setAlreadyPending(Boolean(response.data?.alreadyPending));
       setSuccess(true);
+      onInvited();
     } catch (err: any) {
       setError(err.response?.data?.detail || 'Lỗi khi gửi lời mời');
     } finally {
@@ -322,16 +432,85 @@ const InviteModal: React.FC<{ orgId: string; onClose: () => void }> = ({ orgId, 
           <form onSubmit={handleInvite} className="space-y-4">
             {error && <div className="rounded-lg bg-red-50 p-3 text-xs font-bold text-red-600">{error}</div>}
             <div className="space-y-2">
-              <label className="ml-1 text-[10px] font-black uppercase tracking-widest text-slate-500">Email nhân viên</label>
+              <label className="ml-1 text-[10px] font-black uppercase tracking-widest text-slate-500">Tìm Gmail/user đã đăng ký</label>
               <input
                 autoFocus
-                type="email"
-                placeholder="nhanvien@congty.com"
+                type="text"
+                placeholder="Nhập Gmail hoặc tên người dùng..."
                 className="h-12 w-full rounded-xl border-gray-100 bg-gray-50 px-4 text-sm focus:border-primary-500 focus:bg-white focus:ring-4 focus:ring-primary-500/10 dark:border-slate-800 dark:bg-slate-800 dark:text-white"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
+                value={selectedUser ? selectedUser.email : query}
+                onChange={(e) => {
+                  setSelectedUser(null);
+                  setQuery(e.target.value);
+                  setError('');
+                }}
                 required
               />
+              <div className="min-h-[88px] rounded-xl border border-gray-100 bg-gray-50 p-2 dark:border-slate-800 dark:bg-slate-800/60">
+                {searching ? (
+                  <div className="flex h-16 items-center justify-center gap-2 text-xs font-semibold text-slate-500">
+                    <Loader2 size={14} className="animate-spin" />
+                    Đang tìm...
+                  </div>
+                ) : selectedUser ? (
+                  <div className="flex items-center justify-between rounded-lg bg-white p-3 dark:bg-slate-900">
+                    <div className="flex items-center gap-3">
+                      <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary-100 text-sm font-bold text-primary-700 dark:bg-primary-900/40 dark:text-primary-200">
+                        {(selectedUser.displayName?.[0] || selectedUser.email[0]).toUpperCase()}
+                      </div>
+                      <div>
+                        <p className="text-sm font-bold text-gray-900 dark:text-white">
+                          {selectedUser.displayName || selectedUser.email}
+                        </p>
+                        <p className="text-xs text-slate-500">{selectedUser.email}</p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedUser(null);
+                        setQuery('');
+                      }}
+                      className="text-xs font-bold text-slate-500 hover:text-red-500"
+                    >
+                      Đổi
+                    </button>
+                  </div>
+                ) : query.trim().length < 2 ? (
+                  <div className="flex h-16 items-center justify-center text-xs text-slate-500">
+                    Nhập ít nhất 2 ký tự để tìm user.
+                  </div>
+                ) : results.length === 0 ? (
+                  <div className="flex h-16 items-center justify-center text-xs font-semibold text-slate-500">
+                    Chưa có user phù hợp, hoặc user này đã thuộc tổ chức.
+                  </div>
+                ) : (
+                  <div className="max-h-44 space-y-1 overflow-y-auto">
+                    {results.map((user) => (
+                      <button
+                        key={user.id}
+                        type="button"
+                        onClick={() => {
+                          setSelectedUser(user);
+                          setQuery(user.email);
+                          setResults([]);
+                        }}
+                        className="flex w-full items-center gap-3 rounded-lg p-2 text-left transition hover:bg-white dark:hover:bg-slate-900"
+                      >
+                        <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary-100 text-xs font-bold text-primary-700 dark:bg-primary-900/40 dark:text-primary-200">
+                          {(user.displayName?.[0] || user.email[0]).toUpperCase()}
+                        </div>
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-semibold text-gray-900 dark:text-white">
+                            {user.displayName || user.email}
+                          </p>
+                          <p className="truncate text-xs text-slate-500">{user.email}</p>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
             <div className="space-y-2">
               <label className="ml-1 text-[10px] font-black uppercase tracking-widest text-slate-500">Vai trò</label>
@@ -347,22 +526,26 @@ const InviteModal: React.FC<{ orgId: string; onClose: () => void }> = ({ orgId, 
             </div>
             <button
               type="submit"
-              disabled={loading}
+              disabled={loading || !selectedUser}
               className="h-12 w-full rounded-xl bg-primary-600 font-bold text-white transition-colors hover:bg-primary-700 disabled:opacity-50"
             >
-              {loading ? 'Đang gửi...' : 'Gửi lời mời qua email'}
+              {loading ? 'Đang gửi...' : 'Gửi lời mời'}
             </button>
           </form>
         ) : (
           <div className="space-y-6 text-center">
             <div className="rounded-2xl bg-green-50 p-4 dark:bg-green-900/20">
-              <p className="text-sm font-medium text-green-700 dark:text-green-400">Lời mời đã được gửi thành công!</p>
-              <p className="mt-1 text-xs text-slate-500">Người nhận sẽ nhận được email với liên kết tham gia tổ chức.</p>
+              <p className="text-sm font-medium text-green-700 dark:text-green-400">
+                {alreadyPending ? 'User này đã có lời mời đang chờ.' : 'Lời mời đã được gửi thành công!'}
+              </p>
+              <p className="mt-1 text-xs text-slate-500">
+                Người nhận sẽ thấy thông báo trong app{emailSent ? ' và email mời.' : '.'}
+              </p>
             </div>
             <div className="rounded-xl border border-dashed border-gray-300 p-4 text-sm text-slate-600 dark:border-slate-700 dark:text-slate-300">
               <div className="flex items-center justify-center gap-2 font-semibold">
                 <Mail size={14} />
-                {email}
+                {selectedUser?.email}
               </div>
             </div>
             <button

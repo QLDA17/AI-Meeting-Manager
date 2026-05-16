@@ -1,4 +1,5 @@
 from sqlalchemy import Column, String, Integer, DateTime, Boolean, ForeignKey, Text, Float, JSON, Numeric, Date, CheckConstraint, UniqueConstraint, Index
+from typing import Optional
 from sqlalchemy.orm import relationship, Mapped, mapped_column
 from sqlalchemy.sql import func
 import uuid
@@ -16,7 +17,7 @@ class User(Base):
     username: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
-    role: Mapped[str] = mapped_column(String(20), nullable=False)  # system-admin, org-admin, group-admin, member, viewer
+    role: Mapped[str] = mapped_column(String(20), nullable=False)  # system-admin, member
     first_name: Mapped[str] = mapped_column(String(100), nullable=True)
     last_name: Mapped[str] = mapped_column(String(100), nullable=True)
     avatar_url: Mapped[str] = mapped_column(String(500), nullable=True)
@@ -25,12 +26,16 @@ class User(Base):
     notification_preferences: Mapped[dict] = mapped_column(JSON, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     is_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    phone: Mapped[str] = mapped_column(String(20), nullable=True)
+    gender: Mapped[str] = mapped_column(String(10), nullable=True)
+    date_of_birth: Mapped[DateTime] = mapped_column(DateTime, nullable=True)
     last_login: Mapped[DateTime] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
     __table_args__ = (
-        CheckConstraint("role IN ('system-admin', 'org-admin', 'group-admin', 'member', 'viewer')", name='check_user_role'),
+        CheckConstraint("role IN ('system-admin', 'member')", name='check_user_role'),
+        CheckConstraint("gender IS NULL OR gender IN ('male', 'female', 'other')", name='check_user_gender'),
         Index('idx_users_email', 'email'),
     )
 
@@ -44,6 +49,7 @@ class User(Base):
     created_action_items = relationship("ActionItem", back_populates="created_by_user", foreign_keys="ActionItem.created_by")
     sent_invitations = relationship("Invitation", back_populates="invited_by_user", foreign_keys="Invitation.invited_by")
     accepted_invitations = relationship("Invitation", back_populates="accepted_by_user", foreign_keys="Invitation.accepted_by")
+    notifications = relationship("Notification", back_populates="recipient", cascade="all, delete-orphan")
     export_files = relationship("ExportFile", back_populates="generated_by_user")
     glossary_terms = relationship("GlossaryTerm", back_populates="created_by_user")
 
@@ -144,6 +150,7 @@ class GroupMessage(Base):
     group_id: Mapped[str] = mapped_column(String(36), ForeignKey("groups.id", ondelete="CASCADE"), nullable=False)
     user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     text: Mapped[str] = mapped_column(Text, nullable=False)
+    reply_to_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("group_messages.id", ondelete="SET NULL"), nullable=True)
     reactions: Mapped[dict] = mapped_column(JSON, nullable=True) # e.g. [{"emoji": "👍", "count": 1}]
     is_pinned: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now())
@@ -151,6 +158,7 @@ class GroupMessage(Base):
 
     group = relationship("Group", back_populates="messages")
     user = relationship("User", foreign_keys=[user_id])
+    reply_to = relationship("GroupMessage", remote_side=[id], foreign_keys=[reply_to_id])
 
 
 class Invitation(Base):
@@ -162,6 +170,7 @@ class Invitation(Base):
     group_id: Mapped[str] = mapped_column(String(36), ForeignKey("groups.id", ondelete="CASCADE"), nullable=True)
     role: Mapped[str] = mapped_column(String(20), default="member")
     token_hash: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    token_sha256: Mapped[str] = mapped_column(String(64), unique=True, nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(20), default="pending")
     expires_at: Mapped[DateTime] = mapped_column(DateTime, nullable=False)
     accepted_at: Mapped[DateTime] = mapped_column(DateTime, nullable=True)
@@ -180,6 +189,32 @@ class Invitation(Base):
     group = relationship("Group", back_populates="invitations")
     invited_by_user = relationship("User", back_populates="sent_invitations", foreign_keys=[invited_by])
     accepted_by_user = relationship("User", back_populates="accepted_invitations", foreign_keys=[accepted_by])
+
+
+class Notification(Base):
+    __tablename__ = "notifications"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    recipient_user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    type: Mapped[str] = mapped_column(String(50), nullable=False, default="system")
+    priority: Mapped[str] = mapped_column(String(20), nullable=False, default="recent")
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    metadata_json: Mapped[dict] = mapped_column("metadata", JSON, nullable=True)
+    is_read: Mapped[bool] = mapped_column(Boolean, default=False)
+    source_type: Mapped[str] = mapped_column(String(50), nullable=True)
+    source_id: Mapped[str] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now())
+    read_at: Mapped[DateTime] = mapped_column(DateTime, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint("priority IN ('urgent', 'today', 'recent')", name='check_notification_priority'),
+        Index('idx_notifications_recipient_created', 'recipient_user_id', 'created_at'),
+        Index('idx_notifications_source', 'source_type', 'source_id'),
+        {"mysql_engine": "InnoDB", "mysql_charset": "utf8mb4", "mysql_collate": "utf8mb4_unicode_ci"},
+    )
+
+    recipient = relationship("User", back_populates="notifications")
 
 
 class PasswordResetOtp(Base):
@@ -334,12 +369,36 @@ class TranscriptSegment(Base):
     start_time: Mapped[float] = mapped_column(Numeric(10, 3), nullable=False)
     end_time: Mapped[float] = mapped_column(Numeric(10, 3), nullable=False)
     text: Mapped[str] = mapped_column(Text, nullable=False)
+    language: Mapped[str] = mapped_column(String(10), default='auto')
     confidence_score: Mapped[float] = mapped_column(Numeric(3, 2), nullable=True)
     word_count: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now())
 
     # Relationships
     transcript = relationship("Transcript", back_populates="segments")
+
+
+class MeetingTranscriptDraft(Base):
+    __tablename__ = "meeting_transcript_drafts"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    meeting_id: Mapped[str] = mapped_column(String(36), ForeignKey("meetings.id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    segments: Mapped[dict] = mapped_column(JSON, nullable=True)
+    language: Mapped[str] = mapped_column(String(10), default='auto')
+    provider: Mapped[str] = mapped_column(String(50), nullable=True)
+    model: Mapped[str] = mapped_column(String(100), nullable=True)
+    start_ms: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint('meeting_id', 'user_id', 'chunk_index', name='uq_meeting_draft_chunk'),
+        Index('idx_meeting_draft_meeting_user', 'meeting_id', 'user_id'),
+        {"mysql_engine": "InnoDB", "mysql_charset": "utf8mb4", "mysql_collate": "utf8mb4_unicode_ci"},
+    )
 
 
 # ==================== Summaries & Action Items ====================

@@ -4,14 +4,17 @@ import time
 import json
 import logging
 import re
+import hashlib
+import glob
+import subprocess
 from typing import List, Optional, Dict, Any
-from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, BackgroundTasks, status, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, BackgroundTasks, status, Request, Form
+from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
 from pydantic import BaseModel
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import or_
+from sqlalchemy import or_, func
 import uuid
 import secrets
 
@@ -42,11 +45,12 @@ from src.api.crud import (
     create_group, get_group_by_id, get_groups_by_org, update_group, delete_group,
     get_group_memberships, add_user_to_group, update_group_membership, remove_user_from_group,
     get_group_messages, create_group_message, update_group_message, delete_group_message,
-    get_meetings, get_meeting_by_id, create_meeting, update_meeting,
+    get_meetings, get_meeting_by_id, check_meeting_overlap, create_meeting, update_meeting, add_meeting_participant, remove_meeting_participant,
     get_action_item_by_id, update_action_item, delete_action_item,
     create_transcript, create_transcript_segments_bulk,
     create_meeting_summary, create_action_item,
     get_glossary_term_by_id, get_glossary_terms, create_glossary_term, update_glossary_term, delete_glossary_term,
+    create_audio_file,
 )
 # Lazy import torch-dependent modules to avoid startup errors
 # from src.cost.cost_logger import CostLogger
@@ -57,6 +61,9 @@ from src.api.notifications import router as notifications_router, send_email, FR
 from src.api.swagger import custom_openapi
 # from src.cost.api import get_admin_costs, get_admin_performance
 # from src.api.jobs import MeetingProcessingJob, JOBS
+
+# Audio upload storage directory
+AUDIO_UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads", "audio")
 
 # Initialize SQLite tables automatically in development fallback mode.
 if str(config.database.url).startswith("sqlite"):
@@ -75,6 +82,36 @@ app = FastAPI(
 # Custom OpenAPI schema - temporarily disabled
 # app.openapi = lambda: custom_openapi(app)
 app.router.redirect_slashes = False
+
+
+def _ensure_column(table_name: str, column_name: str, ddl: str) -> None:
+    try:
+        with engine.begin() as connection:
+            dialect = connection.dialect.name
+            if dialect == "sqlite":
+                existing = [row[1] for row in connection.exec_driver_sql(f"PRAGMA table_info({table_name})").fetchall()]
+                if column_name not in existing:
+                    connection.exec_driver_sql(f"ALTER TABLE {table_name} ADD COLUMN {ddl}")
+            elif dialect in {"mysql", "mariadb"}:
+                exists = connection.exec_driver_sql(
+                    """
+                    SELECT COUNT(*)
+                    FROM information_schema.columns
+                    WHERE table_schema = DATABASE()
+                      AND table_name = %s
+                      AND column_name = %s
+                    """,
+                    (table_name, column_name),
+                ).scalar()
+                if not exists:
+                    connection.exec_driver_sql(f"ALTER TABLE {table_name} ADD COLUMN {ddl}")
+    except Exception as exc:
+        logger.warning("Failed to ensure column %s.%s: %s", table_name, column_name, exc)
+
+
+def _ensure_meeting_runtime_columns() -> None:
+    _ensure_column("transcript_segments", "language", "language VARCHAR(10) DEFAULT 'auto'")
+
 
 # ============= MIDDLEWARE =============
 
@@ -113,6 +150,9 @@ async def startup_event():
     try:
         # Ensure new lightweight runtime tables exist even without full migrations.
         models.AuditLog.__table__.create(bind=engine, checkfirst=True)
+        models.Notification.__table__.create(bind=engine, checkfirst=True)
+        models.MeetingTranscriptDraft.__table__.create(bind=engine, checkfirst=True)
+        _ensure_meeting_runtime_columns()
 
         # 1. Validate database connection
         db_status = db_health_check()
@@ -240,6 +280,31 @@ ADMIN_SYSTEM_SETTINGS: Dict[str, Any] = {
     "transcript_retention_policy": "forever",
     "maintenance_mode": False,
 }
+
+# Persist admin settings to JSON file
+_SETTINGS_FILE = os.path.join(os.path.dirname(__file__), "..", "..", "data", "admin_settings.json")
+
+def _load_admin_settings() -> None:
+    """Load admin settings from JSON file if it exists."""
+    global ADMIN_SYSTEM_SETTINGS
+    try:
+        if os.path.exists(_SETTINGS_FILE):
+            with open(_SETTINGS_FILE, "r") as f:
+                saved = json.load(f)
+                ADMIN_SYSTEM_SETTINGS.update(saved)
+    except Exception:
+        pass
+
+def _save_admin_settings() -> None:
+    """Save admin settings to JSON file."""
+    try:
+        os.makedirs(os.path.dirname(_SETTINGS_FILE), exist_ok=True)
+        with open(_SETTINGS_FILE, "w") as f:
+            json.dump(ADMIN_SYSTEM_SETTINGS, f, indent=2)
+    except Exception:
+        pass
+
+_load_admin_settings()
 ADMIN_BROADCAST_HISTORY: List[Dict[str, Any]] = []
 
 
@@ -305,6 +370,61 @@ def push_runtime_notification(notification: Dict[str, Any]) -> None:
     RUNTIME_NOTIFICATIONS.append(notification)
     if len(RUNTIME_NOTIFICATIONS) > MAX_RUNTIME_NOTIFICATIONS:
         del RUNTIME_NOTIFICATIONS[:-MAX_RUNTIME_NOTIFICATIONS]
+
+
+def notification_payload(notification: models.Notification) -> Dict[str, Any]:
+    return {
+        "id": notification.id,
+        "type": notification.type,
+        "priority": notification.priority,
+        "title": notification.title,
+        "message": notification.message,
+        "timestamp": (notification.created_at or datetime.utcnow()).isoformat(),
+        "isRead": bool(notification.is_read),
+        "metadata": notification.metadata_json or {},
+    }
+
+
+def create_persisted_notification(
+    db: Session,
+    *,
+    recipient_user_id: str,
+    notification_type: str,
+    priority: str,
+    title: str,
+    message: str,
+    metadata: Optional[Dict[str, Any]] = None,
+    source_type: Optional[str] = None,
+    source_id: Optional[str] = None,
+    commit: bool = True,
+) -> models.Notification:
+    existing = None
+    if source_type and source_id:
+        existing = db.query(models.Notification).filter(
+            models.Notification.recipient_user_id == recipient_user_id,
+            models.Notification.source_type == source_type,
+            models.Notification.source_id == source_id,
+        ).first()
+    if existing:
+        return existing
+
+    notification = models.Notification(
+        recipient_user_id=recipient_user_id,
+        type=notification_type,
+        priority=priority,
+        title=title,
+        message=message,
+        metadata_json=metadata or {},
+        source_type=source_type,
+        source_id=source_id,
+    )
+    db.add(notification)
+    if commit:
+        db.commit()
+        db.refresh(notification)
+    else:
+        db.flush()
+    return notification
 
 
 def get_org_admin_recipient_ids(db: Session, organization_id: str, actor_user_id: str) -> List[str]:
@@ -423,6 +543,9 @@ def format_user_payload(user: models.User) -> Dict[str, Any]:
         "firstName": user.first_name,
         "lastName": user.last_name,
         "avatarUrl": user.avatar_url,
+        "phone": user.phone,
+        "gender": user.gender,
+        "dateOfBirth": user.date_of_birth.isoformat() if user.date_of_birth else None,
         "language": user.language or "vi",
         "timezone": user.timezone or "Asia/Ho_Chi_Minh",
         "notificationPreferences": user.notification_preferences or {},
@@ -475,7 +598,85 @@ def _latest_processed_record(
 ) -> Optional[Any]:
     successful = [item for item in items or [] if getattr(item, "processing_status", None) == success_status]
     pool = successful or (list(items or []) if fallback_to_any else [])
-    return max(pool, key=lambda item: item.created_at or datetime.min, default=None)
+    return max(pool, key=lambda item: getattr(item, "updated_at", None) or item.created_at or datetime.min, default=None)
+
+
+def split_transcript_content_for_display(content: str, max_chars: int = 700) -> List[str]:
+    if not content or not content.strip():
+        return []
+
+    lines = [line.strip() for line in content.splitlines() if line.strip()]
+    if len(lines) > 1:
+        return lines
+
+    sentences = [item.strip() for item in re.split(r"(?<=[.!?。！？])\s+", content.strip()) if item.strip()]
+    if len(sentences) <= 1:
+        text = content.strip()
+        return [text[index:index + max_chars].strip() for index in range(0, len(text), max_chars) if text[index:index + max_chars].strip()]
+
+    chunks: List[str] = []
+    current = ""
+    for sentence in sentences:
+        if current and len(current) + len(sentence) + 1 > max_chars:
+            chunks.append(current.strip())
+            current = sentence
+        else:
+            current = f"{current} {sentence}".strip()
+    if current:
+        chunks.append(current.strip())
+    return chunks
+
+
+def transcript_segment_response_payloads(transcript: Optional[models.Transcript]) -> List[Dict[str, Any]]:
+    if not transcript:
+        return []
+
+    ordered_segments = sorted(
+        transcript.segments or [],
+        key=lambda segment: (
+            float(segment.start_time or 0),
+            segment.created_at or datetime.min,
+            segment.id,
+        ),
+    )
+
+    if ordered_segments:
+        return [
+            {
+                "id": segment.id,
+                "transcript_id": segment.transcript_id,
+                "speaker_label": segment.speaker_label or "Speaker_01",
+                "start_time": float(segment.start_time or 0),
+                "end_time": float(segment.end_time or 0),
+                "text": segment.text or "",
+                "language": getattr(segment, "language", None) or transcript.language or "auto",
+                "confidence_score": float(segment.confidence_score) if segment.confidence_score is not None else None,
+                "word_count": segment.word_count,
+                "created_at": segment.created_at,
+            }
+            for segment in ordered_segments
+            if (segment.text or "").strip()
+        ]
+
+    fallback_chunks = split_transcript_content_for_display(transcript.content or "")
+    payloads: List[Dict[str, Any]] = []
+    start_time = 0.0
+    for index, chunk in enumerate(fallback_chunks):
+        end_time = estimate_segment_end(start_time, chunk)
+        payloads.append({
+            "id": f"{transcript.id[:28]}-{index:03d}",
+            "transcript_id": transcript.id,
+            "speaker_label": "Speaker_01",
+            "start_time": start_time,
+            "end_time": end_time,
+            "text": chunk,
+            "language": transcript.language or "auto",
+            "confidence_score": None,
+            "word_count": len(chunk.split()),
+            "created_at": transcript.created_at,
+        })
+        start_time = end_time
+    return payloads
 
 
 def _extract_json_object(raw_text: str) -> Dict[str, Any]:
@@ -520,7 +721,37 @@ def _normalize_analysis_payload(payload: Dict[str, Any]) -> schemas.MeetingAnaly
     return schemas.MeetingAnalysisOutput.model_validate(normalized)
 
 
-def build_structured_summary_prompts(transcript: str, custom_instruction: str, language: str = "vi") -> tuple[str, str]:
+def build_glossary_context(db: Session, organization_id: Optional[str]) -> str:
+    query = db.query(models.GlossaryTerm).filter(models.GlossaryTerm.is_active == True)
+    if organization_id:
+        query = query.filter(or_(models.GlossaryTerm.organization_id.is_(None), models.GlossaryTerm.organization_id == organization_id))
+    else:
+        query = query.filter(models.GlossaryTerm.organization_id.is_(None))
+    terms = query.order_by(models.GlossaryTerm.term.asc()).limit(80).all()
+    if not terms:
+        return ""
+    lines = []
+    for term in terms:
+        translations = [
+            value for value in [
+                term.translation_vi,
+                term.translation_en,
+                term.translation_ja,
+                term.translation_zh,
+                term.translation_ko,
+            ] if value
+        ]
+        suffix = f" => {', '.join(translations)}" if translations else ""
+        lines.append(f"- {term.term}{suffix}")
+    return "\n".join(lines)
+
+
+def build_structured_summary_prompts(
+    transcript: str,
+    custom_instruction: str,
+    language: str = "vi",
+    glossary_context: str = "",
+) -> tuple[str, str]:
     lang_names = {"vi": "Vietnamese", "en": "English", "zh": "Chinese", "ja": "Japanese", "ko": "Korean"}
     lang_name = lang_names.get(language, "Vietnamese")
 
@@ -533,8 +764,14 @@ def build_structured_summary_prompts(transcript: str, custom_instruction: str, l
         f"key_points and decisions are arrays of strings. "
         f"action_items is an array of objects with keys: task, owner, deadline."
     )
+    glossary_block = (
+        f"\nInternal glossary. Preserve these names/terms exactly when they appear, and use the translations as context:\n{glossary_context}\n"
+        if glossary_context
+        else ""
+    )
     user_prompt = (
         f"{custom_instruction.strip()}\n\n"
+        f"{glossary_block}\n"
         f"Return JSON in exactly this schema:\n"
         "{\n"
         '  "meeting_summary": "string (detailed, at least 3 paragraphs)",\n'
@@ -630,6 +867,7 @@ def build_meeting_detail_payload(meeting: models.Meeting) -> Dict[str, Any]:
         "participants": meeting.participants or [],
         "audio_files": meeting.audio_files or [],
         "transcripts": meeting.transcripts or [],
+        "transcript_segments": transcript_segment_response_payloads(latest_transcript),
         "summaries": meeting.summaries or [],
         "action_items": meeting.action_items or [],
         "transcript_content": latest_transcript.content if latest_transcript else None,
@@ -685,28 +923,164 @@ def normalize_global_role(role: Optional[str]) -> str:
     return "system-admin" if role == "system-admin" else "member"
 
 
+def normalize_meeting_datetime(value: Optional[datetime]) -> Optional[datetime]:
+    if not value:
+        return value
+    if value.tzinfo:
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value
+
+
+def require_meeting_manager(db: Session, user: models.User, meeting: models.Meeting) -> None:
+    if user.role == "system-admin" or meeting.created_by == user.id:
+        return
+
+    org_role = auth.get_user_org_role(db, user, meeting.organization_id)
+    if org_role == "org-admin":
+        return
+
+    if meeting.group_id and auth.get_user_group_role(db, user, meeting.group_id) == "group-admin":
+        return
+
+    raise HTTPException(status_code=403, detail="Bạn không có quyền chỉnh sửa cuộc họp này")
+
+
+def normalize_segment_payload(segment: Dict[str, Any], default_language: str = "auto") -> Dict[str, Any]:
+    return {
+        "speaker_label": segment.get("speaker_label") or segment.get("speaker") or "Speaker_01",
+        "start_time": float(segment.get("start_time", segment.get("start", 0)) or 0),
+        "end_time": float(segment.get("end_time", segment.get("end", 0)) or 0),
+        "text": segment.get("text", "") or "",
+        "language": segment.get("language") or segment.get("detected_language") or default_language or "auto",
+        "confidence_score": segment.get("confidence_score") or segment.get("confidence"),
+        "word_count": len((segment.get("text", "") or "").split()),
+    }
+
+
+def estimate_segment_end(start_seconds: float, text: str) -> float:
+    word_count = len((text or "").split())
+    return start_seconds + max(1.0, word_count * 0.38)
+
+
+def upsert_transcript_draft(
+    db: Session,
+    *,
+    meeting_id: str,
+    user_id: str,
+    chunk_index: int,
+    text: str,
+    segments: List[Dict[str, Any]],
+    language: str,
+    provider: str,
+    model: str,
+    start_ms: int = 0,
+) -> models.MeetingTranscriptDraft:
+    existing = db.query(models.MeetingTranscriptDraft).filter(
+        models.MeetingTranscriptDraft.meeting_id == meeting_id,
+        models.MeetingTranscriptDraft.user_id == user_id,
+        models.MeetingTranscriptDraft.chunk_index == chunk_index,
+    ).first()
+    if existing:
+        existing.text = text
+        existing.segments = segments
+        existing.language = language
+        existing.provider = provider
+        existing.model = model
+        existing.start_ms = start_ms
+        draft = existing
+    else:
+        draft = models.MeetingTranscriptDraft(
+            meeting_id=meeting_id,
+            user_id=user_id,
+            chunk_index=chunk_index,
+            text=text,
+            segments=segments,
+            language=language,
+            provider=provider,
+            model=model,
+            start_ms=start_ms,
+        )
+        db.add(draft)
+    db.commit()
+    db.refresh(draft)
+    return draft
+
+
+def build_transcript_from_drafts(db: Session, meeting_id: str) -> Dict[str, Any]:
+    drafts = db.query(models.MeetingTranscriptDraft).filter(
+        models.MeetingTranscriptDraft.meeting_id == meeting_id,
+    ).order_by(models.MeetingTranscriptDraft.chunk_index.asc(), models.MeetingTranscriptDraft.created_at.asc()).all()
+    texts: List[str] = []
+    segments: List[Dict[str, Any]] = []
+    languages: List[str] = []
+    for draft in drafts:
+        if draft.text:
+            texts.append(draft.text)
+        if draft.language:
+            languages.append(draft.language)
+        raw_segments = draft.segments or []
+        draft_segments = raw_segments
+        if not raw_segments and draft.text:
+            offset_seconds = (draft.start_ms or 0) / 1000
+            draft_segments = [{
+                "speaker": "Speaker_01",
+                "start": offset_seconds,
+                "end": estimate_segment_end(offset_seconds, draft.text),
+                "text": draft.text,
+                "language": draft.language or "auto",
+            }]
+        for segment in draft_segments:
+            normalized = normalize_segment_payload(segment, draft.language or "auto")
+            if normalized["text"]:
+                if raw_segments:
+                    offset_seconds = (draft.start_ms or 0) / 1000
+                    normalized["start_time"] = normalized["start_time"] + offset_seconds
+                    normalized["end_time"] = normalized["end_time"] + offset_seconds
+                segments.append(normalized)
+                languages.append(normalized["language"])
+    language = next((lang for lang in languages if lang and lang != "auto"), "auto")
+    return {"transcript": "\n".join(texts), "segments": segments, "language": language, "chunks": drafts}
+
+
 def resolve_pending_invitation_by_token(db: Session, token: str) -> Optional[models.Invitation]:
-    invitations = db.query(models.Invitation).options(
-        joinedload(models.Invitation.organization)
-    ).filter(models.Invitation.status == "pending").all()
-
     now = datetime.utcnow()
-    expired_changed = False
-    target_invitation = None
 
-    for invitation in invitations:
-        if invitation.expires_at < now:
-            invitation.status = "expired"
-            expired_changed = True
-            continue
-        if auth.verify_password(token, invitation.token_hash):
-            target_invitation = invitation
-            break
-
-    if expired_changed:
+    expired_count = db.query(models.Invitation).filter(
+        models.Invitation.status == "pending",
+        models.Invitation.expires_at < now,
+    ).update({"status": "expired"}, synchronize_session=False)
+    if expired_count:
         db.commit()
 
-    return target_invitation
+    token_sha256 = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    invitation = db.query(models.Invitation).options(
+        joinedload(models.Invitation.organization),
+        joinedload(models.Invitation.group),
+    ).filter(
+        models.Invitation.status == "pending",
+        models.Invitation.token_sha256 == token_sha256,
+        models.Invitation.expires_at >= now,
+    ).first()
+
+    if invitation and auth.verify_password(token, invitation.token_hash):
+        return invitation
+
+    # Backward compatibility for invitations created before token_sha256 existed.
+    legacy_invitations = db.query(models.Invitation).options(
+        joinedload(models.Invitation.organization),
+        joinedload(models.Invitation.group),
+    ).filter(
+        models.Invitation.status == "pending",
+        models.Invitation.token_sha256.is_(None),
+        models.Invitation.expires_at >= now,
+    ).all()
+    for legacy_invitation in legacy_invitations:
+        if auth.verify_password(token, legacy_invitation.token_hash):
+            legacy_invitation.token_sha256 = token_sha256
+            db.flush()
+            return legacy_invitation
+
+    return None
 
 
 def invitation_preview_payload(invitation: models.Invitation) -> Dict[str, Any]:
@@ -764,8 +1138,11 @@ def build_password_reset_email_html(reset_code: str, expires_minutes: int) -> st
 
 
 # Auth Endpoints
-@app.post("/api/auth/register", response_model=schemas.MessageResponse)
+@app.post("/api/auth/register", response_model=schemas.RegisterResponse)
 def register(req: schemas.RegisterRequest, db: Session = Depends(get_db)):
+    if not req.inviteToken and not ADMIN_SYSTEM_SETTINGS.get("public_registration_enabled", True):
+        raise HTTPException(status_code=403, detail="Public registration is disabled")
+
     username = build_unique_username(db, req.username, req.email)
     invitation = None
 
@@ -787,39 +1164,78 @@ def register(req: schemas.RegisterRequest, db: Session = Depends(get_db)):
     if db_user_email:
         raise HTTPException(status_code=409, detail="Email already registered")
 
-    user_data = {
-        "username": username,
-        "email": req.email,
-        "password": req.password,
-        "role": "member",
-        "first_name": req.firstName,
-        "last_name": req.lastName,
-    }
-    user = create_user(db, user_data)
+    try:
+        user_data = {
+            "username": username,
+            "email": req.email,
+            "password": req.password,
+            "role": "member",
+            "first_name": req.firstName,
+            "last_name": req.lastName,
+            "phone": req.phone,
+            "gender": req.gender,
+            "date_of_birth": datetime.combine(req.dateOfBirth, datetime.min.time()),
+        }
+        user = create_user(db, user_data, commit=False)
+        next_step = "setup_org"
+        accepted_invitation = False
 
-    if req.orgName and not invitation:
-        from src.api.crud import create_organization, add_user_to_organization
-        org = create_organization(
-            db,
-            {
-                "name": req.orgName,
-                "settings": {
-                    "approval_status": "pending",
-                    "requested_by_user_id": user.id,
+        if req.orgName and not invitation:
+            from src.api.crud import create_organization, add_user_to_organization
+            org = create_organization(
+                db,
+                {
+                    "name": req.orgName,
+                    "settings": {
+                        "approval_status": "pending",
+                        "requested_by_user_id": user.id,
+                    },
                 },
-            },
-        )
-        add_user_to_organization(db, user.id, org.id, "member")
+                commit=False,
+            )
+            add_user_to_organization(db, user.id, org.id, "member", commit=False)
+            next_step = "pending_approval"
 
-    if invitation:
-        from src.api.crud import add_user_to_organization
-        add_user_to_organization(db, user.id, invitation.organization_id, invitation.role)
-        invitation.status = "accepted"
-        invitation.accepted_at = datetime.utcnow()
-        invitation.accepted_by = user.id
+        if invitation:
+            from src.api.crud import add_user_to_organization, add_user_to_group
+            org_role = invitation.role if invitation.role in {"org-admin", "member", "viewer"} else "member"
+            add_user_to_organization(db, user.id, invitation.organization_id, org_role, commit=False)
+            if invitation.group_id:
+                group_role = invitation.role if invitation.role in {"group-admin", "member", "viewer"} else "member"
+                add_user_to_group(
+                    db,
+                    invitation.group_id,
+                    user.id,
+                    group_role,
+                    invited_by=invitation.invited_by,
+                    commit=False,
+                )
+            invitation.status = "accepted"
+            invitation.accepted_at = datetime.utcnow()
+            invitation.accepted_by = user.id
+            accepted_invitation = True
+            next_step = "dashboard"
+
         db.commit()
+        user = db.query(models.User).options(
+            joinedload(models.User.user_organizations).joinedload(models.UserOrganization.organization),
+            joinedload(models.User.group_memberships).joinedload(models.GroupMembership.group),
+        ).filter(models.User.id == user.id).first()
+    except Exception:
+        db.rollback()
+        raise
 
-    return {"message": "User created successfully"}
+    access_token = auth.create_access_token(
+        data={"sub": user.username},
+        expires_delta=timedelta(minutes=auth.ACCESS_TOKEN_EXPIRE_MINUTES),
+    )
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": format_user_payload(user),
+        "nextStep": next_step,
+        "acceptedInvitation": accepted_invitation,
+    }
 
 @app.post("/api/auth/login", response_model=Token)
 async def login(req: schemas.UserLogin, db: Session = Depends(get_db)):
@@ -835,6 +1251,9 @@ async def login(req: schemas.UserLogin, db: Session = Depends(get_db)):
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="Account is deactivated")
     
     access_token_expires = timedelta(minutes=auth.ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = auth.create_access_token(
@@ -1062,6 +1481,63 @@ def delete_organization_endpoint(
     )
     return {"message": "Organization deleted successfully"}
 
+
+@app.get("/api/organizations/{org_id}/users/search", response_model=List[schemas.UserSearchResult])
+def search_invitable_organization_users(
+    org_id: str,
+    q: str,
+    db: Session = Depends(get_db),
+    current_user = Depends(auth.get_current_user),
+):
+    auth.require_org_admin(db, current_user, org_id)
+    query = q.strip().lower()
+    if len(query) < 2:
+        return []
+
+    existing_member_user_ids = db.query(models.UserOrganization.user_id).filter(
+        models.UserOrganization.organization_id == org_id
+    )
+    search_pattern = f"%{query}%"
+    users = db.query(models.User).filter(
+        models.User.is_active == True,
+        ~models.User.id.in_(existing_member_user_ids),
+        or_(
+            models.User.email.ilike(search_pattern),
+            models.User.username.ilike(search_pattern),
+            models.User.first_name.ilike(search_pattern),
+            models.User.last_name.ilike(search_pattern),
+        ),
+    ).order_by(models.User.email.asc()).limit(10).all()
+
+    return [
+        {
+            "id": user.id,
+            "email": user.email,
+            "displayName": " ".join(
+                part for part in [user.first_name, user.last_name] if part
+            ) or user.username or user.email,
+            "username": user.username,
+            "avatarUrl": user.avatar_url,
+        }
+        for user in users
+    ]
+
+
+@app.get("/api/users/search", response_model=List[schemas.UserSearchResult])
+def search_invitable_users_alias(
+    organization_id: str,
+    q: str,
+    db: Session = Depends(get_db),
+    current_user = Depends(auth.get_current_user),
+):
+    return search_invitable_organization_users(
+        org_id=organization_id,
+        q=q,
+        db=db,
+        current_user=current_user,
+    )
+
+
 # Invitation Endpoints
 @app.post("/api/invitations", response_model=schemas.InvitationCreateResponse)
 def create_invitation_endpoint(
@@ -1070,35 +1546,73 @@ def create_invitation_endpoint(
     current_user = Depends(auth.get_current_user)
 ):
     auth.require_org_admin(db, current_user, inv_data.organization_id)
+    invite_email = inv_data.email.lower()
 
+    target_group = None
     if inv_data.group_id:
-        raise HTTPException(status_code=400, detail="Organization invitations do not support group_id")
+        target_group = db.query(models.Group).filter(
+            models.Group.id == inv_data.group_id,
+            models.Group.organization_id == inv_data.organization_id,
+        ).first()
+        if not target_group:
+            raise HTTPException(status_code=400, detail="Group does not belong to this organization")
 
+    target_user = db.query(models.User).filter(models.User.email == invite_email).first()
     existing_member = db.query(models.UserOrganization).join(models.User).filter(
-        models.User.email == inv_data.email,
+        models.User.email == invite_email,
         models.UserOrganization.organization_id == inv_data.organization_id,
     ).first()
     if existing_member:
         raise HTTPException(status_code=409, detail="User already belongs to this organization")
 
-    existing_invites = db.query(models.Invitation).filter(
-        models.Invitation.email == inv_data.email,
+    organization = db.query(models.Organization).filter(models.Organization.id == inv_data.organization_id).first()
+    existing_invite = db.query(models.Invitation).filter(
+        models.Invitation.email == invite_email,
         models.Invitation.organization_id == inv_data.organization_id,
         models.Invitation.status == "pending",
-    ).all()
-    for invite in existing_invites:
-        invite.status = "revoked"
+        models.Invitation.group_id == inv_data.group_id,
+    ).first()
+    if existing_invite:
+        if target_user:
+            create_persisted_notification(
+                db,
+                recipient_user_id=target_user.id,
+                notification_type="invitation",
+                priority="today",
+                title="Bạn có lời mời tham gia tổ chức",
+                message=f"{current_user.email} đã mời bạn tham gia {organization.name if organization else 'tổ chức'}.",
+                metadata={
+                    "invitationId": existing_invite.id,
+                    "organizationId": existing_invite.organization_id,
+                    "organizationName": organization.name if organization else None,
+                    "role": existing_invite.role,
+                    "type": "invitation",
+                },
+                source_type="invitation",
+                source_id=existing_invite.id,
+            )
+        return {
+            "message": "Invitation is already pending",
+            "email": invite_email,
+            "organization_id": existing_invite.organization_id,
+            "expires_at": existing_invite.expires_at,
+            "invitation_id": existing_invite.id,
+            "emailSent": False,
+            "alreadyPending": True,
+        }
 
     token = secrets.token_urlsafe(32)
     token_hash = auth.get_password_hash(token)
+    token_sha256 = hashlib.sha256(token.encode("utf-8")).hexdigest()
     expires_at = datetime.utcnow() + timedelta(days=7)
 
     invitation = models.Invitation(
-        email=inv_data.email,
+        email=invite_email,
         organization_id=inv_data.organization_id,
-        group_id=None,
+        group_id=inv_data.group_id,
         role=inv_data.role,
         token_hash=token_hash,
+        token_sha256=token_sha256,
         expires_at=expires_at,
         invited_by=current_user.id,
         status="pending"
@@ -1107,7 +1621,6 @@ def create_invitation_endpoint(
     db.commit()
     db.refresh(invitation)
 
-    organization = db.query(models.Organization).filter(models.Organization.id == inv_data.organization_id).first()
     invite_url = f"{FRONTEND_URL.rstrip('/')}/invite?token={token}"
     email_html = build_invitation_email_html(
         organization.name if organization else "tổ chức của bạn",
@@ -1115,20 +1628,42 @@ def create_invitation_endpoint(
         invite_url,
     )
     subject = f"Lời mời tham gia {organization.name if organization else 'MultiMinutes AI'}"
-    if not send_email(inv_data.email, subject, email_html):
+    email_sent = send_email(invite_email, subject, email_html)
+    if target_user:
+        create_persisted_notification(
+            db,
+            recipient_user_id=target_user.id,
+            notification_type="invitation",
+            priority="today",
+            title="Bạn có lời mời tham gia tổ chức",
+            message=f"{current_user.email} đã mời bạn tham gia {organization.name if organization else 'tổ chức'}.",
+            metadata={
+                "invitationId": invitation.id,
+                "organizationId": invitation.organization_id,
+                "organizationName": organization.name if organization else None,
+                "role": invitation.role,
+                "type": "invitation",
+            },
+            source_type="invitation",
+            source_id=invitation.id,
+        )
+    elif not email_sent:
         raise HTTPException(status_code=500, detail="Failed to send invitation email")
     append_admin_audit_log(
         actor=current_user.username,
-        action="CREATE_ORG_INVITATION",
-        target=f"{inv_data.email} -> {inv_data.organization_id}",
+        action="CREATE_ORG_INVITATION" if not target_user else "CREATE_REGISTERED_USER_INVITATION",
+        target=f"{inv_data.email} -> {target_group.name if target_group else inv_data.organization_id}",
         role=current_user.role or "org-admin",
     )
 
     return {
         "message": "Invitation email sent successfully",
-        "email": inv_data.email,
+        "email": invite_email,
         "organization_id": inv_data.organization_id,
         "expires_at": expires_at,
+        "invitation_id": invitation.id,
+        "emailSent": email_sent,
+        "alreadyPending": False,
     }
 
 
@@ -1187,6 +1722,17 @@ def accept_invitation_endpoint(
 ):
     invitation = resolve_pending_invitation_by_token(db, req.token)
     if not invitation:
+        token_sha256 = hashlib.sha256(req.token.encode("utf-8")).hexdigest()
+        accepted_invitation = db.query(models.Invitation).filter(
+            models.Invitation.token_sha256 == token_sha256,
+            models.Invitation.status == "accepted",
+            models.Invitation.accepted_by == current_user.id,
+        ).first()
+        if accepted_invitation:
+            return {
+                "message": "Successfully joined the organization",
+                "organization_id": accepted_invitation.organization_id,
+            }
         raise HTTPException(status_code=400, detail="Invalid or expired invitation token")
 
     if invitation.email.lower() != current_user.email.lower():
@@ -1199,7 +1745,19 @@ def accept_invitation_endpoint(
 
     if not existing_membership:
         from src.api.crud import add_user_to_organization
-        add_user_to_organization(db, current_user.id, invitation.organization_id, invitation.role)
+        org_role = invitation.role if invitation.role in {"org-admin", "member", "viewer"} else "member"
+        add_user_to_organization(db, current_user.id, invitation.organization_id, org_role)
+
+    if invitation.group_id:
+        from src.api.crud import add_user_to_group
+        group_role = invitation.role if invitation.role in {"group-admin", "member", "viewer"} else "member"
+        add_user_to_group(
+            db,
+            invitation.group_id,
+            current_user.id,
+            group_role,
+            invited_by=invitation.invited_by,
+        )
 
     invitation.status = "accepted"
     invitation.accepted_at = datetime.utcnow()
@@ -1221,6 +1779,11 @@ def accept_invitation_by_id(
     invitation = db.query(models.Invitation).filter(models.Invitation.id == invitation_id).first()
     if not invitation:
         raise HTTPException(status_code=404, detail="Invitation not found")
+    if invitation.status == "accepted" and invitation.accepted_by == current_user.id:
+        return {
+            "message": "Successfully joined the organization",
+            "organization_id": invitation.organization_id,
+        }
     if invitation.status != "pending":
         raise HTTPException(status_code=400, detail="Invitation is no longer pending")
     if invitation.expires_at < datetime.utcnow():
@@ -1237,7 +1800,19 @@ def accept_invitation_by_id(
 
     if not existing_membership:
         from src.api.crud import add_user_to_organization
-        add_user_to_organization(db, current_user.id, invitation.organization_id, invitation.role)
+        org_role = invitation.role if invitation.role in {"org-admin", "member", "viewer"} else "member"
+        add_user_to_organization(db, current_user.id, invitation.organization_id, org_role)
+
+    if invitation.group_id:
+        from src.api.crud import add_user_to_group
+        group_role = invitation.role if invitation.role in {"group-admin", "member", "viewer"} else "member"
+        add_user_to_group(
+            db,
+            invitation.group_id,
+            current_user.id,
+            group_role,
+            invited_by=invitation.invited_by,
+        )
 
     invitation.status = "accepted"
     invitation.accepted_at = datetime.utcnow()
@@ -1366,6 +1941,53 @@ def list_group_members(
     return [group_member_payload(membership) for membership in get_group_memberships(db, group_id)]
 
 
+@app.get("/api/groups/{group_id}/users/search", response_model=List[schemas.UserSearchResult])
+def search_invitable_group_users(
+    group_id: str,
+    q: str = "",
+    db: Session = Depends(get_db),
+    current_user = Depends(auth.get_current_user),
+):
+    group = auth.require_group_admin(db, current_user, group_id)
+    query = q.strip().lower()
+
+    existing_group_user_ids = db.query(models.GroupMembership.user_id).filter(
+        models.GroupMembership.group_id == group_id,
+    )
+    filters = [
+        models.UserOrganization.organization_id == group.organization_id,
+        models.User.is_active == True,
+        ~models.User.id.in_(existing_group_user_ids),
+    ]
+    if len(query) >= 2:
+        search_pattern = f"%{query}%"
+        filters.append(
+            or_(
+                models.User.email.ilike(search_pattern),
+                models.User.username.ilike(search_pattern),
+                models.User.first_name.ilike(search_pattern),
+                models.User.last_name.ilike(search_pattern),
+            )
+        )
+
+    users = db.query(models.User).join(models.UserOrganization).filter(
+        *filters,
+    ).order_by(models.User.email.asc()).limit(20).all()
+
+    return [
+        {
+            "id": user.id,
+            "email": user.email,
+            "displayName": " ".join(
+                part for part in [user.first_name, user.last_name] if part
+            ) or user.username or user.email,
+            "username": user.username,
+            "avatarUrl": user.avatar_url,
+        }
+        for user in users
+    ]
+
+
 @app.post("/api/groups/{group_id}/members", response_model=schemas.GroupMembership)
 def add_group_member(
     group_id: str,
@@ -1374,12 +1996,48 @@ def add_group_member(
     current_user = Depends(auth.get_current_user)
 ):
     group = auth.require_group_admin(db, current_user, group_id)
+    if membership.role not in {"member", "group-admin"}:
+        raise HTTPException(status_code=400, detail="Only member or group-admin can be assigned when adding a group member")
+    current_org_role = auth.get_user_org_role(db, current_user, group.organization_id)
+    if membership.role == "group-admin" and current_org_role not in {"system-admin", "org-admin"}:
+        raise HTTPException(status_code=403, detail="Only organization admins can grant group-admin role")
     user = get_user_by_id(db, membership.user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     if not auth.get_user_org_role(db, user, group.organization_id):
         raise HTTPException(status_code=400, detail="User must belong to the group organization")
-    return add_user_to_group(db, group_id, user.id, membership.role, invited_by=current_user.id)
+    existing_membership = db.query(models.GroupMembership).filter(
+        models.GroupMembership.group_id == group_id,
+        models.GroupMembership.user_id == user.id,
+    ).first()
+    if existing_membership:
+        raise HTTPException(status_code=409, detail="Người dùng đã ở trong nhóm này rồi.")
+
+    created_membership = add_user_to_group(db, group_id, user.id, membership.role, invited_by=current_user.id)
+    create_persisted_notification(
+        db,
+        recipient_user_id=user.id,
+        notification_type="user",
+        priority="today",
+        title="Bạn đã được thêm vào nhóm",
+        message=f"{current_user.email} đã thêm bạn vào nhóm {group.name}.",
+        metadata={
+            "groupId": group.id,
+            "groupName": group.name,
+            "organizationId": group.organization_id,
+            "role": membership.role,
+            "type": "group-member-added",
+        },
+        source_type="group-membership",
+        source_id=created_membership.id,
+    )
+    append_admin_audit_log(
+        actor=current_user.username,
+        action="ADD_GROUP_MEMBER",
+        target=f"{user.email} -> {group.name}",
+        role=current_user.role or "group-admin",
+    )
+    return created_membership
 
 
 @app.post("/api/groups/{group_id}/members/invite-by-email", response_model=schemas.GroupMembership)
@@ -1393,6 +2051,11 @@ def add_group_member_by_email(
     email = (payload.email or "").strip().lower()
     if not email:
         raise HTTPException(status_code=400, detail="Email is required")
+    if payload.role not in {"member", "group-admin"}:
+        raise HTTPException(status_code=400, detail="Only member or group-admin can be assigned when adding a group member")
+    current_org_role = auth.get_user_org_role(db, current_user, group.organization_id)
+    if payload.role == "group-admin" and current_org_role not in {"system-admin", "org-admin"}:
+        raise HTTPException(status_code=403, detail="Only organization admins can grant group-admin role")
 
     user = get_user_by_email(db, email)
     if not user:
@@ -1415,6 +2078,23 @@ def add_group_member_by_email(
         raise HTTPException(status_code=409, detail="Người dùng đã ở trong nhóm này rồi.")
 
     membership = add_user_to_group(db, group_id, user.id, payload.role, invited_by=current_user.id)
+    create_persisted_notification(
+        db,
+        recipient_user_id=user.id,
+        notification_type="user",
+        priority="today",
+        title="Bạn đã được thêm vào nhóm",
+        message=f"{current_user.email} đã thêm bạn vào nhóm {group.name}.",
+        metadata={
+            "groupId": group.id,
+            "groupName": group.name,
+            "organizationId": group.organization_id,
+            "role": payload.role,
+            "type": "group-member-added",
+        },
+        source_type="group-membership",
+        source_id=membership.id,
+    )
     append_admin_audit_log(
         actor=current_user.username,
         action="ADD_GROUP_MEMBER",
@@ -1474,7 +2154,7 @@ def create_group_message_endpoint(
 ):
     # Chat is only for actual group members (or system-admin)
     group = auth.require_strict_group_member(db, current_user, group_id)
-    created_message = create_group_message(db, group_id, current_user.id, message.text)
+    created_message = create_group_message(db, group_id, current_user.id, message.text, reply_to_id=message.reply_to_id)
 
     actor_name = current_user.first_name or current_user.username or current_user.email
     memberships = db.query(models.GroupMembership).filter(
@@ -1527,7 +2207,7 @@ def get_latest_group_message_endpoint(
 @app.patch("/api/groups/messages/{message_id}", response_model=schemas.GroupMessage)
 def update_group_message_endpoint(
     message_id: str,
-    updates: Dict[str, Any],
+    updates: schemas.GroupMessageUpdate,
     db: Session = Depends(get_db),
     current_user = Depends(auth.get_current_user)
 ):
@@ -1536,12 +2216,12 @@ def update_group_message_endpoint(
     if not db_message:
         raise HTTPException(status_code=404, detail="Message not found")
     auth.require_strict_group_member(db, current_user, db_message.group_id)
-    
+
     if db_message.user_id != current_user.id:
         # Check if user is group admin (admins can pin/unpin)
         auth.require_group_admin(db, current_user, db_message.group_id)
-        
-    return update_group_message(db, message_id, updates)
+
+    return update_group_message(db, message_id, updates.model_dump(exclude_unset=True))
 
 @app.delete("/api/groups/messages/{message_id}")
 def delete_group_message_endpoint(
@@ -1572,24 +2252,70 @@ def list_meetings(
     status: Optional[str] = None,
     skip: int = 0,
     limit: int = 100,
-    db: Session = Depends(get_db), 
+    db: Session = Depends(get_db),
     current_user = Depends(auth.get_current_user)
 ):
+    query = db.query(models.Meeting)
+
     if group_id:
         group = auth.require_group_member(db, current_user, group_id)
         organization_id = organization_id or group.organization_id
+        query = query.filter(models.Meeting.group_id == group_id)
     elif organization_id:
         auth.require_org_member(db, current_user, organization_id)
+        query = query.filter(models.Meeting.organization_id == organization_id)
     elif current_user.role != "system-admin":
         org_ids = user_org_ids(current_user)
         if not org_ids:
             return []
-        query = db.query(models.Meeting).filter(models.Meeting.organization_id.in_(org_ids))
-        if status:
-            query = query.filter(models.Meeting.status == status)
-        return query.order_by(models.Meeting.created_at.desc()).offset(skip).limit(limit).all()
+        query = query.filter(models.Meeting.organization_id.in_(org_ids))
 
-    return get_meetings(db, organization_id=organization_id, group_id=group_id, status=status, skip=skip, limit=limit)
+    # Filter by status if provided
+    if status:
+        query = query.filter(models.Meeting.status == status)
+
+    can_view_all = current_user.role == "system-admin"
+    if not can_view_all and organization_id:
+        can_view_all = auth.get_user_org_role(db, current_user, organization_id) == "org-admin"
+    if not can_view_all and group_id:
+        can_view_all = auth.get_user_group_role(db, current_user, group_id) == "group-admin"
+
+    # Regular users can only see meetings they created or are invited to.
+    if not can_view_all:
+        participant_meeting_ids = db.query(models.MeetingParticipant.meeting_id).filter(
+            models.MeetingParticipant.user_id == current_user.id
+        ).subquery()
+        query = query.filter(
+            or_(
+                models.Meeting.created_by == current_user.id,
+                models.Meeting.id.in_(participant_meeting_ids)
+            )
+        )
+
+    return query.order_by(models.Meeting.created_at.desc()).offset(skip).limit(limit).all()
+
+
+@app.get("/api/meetings/by-code/{meeting_code}", response_model=schemas.MeetingDetailResponse)
+def get_meeting_by_code(
+    meeting_code: str,
+    db: Session = Depends(get_db),
+    current_user = Depends(auth.get_current_user),
+):
+    meeting = db.query(models.Meeting).options(
+        joinedload(models.Meeting.organization),
+        joinedload(models.Meeting.group).joinedload(models.Group.memberships),
+        joinedload(models.Meeting.created_by_user),
+        joinedload(models.Meeting.participants).joinedload(models.MeetingParticipant.user),
+        joinedload(models.Meeting.audio_files),
+        joinedload(models.Meeting.transcripts).joinedload(models.Transcript.segments),
+        joinedload(models.Meeting.summaries),
+        joinedload(models.Meeting.action_items),
+    ).filter(models.Meeting.code == meeting_code).first()
+    if not meeting:
+        raise HTTPException(status_code=404, detail="Meeting not found")
+    auth.require_org_member(db, current_user, meeting.organization_id)
+    return schemas.MeetingDetailResponse.model_validate(build_meeting_detail_payload(meeting))
+
 
 @app.get("/api/meetings/{meeting_id}", response_model=schemas.MeetingDetailResponse)
 def get_meeting(
@@ -1614,7 +2340,55 @@ def create_meeting_endpoint(
         group = auth.require_group_member(db, current_user, meeting_data.group_id)
         if group.organization_id != meeting_data.organization_id:
             raise HTTPException(status_code=400, detail="Group does not belong to organization")
-    meeting = create_meeting(db, meeting_data.model_dump(), created_by=current_user.id)
+
+    scheduled_start = normalize_meeting_datetime(meeting_data.scheduled_start)
+    scheduled_end = normalize_meeting_datetime(meeting_data.scheduled_end)
+
+    # Block meetings in the past
+    if scheduled_start:
+        if scheduled_start < datetime.utcnow():
+            raise HTTPException(status_code=400, detail="Không thể tạo cuộc họp trong quá khứ")
+
+    # scheduled_end must be after scheduled_start
+    if scheduled_start and scheduled_end:
+        if scheduled_end <= scheduled_start:
+            raise HTTPException(status_code=400, detail="Thời gian kết thúc phải sau thời gian bắt đầu")
+
+    # Block if any participant has an overlapping meeting (check BEFORE creating)
+    if scheduled_start and scheduled_end:
+        all_participant_ids = list(set([current_user.id] + (meeting_data.participant_ids or [])))
+        conflicts = check_meeting_overlap(
+            db,
+            participant_ids=all_participant_ids,
+            scheduled_start=scheduled_start,
+            scheduled_end=scheduled_end,
+        )
+        if conflicts:
+            titles = ", ".join(c["meeting_title"] for c in conflicts)
+            raise HTTPException(
+                status_code=409,
+                detail=f"Trùng lịch với: {titles}. Vui lòng chọn giờ khác.",
+            )
+
+    meeting_payload = meeting_data.model_dump()
+    meeting_payload["scheduled_start"] = scheduled_start
+    meeting_payload["scheduled_end"] = scheduled_end
+    meeting = create_meeting(db, meeting_payload, created_by=current_user.id)
+
+    # Add creator as host participant
+    add_meeting_participant(db, meeting.id, user_id=current_user.id, role="HOST")
+
+    # Add invited participants by user ID
+    if meeting_data.participant_ids:
+        for uid in meeting_data.participant_ids:
+            if uid != current_user.id:
+                add_meeting_participant(db, meeting.id, user_id=uid, role="PARTICIPANT")
+
+    # Add invited participants by email
+    if meeting_data.participant_emails:
+        for email in meeting_data.participant_emails:
+            add_meeting_participant(db, meeting.id, email=email, role="PARTICIPANT")
+
     append_admin_audit_log(
         actor=current_user.username,
         action="CREATE_MEETING",
@@ -1639,6 +2413,7 @@ def create_meeting_endpoint(
                     "metadata": {"group": meeting.group.name if meeting.group else None, "meeting_id": meeting.id},
                 }
             )
+
     return meeting
 
 @app.put("/api/meetings/{meeting_id}", response_model=schemas.Meeting)
@@ -1652,11 +2427,47 @@ def update_meeting_endpoint(
     if not existing:
         raise HTTPException(status_code=404, detail="Meeting not found")
     auth.require_org_member(db, current_user, existing.organization_id)
+    require_meeting_manager(db, current_user, existing)
     updates = meeting_data.model_dump(exclude_unset=True)
+    if "scheduled_start" in updates:
+        updates["scheduled_start"] = normalize_meeting_datetime(updates["scheduled_start"])
+    if "scheduled_end" in updates:
+        updates["scheduled_end"] = normalize_meeting_datetime(updates["scheduled_end"])
+
+    # Validate time range if either is being updated
+    if "scheduled_start" in updates or "scheduled_end" in updates:
+        start = updates.get("scheduled_start", existing.scheduled_start)
+        end = updates.get("scheduled_end", existing.scheduled_end)
+        if start and end and end <= start:
+            raise HTTPException(status_code=400, detail="Thời gian kết thúc phải sau thời gian bắt đầu")
+        if start and start < datetime.utcnow():
+            raise HTTPException(status_code=400, detail="Không thể chuyển cuộc họp về thời gian trong quá khứ")
+
     if updates.get("group_id"):
         group = auth.require_group_member(db, current_user, updates["group_id"])
         if group.organization_id != existing.organization_id:
             raise HTTPException(status_code=400, detail="Group does not belong to organization")
+
+    # Handle participant updates separately
+    participant_ids = updates.pop("participant_ids", None)
+
+    # Block if any participant has an overlapping meeting (excluding this meeting)
+    start = updates.get("scheduled_start", existing.scheduled_start)
+    end = updates.get("scheduled_end", existing.scheduled_end)
+    check_ids = list(set([existing.created_by] + (participant_ids or [p.user_id for p in existing.participants if p.user_id])))
+    if start and end and check_ids:
+        conflicts = check_meeting_overlap(db, participant_ids=check_ids, scheduled_start=start, scheduled_end=end, exclude_meeting_id=meeting_id)
+        if conflicts:
+            titles = ", ".join(c["meeting_title"] for c in conflicts)
+            raise HTTPException(status_code=409, detail=f"Trùng lịch với: {titles}. Vui lòng chọn giờ khác.")
+    if participant_ids is not None:
+        existing_participant_ids = {p.user_id for p in existing.participants if p.user_id}
+        new_participant_ids = set(participant_ids) | {existing.created_by}  # Always keep creator
+        for pid in existing_participant_ids - new_participant_ids:
+            remove_meeting_participant(db, meeting_id, user_id=pid)
+        for pid in new_participant_ids - existing_participant_ids:
+            add_meeting_participant(db, meeting_id, user_id=pid, role="PARTICIPANT")
+
     meeting = update_meeting(db, meeting_id, updates)
     append_admin_audit_log(
         actor=current_user.username,
@@ -1822,6 +2633,9 @@ def get_stt_provider():
 async def transcribe_chunk(
     meeting_id: str,
     audio: UploadFile = File(...),
+    chunk_index: Optional[int] = Form(None),
+    start_ms: int = Form(0),
+    language: str = Form("auto"),
     db: Session = Depends(get_db),
     current_user=Depends(auth.get_current_user),
 ):
@@ -1870,6 +2684,19 @@ async def transcribe_chunk(
         audio_path = tmp_path
         stt_provider_name = os.getenv("STT_PROVIDER", "deepgram").lower()
 
+        # Save chunk to permanent storage for later concatenation
+        if chunk_index is not None:
+            try:
+                perm_dir = os.path.join(AUDIO_UPLOAD_DIR, meeting_id)
+                os.makedirs(perm_dir, exist_ok=True)
+                chunk_filename = f"chunk_{chunk_index:06d}{suffix}"
+                permanent_path = os.path.join(perm_dir, chunk_filename)
+                with open(permanent_path, "wb") as pf:
+                    pf.write(content)
+                logger.info(f"Saved audio chunk permanently: {permanent_path}")
+            except Exception as perm_err:
+                logger.warning(f"Failed to save chunk permanently (non-fatal): {perm_err}")
+
         # Always convert to WAV (PCM 16kHz mono) for reliable STT processing
         if suffix != ".wav":
             wav_path = tmp_path.rsplit(".", 1)[0] + ".wav"
@@ -1899,9 +2726,47 @@ async def transcribe_chunk(
             
             logger.info(f"Chunk transcription success: meeting={meeting_id}, text_len={len(result.get('text', ''))}, segments={len(result.get('segments', []))}")
             
+            detected_language = result.get("language") or result.get("detected_language") or language or "auto"
+            normalized_segments = [
+                {
+                    "speaker": segment.get("speaker") or segment.get("speaker_label") or "Speaker_01",
+                    "start": segment.get("start", segment.get("start_time", 0)),
+                    "end": segment.get("end", segment.get("end_time", 0)),
+                    "text": segment.get("text", ""),
+                    "language": segment.get("language") or segment.get("detected_language") or detected_language,
+                    "confidence": segment.get("confidence") or segment.get("confidence_score"),
+                }
+                for segment in result.get("segments", [])
+            ]
+            text = result.get("text", "")
+            if text.strip() and not normalized_segments:
+                normalized_segments = [{
+                    "speaker": "Speaker_01",
+                    "start": 0,
+                    "end": estimate_segment_end(0, text),
+                    "text": text.strip(),
+                    "language": detected_language,
+                    "confidence": result.get("confidence") or result.get("confidence_score"),
+                }]
+            if text.strip() and chunk_index is not None:
+                upsert_transcript_draft(
+                    db,
+                    meeting_id=meeting_id,
+                    user_id=current_user.id,
+                    chunk_index=chunk_index,
+                    text=text.strip(),
+                    segments=normalized_segments,
+                    language=detected_language,
+                    provider=stt_provider_name,
+                    model=os.getenv("DEEPGRAM_MODEL", "nova-3"),
+                    start_ms=start_ms,
+                )
+
             return {
                 "text": result.get("text", ""),
-                "segments": result.get("segments", []),
+                "segments": normalized_segments,
+                "language": detected_language,
+                "detected_language": detected_language,
                 "provider": stt_provider_name,
                 "model": os.getenv("DEEPGRAM_MODEL", "nova-3"),
             }
@@ -1927,6 +2792,68 @@ async def transcribe_chunk(
                 logger.warning(f"Failed to cleanup audio file: {e}")
 
 
+@app.get("/api/meetings/{meeting_id}/transcript-draft")
+def get_transcript_draft(
+    meeting_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(auth.get_current_user),
+):
+    meeting = db.query(models.Meeting).filter(models.Meeting.id == meeting_id).first()
+    if not meeting:
+        raise HTTPException(status_code=404, detail="Meeting not found")
+    auth.require_org_member(db, current_user, meeting.organization_id)
+    draft = build_transcript_from_drafts(db, meeting_id)
+    return {
+        "meeting_id": meeting_id,
+        "transcript": draft["transcript"],
+        "segments": draft["segments"],
+        "language": draft["language"],
+        "chunks": [
+            {
+                "id": item.id,
+                "chunkIndex": item.chunk_index,
+                "text": item.text,
+                "segments": [
+                    {
+                        **segment,
+                        "start": float(segment.get("start", segment.get("start_time", 0)) or 0) + (item.start_ms or 0) / 1000,
+                        "end": float(segment.get("end", segment.get("end_time", 0)) or 0) + (item.start_ms or 0) / 1000,
+                    }
+                    for segment in (item.segments or [])
+                ] or [{
+                    "speaker": "Speaker_01",
+                    "start": (item.start_ms or 0) / 1000,
+                    "end": estimate_segment_end((item.start_ms or 0) / 1000, item.text),
+                    "text": item.text,
+                    "language": item.language or "auto",
+                }],
+                "language": item.language,
+                "startMs": item.start_ms,
+                "timestamp": (item.updated_at or item.created_at or datetime.utcnow()).isoformat(),
+            }
+            for item in draft["chunks"]
+        ],
+    }
+
+
+@app.get("/api/audio-files/{audio_id}/stream")
+def stream_audio_file(
+    audio_id: str,
+    db: Session = Depends(get_db),
+):
+    """Stream an audio file by its ID. No auth required for direct playback."""
+    audio_file = db.query(models.AudioFile).filter(models.AudioFile.id == audio_id).first()
+    if not audio_file:
+        raise HTTPException(status_code=404, detail="Audio file not found")
+    if not os.path.exists(audio_file.file_path):
+        raise HTTPException(status_code=404, detail="Audio file not found on disk")
+    return FileResponse(
+        audio_file.file_path,
+        media_type="audio/wav",
+        filename=audio_file.original_filename or "recording.wav",
+    )
+
+
 @app.post("/api/meetings/{meeting_id}/finalize", response_model=schemas.MeetingFinalizeResponse)
 async def finalize_meeting(
     meeting_id: str,
@@ -1941,6 +2868,7 @@ async def finalize_meeting(
     full_text = body.get("transcript", "")
     segments = body.get("segments", [])
     req_language = body.get("language", "")
+    regenerate = bool(body.get("regenerate", False))
     errors: List[str] = []
 
     # Verify meeting exists
@@ -1957,37 +2885,138 @@ async def finalize_meeting(
     # Validate user has access to this meeting's organization
     auth.require_org_member(db, current_user, meeting.organization_id)
 
+    draft_payload = build_transcript_from_drafts(db, meeting_id)
+    if not isinstance(full_text, str) or not full_text.strip():
+        full_text = draft_payload["transcript"]
+    if not segments:
+        segments = draft_payload["segments"]
+    if (not req_language or req_language == "auto") and draft_payload["language"] != "auto":
+        language = draft_payload["language"]
+        if language not in ("vi", "en", "zh", "ja", "ko"):
+            language = "vi"
+
     if not isinstance(full_text, str) or not full_text.strip():
         raise HTTPException(status_code=400, detail="Transcript is required for finalize")
 
-    # Save transcript
-    transcript_data = {
-        "meeting_id": meeting_id,
-        "content": full_text,
-        "language": language,
-        "word_count": len(full_text.split()),
-        "processing_status": "COMPLETED",
-        "stt_provider": os.getenv("STT_PROVIDER", "deepgram"),
-    }
-    db_transcript = create_transcript(db, transcript_data)
+    update_meeting(db, meeting_id, {"status": "processing"})
+
+    # Upsert transcript so finalize can be safely retried.
+    db_transcript = db.query(models.Transcript).filter(
+        models.Transcript.meeting_id == meeting_id,
+    ).order_by(models.Transcript.created_at.desc()).first()
+    segments_to_save = segments if isinstance(segments, list) else []
+    if db_transcript:
+        if not segments_to_save and db_transcript.segments:
+            segments_to_save = [
+                {
+                    "speaker": segment.speaker_label,
+                    "start": float(segment.start_time or 0),
+                    "end": float(segment.end_time or 0),
+                    "text": segment.text,
+                    "language": getattr(segment, "language", None) or language,
+                    "confidence": float(segment.confidence_score) if segment.confidence_score is not None else None,
+                }
+                for segment in db_transcript.segments
+                if (segment.text or "").strip()
+            ]
+        db_transcript.content = full_text
+        db_transcript.language = language
+        db_transcript.word_count = len(full_text.split())
+        db_transcript.processing_status = "COMPLETED"
+        db_transcript.stt_provider = os.getenv("STT_PROVIDER", "deepgram")
+        if segments_to_save:
+            db.query(models.TranscriptSegment).filter(
+                models.TranscriptSegment.transcript_id == db_transcript.id,
+            ).delete(synchronize_session=False)
+            db.flush()
+    else:
+        db_transcript = create_transcript(db, {
+            "meeting_id": meeting_id,
+            "content": full_text,
+            "language": language,
+            "word_count": len(full_text.split()),
+            "processing_status": "COMPLETED",
+            "stt_provider": os.getenv("STT_PROVIDER", "deepgram"),
+        })
 
     # Save segments
-    if segments:
+    if segments_to_save:
         segments_data = []
-        for seg in segments:
+        for seg in segments_to_save:
+            normalized = normalize_segment_payload(seg, language)
+            if not normalized["text"]:
+                continue
             segments_data.append({
                 "transcript_id": db_transcript.id,
-                "speaker_label": seg.get("speaker", "Speaker_01"),
-                "start_time": seg.get("start", 0),
-                "end_time": seg.get("end", 0),
-                "text": seg.get("text", ""),
+                **normalized,
             })
         if segments_data:
             create_transcript_segments_bulk(db, segments_data)
 
-    # Update meeting status
-    update_meeting(db, meeting_id, {"status": "completed"})
     db.commit()
+
+    # === Concatenate audio chunks into final recording ===
+    audio_file_id = None
+    try:
+        perm_dir = os.path.join(AUDIO_UPLOAD_DIR, meeting_id)
+        if os.path.isdir(perm_dir):
+            chunk_files = sorted(glob.glob(os.path.join(perm_dir, "chunk_*")))
+            if chunk_files:
+                logger.info(f"Concatenating {len(chunk_files)} audio chunks for meeting {meeting_id}")
+                concat_list_path = os.path.join(perm_dir, "concat.txt")
+                with open(concat_list_path, "w") as f:
+                    for cf in chunk_files:
+                        f.write(f"file '{cf}'\n")
+
+                output_filename = f"recording_{meeting_id}.wav"
+                output_path = os.path.join(perm_dir, output_filename)
+                result = subprocess.run(
+                    ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_list_path,
+                     "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", output_path],
+                    capture_output=True, timeout=120, check=True,
+                )
+                if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                    file_size = os.path.getsize(output_path)
+                    audio_record = create_audio_file(db, {
+                        "meeting_id": meeting_id,
+                        "filename": output_filename,
+                        "original_filename": f"meeting_recording.wav",
+                        "file_path": output_path,
+                        "file_size": file_size,
+                        "format": "WAV",
+                        "sample_rate": 16000,
+                        "channels": 1,
+                        "upload_status": "PROCESSED",
+                    })
+                    audio_file_id = audio_record.id
+                    audio_stream_url = f"/api/audio-files/{audio_file_id}/stream"
+                    update_meeting(db, meeting_id, {
+                        "audio_url": audio_stream_url,
+                        "recording_url": audio_stream_url,
+                    })
+                    db.commit()
+                    logger.info(f"Audio recording saved: {output_path} ({file_size} bytes)")
+
+                    # Cleanup chunk files
+                    for cf in chunk_files:
+                        try:
+                            os.unlink(cf)
+                        except OSError:
+                            pass
+                    try:
+                        os.unlink(concat_list_path)
+                    except OSError:
+                        pass
+                else:
+                    logger.warning(f"ffmpeg concat produced empty output for meeting {meeting_id}")
+            else:
+                logger.info(f"No audio chunks found for meeting {meeting_id}")
+        else:
+            logger.info(f"No audio directory found for meeting {meeting_id}")
+    except subprocess.CalledProcessError as e:
+        logger.error(f"ffmpeg concat failed for meeting {meeting_id}: {e.stderr}")
+    except Exception as e:
+        logger.error(f"Audio concatenation failed for meeting {meeting_id}: {e}")
 
     summary_status = "FAILED"
     summary_payload = schemas.MeetingAnalysisOutput(
@@ -2005,7 +3034,8 @@ async def finalize_meeting(
         "content",
         "Summarize the meeting transcript below in detail.",
     )
-    system_prompt, user_prompt = build_structured_summary_prompts(full_text, custom_instruction, language)
+    glossary_context = build_glossary_context(db, meeting.organization_id)
+    system_prompt, user_prompt = build_structured_summary_prompts(full_text, custom_instruction, language, glossary_context)
 
     raw_response = None
 
@@ -2056,30 +3086,42 @@ async def finalize_meeting(
             errors.append(error_message)
             summary_error_message = error_message
 
-    summary_db = create_meeting_summary(db, {
-                "meeting_id": meeting_id,
-                "language": language,
-                "key_points": summary_payload.key_points,
-                "decisions": summary_payload.decisions,
-                "action_items": [item.model_dump() for item in summary_payload.action_items],
-                "meeting_summary": summary_payload.meeting_summary if summary_status == "COMPLETED" else summary_error_message,
-                "ai_provider": ai_provider_name,
-                "model_name": router.model if ai_provider_name == "router" else ai_provider_name,
-                "processing_status": summary_status,
-            })
+    summary_db = db.query(models.MeetingSummary).filter(
+        models.MeetingSummary.meeting_id == meeting_id,
+        models.MeetingSummary.language == language,
+    ).order_by(models.MeetingSummary.created_at.desc()).first()
+    summary_data = {
+        "language": language,
+        "key_points": summary_payload.key_points,
+        "decisions": summary_payload.decisions,
+        "action_items": [item.model_dump() for item in summary_payload.action_items],
+        "meeting_summary": summary_payload.meeting_summary if summary_status == "COMPLETED" else summary_error_message,
+        "ai_provider": ai_provider_name,
+        "model_name": router.model if ai_provider_name == "router" else ai_provider_name,
+        "processing_status": summary_status,
+    }
+    if summary_db:
+        for key, value in summary_data.items():
+            setattr(summary_db, key, value)
+        db.query(models.ActionItem).filter(models.ActionItem.summary_id == summary_db.id).delete(synchronize_session=False)
+        db.flush()
+    else:
+        summary_db = create_meeting_summary(db, {"meeting_id": meeting_id, **summary_data})
 
     if summary_status == "COMPLETED":
         for ai in summary_payload.action_items:
+            assigned_email = None if ai.owner in {"Unassigned", "N/A", ""} else ai.owner
             create_action_item(db, {
                 "meeting_id": meeting_id,
                 "summary_id": summary_db.id,
                 "title": ai.task,
-                "description": "",
-                "assigned_email": None,
+                "description": f"Owner: {ai.owner}. Deadline: {ai.deadline}",
+                "assigned_email": assigned_email if "@" in (assigned_email or "") else None,
                 "status": "PENDING",
                 "priority": "MEDIUM",
             }, created_by=current_user.id)
 
+    update_meeting(db, meeting_id, {"status": "completed" if summary_status == "COMPLETED" else "failed" if regenerate else "completed"})
     db.commit()
 
     return {
@@ -2109,33 +3151,69 @@ def get_job_status(job_id: str):
 
 # Analytics Endpoints
 @app.get("/api/analytics/meetings", response_model=AnalyticsResponse)
-async def get_meeting_analytics():
+async def get_meeting_analytics(db: Session = Depends(get_db), current_user = Depends(auth.get_current_user)):
+    # Meetings over time (last 30 days)
+    thirty_days_ago = datetime.now() - timedelta(days=30)
+    org_ids = user_org_ids(current_user)
+    base_query = db.query(models.Meeting)
+    if current_user.role != "system-admin" and org_ids:
+        base_query = base_query.filter(models.Meeting.organization_id.in_(org_ids))
+
+    meetings_over_time = {}
+    rows = (
+        base_query
+        .filter(models.Meeting.created_at >= thirty_days_ago)
+        .with_entities(
+            func.date(models.Meeting.created_at).label("day"),
+            func.count().label("cnt"),
+        )
+        .group_by(func.date(models.Meeting.created_at))
+        .all()
+    )
+    for row in rows:
+        meetings_over_time[str(row.day)] = row.cnt
+
+    # Status distribution
+    status_rows = (
+        base_query
+        .with_entities(models.Meeting.status, func.count())
+        .group_by(models.Meeting.status)
+        .all()
+    )
+    provider_distribution = {str(s): c for s, c in status_rows}
+
+    # Top action item owners
+    action_rows = (
+        db.query(models.ActionItem.assigned_email, func.count())
+        .filter(models.ActionItem.assigned_email.isnot(None))
+        .group_by(models.ActionItem.assigned_email)
+        .order_by(func.count().desc())
+        .limit(10)
+        .all()
+    )
+    top_action_owners = {str(name or "Chưa gán"): c for name, c in action_rows}
+
+    # Topic trends (from meeting titles - simple word frequency)
+    topic_rows = (
+        base_query
+        .filter(models.Meeting.status == "completed")
+        .with_entities(models.Meeting.title)
+        .order_by(models.Meeting.created_at.desc())
+        .limit(100)
+        .all()
+    )
+    topic_trends: Dict[str, int] = {}
+    for (title,) in topic_rows:
+        if title:
+            topic_trends[title[:30]] = topic_trends.get(title[:30], 0) + 1
+    # Sort by count and take top 8
+    topic_trends = dict(sorted(topic_trends.items(), key=lambda x: x[1], reverse=True)[:8])
+
     return {
-        "total_meetings_over_time": {
-            "2024-03-25": 12,
-            "2024-03-26": 15,
-            "2024-03-27": 10,
-            "2024-03-28": 18,
-            "2024-03-29": 22,
-            "2024-03-30": 14,
-            "2024-03-31": 19,
-        },
-        "provider_distribution": {
-            "live": 85,
-            "fallback": 15
-        },
-        "top_action_owners": {
-            "Huyền": 12,
-            "Nhật": 8,
-            "Oanh": 5,
-            "Tuấn": 10
-        },
-        "topic_trends": {
-            "Kế hoạch quý 2": 45,
-            "Review code": 30,
-            "Thiết kế UI/UX": 25,
-            "Bảo mật hệ thống": 15
-        }
+        "total_meetings_over_time": meetings_over_time,
+        "provider_distribution": provider_distribution,
+        "top_action_owners": top_action_owners,
+        "topic_trends": topic_trends,
     }
 
 @app.get("/api/analytics/performance")
@@ -2152,24 +3230,34 @@ async def get_costs():
 
 @app.get("/api/dashboard/stats")
 def get_stats(db: Session = Depends(get_db), current_user = Depends(auth.get_current_user)):
-    query = db.query(models.Meeting)
+    base_query = db.query(models.Meeting)
     if current_user.role != "system-admin":
         org_ids = user_org_ids(current_user)
         if not org_ids:
-            total_meetings = 0
-            processing_count = 0
-            total_minutes = 0
-        else:
-            query = query.filter(models.Meeting.organization_id.in_(org_ids))
-            meetings = query.all()
-            total_meetings = len(meetings)
-            processing_count = sum(1 for meeting in meetings if meeting.status in {"processing", "queued"})
-            total_minutes = sum((meeting.duration or 0) for meeting in meetings)
-    else:
-        meetings = query.all()
-        total_meetings = len(meetings)
-        processing_count = sum(1 for meeting in meetings if meeting.status in {"processing", "queued"})
-        total_minutes = sum((meeting.duration or 0) for meeting in meetings)
+            return {
+                "totalMeetings": 0,
+                "totalHours": 0,
+                "processingCount": 0,
+                "actualCostUsd": 0,
+                "estimatedCostUsd": 0,
+                "liveSuccessRate": "100%",
+                "modelHealth": {},
+                "features": {
+                    "uploadEnabled": ADMIN_SYSTEM_SETTINGS.get("upload_enabled", True),
+                    "jobTrackingEnabled": ADMIN_SYSTEM_SETTINGS.get("job_tracking_enabled", True),
+                    "systemAdminEnabled": current_user.role == "system-admin",
+                },
+            }
+        base_query = base_query.filter(models.Meeting.organization_id.in_(org_ids))
+
+    # SQL aggregation instead of loading all rows
+    total_meetings = base_query.with_entities(func.count()).scalar() or 0
+    processing_count = base_query.filter(
+        models.Meeting.status.in_(["processing", "queued"])
+    ).with_entities(func.count()).scalar() or 0
+    total_minutes = base_query.with_entities(
+        func.coalesce(func.sum(models.Meeting.duration), 0)
+    ).scalar() or 0
 
     return {
         "totalMeetings": total_meetings,
@@ -2180,16 +3268,19 @@ def get_stats(db: Session = Depends(get_db), current_user = Depends(auth.get_cur
         "liveSuccessRate": "100%",
         "modelHealth": {},
         "features": {
-            "uploadEnabled": False,
-            "jobTrackingEnabled": False,
-            "systemAdminEnabled": False,
+            "uploadEnabled": ADMIN_SYSTEM_SETTINGS.get("upload_enabled", True),
+            "jobTrackingEnabled": ADMIN_SYSTEM_SETTINGS.get("job_tracking_enabled", True),
+            "systemAdminEnabled": current_user.role == "system-admin",
         },
     }
 
 @app.get("/api/notifications")
 def get_notifications(db: Session = Depends(get_db), current_user = Depends(auth.get_current_user)):
     """Get in-app notifications for the current user based on real meeting activity."""
-    notifications = []
+    persisted_notifications = db.query(models.Notification).filter(
+        models.Notification.recipient_user_id == current_user.id,
+    ).order_by(models.Notification.created_at.desc()).limit(50).all()
+    notifications = [notification_payload(notification) for notification in persisted_notifications]
     now = datetime.now()
 
     query = db.query(models.Meeting)
@@ -2255,6 +3346,60 @@ def get_notifications(db: Session = Depends(get_db), current_user = Depends(auth
     # Sort by timestamp descending
     notifications.sort(key=lambda x: x["timestamp"], reverse=True)
     return notifications
+
+
+@app.patch("/api/notifications/{notification_id}/read")
+def mark_notification_read(
+    notification_id: str,
+    db: Session = Depends(get_db),
+    current_user = Depends(auth.get_current_user),
+):
+    notification = db.query(models.Notification).filter(
+        models.Notification.id == notification_id,
+        models.Notification.recipient_user_id == current_user.id,
+    ).first()
+    if not notification:
+        return {"message": "Notification is not persisted"}
+
+    notification.is_read = True
+    notification.read_at = datetime.utcnow()
+    db.commit()
+    db.refresh(notification)
+    return notification_payload(notification)
+
+
+@app.post("/api/notifications/read-all")
+def mark_all_notifications_read(
+    db: Session = Depends(get_db),
+    current_user = Depends(auth.get_current_user),
+):
+    db.query(models.Notification).filter(
+        models.Notification.recipient_user_id == current_user.id,
+        models.Notification.is_read == False,
+    ).update(
+        {"is_read": True, "read_at": datetime.utcnow()},
+        synchronize_session=False,
+    )
+    db.commit()
+    return {"message": "Notifications marked as read"}
+
+
+@app.delete("/api/notifications/{notification_id}")
+def dismiss_notification(
+    notification_id: str,
+    db: Session = Depends(get_db),
+    current_user = Depends(auth.get_current_user),
+):
+    notification = db.query(models.Notification).filter(
+        models.Notification.id == notification_id,
+        models.Notification.recipient_user_id == current_user.id,
+    ).first()
+    if not notification:
+        return {"message": "Notification is not persisted"}
+
+    db.delete(notification)
+    db.commit()
+    return {"message": "Notification dismissed"}
 
 
 def require_system_admin_user(current_user: models.User) -> None:
@@ -2372,20 +3517,20 @@ def admin_create_broadcast(
         ).all()
 
     for recipient in recipients:
-        push_runtime_notification(
-            {
-                "id": f"admin-broadcast-{item['id']}-{recipient.id}",
-                "type": "system",
-                "priority": "today",
-                "title": payload.title,
-                "message": payload.content,
-                "timestamp": datetime.utcnow().isoformat(),
-                "isRead": False,
-                "recipient_user_id": recipient.id,
-                "metadata": {"target": payload.target},
-            }
+        create_persisted_notification(
+            db,
+            recipient_user_id=recipient.id,
+            notification_type="system",
+            priority="today",
+            title=payload.title,
+            message=payload.content,
+            metadata={"target": payload.target},
+            source_type="admin-broadcast",
+            source_id=item["id"],
+            commit=False,
         )
     item["reach"] = len(recipients)
+    db.commit()
     ADMIN_BROADCAST_HISTORY.insert(0, item)
     append_admin_audit_log(actor=current_user.username, action="SEND_BROADCAST", target=payload.target)
     return item
@@ -2447,6 +3592,7 @@ def admin_update_settings(
     require_system_admin_user(current_user)
     for key, value in payload.model_dump(exclude_unset=True).items():
         ADMIN_SYSTEM_SETTINGS[key] = value
+    _save_admin_settings()
     append_admin_audit_log(actor=current_user.username, action="UPDATE_SYSTEM_SETTINGS", target="admin.settings")
     return ADMIN_SYSTEM_SETTINGS
 
@@ -2640,9 +3786,9 @@ def delete_existing_action_item(
 @app.get("/api/config/features")
 def get_feature_flags(current_user = Depends(auth.get_current_user)):
     return {
-        "uploadEnabled": False,
-        "jobTrackingEnabled": False,
-        "systemAdminEnabled": current_user.role == "system-admin" and False,
+        "uploadEnabled": current_user.role == "system-admin",
+        "jobTrackingEnabled": current_user.role == "system-admin",
+        "systemAdminEnabled": current_user.role == "system-admin",
     }
 
 @app.get("/health")
@@ -2656,7 +3802,7 @@ def health():
     
     return {
         "status": overall_status,
-        "timestamp": "DEBUG_VERIFIED_" + datetime.now().isoformat(),
+        "timestamp": datetime.now().isoformat(),
         "service": "multiminutes-api",
         "version": "1.0.0-beta",
         "database": db_status,

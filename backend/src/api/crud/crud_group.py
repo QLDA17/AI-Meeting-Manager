@@ -83,6 +83,7 @@ def add_user_to_group(
     user_id: str,
     role: str = "member",
     invited_by: Optional[str] = None,
+    commit: bool = True,
 ) -> models.GroupMembership:
     existing = get_group_membership(db, group_id, user_id)
     if existing:
@@ -96,7 +97,10 @@ def add_user_to_group(
         invited_by=invited_by,
     )
     db.add(db_membership)
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     db.refresh(db_membership)
     return db_membership
 
@@ -138,6 +142,7 @@ def create_group_message(
     user_id: str,
     text: str,
     reactions: Optional[list] = None,
+    reply_to_id: Optional[str] = None,
 ) -> models.GroupMessage:
     db_message = models.GroupMessage(
         id=str(uuid.uuid4()),
@@ -145,6 +150,7 @@ def create_group_message(
         user_id=user_id,
         text=text,
         reactions=reactions or [],
+        reply_to_id=reply_to_id,
     )
     db.add(db_message)
     db.commit()
@@ -160,7 +166,10 @@ def get_group_messages(
 ) -> list[models.GroupMessage]:
     return (
         db.query(models.GroupMessage)
-        .options(joinedload(models.GroupMessage.user))
+        .options(
+            joinedload(models.GroupMessage.user),
+            joinedload(models.GroupMessage.reply_to).joinedload(models.GroupMessage.user),
+        )
         .filter(models.GroupMessage.group_id == group_id)
         .order_by(models.GroupMessage.created_at.asc())
         .offset(offset)

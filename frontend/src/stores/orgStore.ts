@@ -7,6 +7,8 @@ import type { Organization, Group, User } from '../types';
 import api from '../services/api';
 import { normalizeGroup, normalizeMeeting, normalizeOrganization, normalizeUser } from '../services/mappers';
 
+const isActiveOrg = (org: Organization) => org.approvalStatus !== 'pending';
+
 interface OrgState {
   // Current context
   currentOrgId: string | null;
@@ -57,9 +59,13 @@ export const useOrgStore = create<OrgState>((set, get) => ({
     const { orgs } = get();
     const org = orgs.find((o) => o.id === orgId) || null;
     set({ currentOrgId: orgId, currentGroupId: null, currentOrg: org });
+
+    if (!org) {
+      get().loadOrgDetails(orgId);
+    }
+
     // Auto-load related data
     get().loadGroups(orgId);
-    get().loadMeetings(orgId);
     get().loadMembers(orgId);
   },
 
@@ -82,7 +88,20 @@ export const useOrgStore = create<OrgState>((set, get) => ({
     set({ isLoading: true, error: null });
     try {
       const response = await api.get(`/api/organizations/${orgId}`);
-      set({ currentOrg: normalizeOrganization(response.data), isLoading: false });
+      const org = normalizeOrganization(response.data);
+      set((state) => {
+        const hasOrg = state.orgs.some((item) => item.id === org.id);
+        const nextOrgs = hasOrg
+          ? state.orgs.map((item) => (item.id === org.id ? org : item))
+          : [...state.orgs, org];
+
+        return {
+          orgs: nextOrgs,
+          currentOrg: state.currentOrgId === orgId || !state.currentOrgId ? org : state.currentOrg,
+          currentOrgId: state.currentOrgId || orgId,
+          isLoading: false,
+        };
+      });
     } catch (err) {
       set({ error: 'Organization not found', isLoading: false });
     }
@@ -136,7 +155,9 @@ export const useOrgStore = create<OrgState>((set, get) => ({
   setOrgs: (orgs: Organization[]) => {
     set((state) => {
       const nextCurrentOrg =
-        orgs.find((org) => org.id === state.currentOrgId) || null;
+        orgs.find((org) => org.id === state.currentOrgId && isActiveOrg(org)) ||
+        orgs.find(isActiveOrg) ||
+        null;
 
       if (!nextCurrentOrg) {
         return {
@@ -150,9 +171,20 @@ export const useOrgStore = create<OrgState>((set, get) => ({
         };
       }
 
+      const orgChanged = state.currentOrgId !== nextCurrentOrg.id;
+
       return {
         orgs,
+        currentOrgId: nextCurrentOrg.id,
         currentOrg: nextCurrentOrg,
+        ...(orgChanged
+          ? {
+              currentGroupId: null,
+              groups: [],
+              meetings: [],
+              members: [],
+            }
+          : {}),
       };
     });
   },

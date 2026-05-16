@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS users (
     username VARCHAR(50) UNIQUE NOT NULL,
     email VARCHAR(255) UNIQUE NOT NULL,
     password_hash VARCHAR(255) NOT NULL,
-    role VARCHAR(20) NOT NULL CHECK (role IN ('system-admin', 'org-admin', 'group-admin', 'member', 'viewer')),
+    role VARCHAR(20) NOT NULL CHECK (role IN ('system-admin', 'member')),
     first_name VARCHAR(100),
     last_name VARCHAR(100),
     avatar_url VARCHAR(500),
@@ -24,6 +24,9 @@ CREATE TABLE IF NOT EXISTS users (
     notification_preferences JSON,
     is_active BOOLEAN DEFAULT true,
     is_verified BOOLEAN DEFAULT false,
+    phone VARCHAR(20),
+    gender VARCHAR(10) CHECK (gender IS NULL OR gender IN ('male', 'female', 'other')),
+    date_of_birth DATETIME,
     last_login DATETIME,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
@@ -83,12 +86,14 @@ CREATE TABLE IF NOT EXISTS group_messages (
     group_id VARCHAR(36) NOT NULL,
     user_id VARCHAR(36) NOT NULL,
     text TEXT NOT NULL,
+    reply_to_id VARCHAR(36) DEFAULT NULL,
     reactions JSON,
     is_pinned BOOLEAN DEFAULT FALSE,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     CONSTRAINT fk_gm_msg_group FOREIGN KEY (group_id) REFERENCES groups (id) ON DELETE CASCADE,
     CONSTRAINT fk_gm_msg_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
+    CONSTRAINT fk_gm_msg_reply FOREIGN KEY (reply_to_id) REFERENCES group_messages (id) ON DELETE SET NULL,
     INDEX idx_group_messages_group (group_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -120,6 +125,7 @@ CREATE TABLE IF NOT EXISTS invitations (
     group_id VARCHAR(36),
     role VARCHAR(20) DEFAULT 'member' CHECK (role IN ('org-admin', 'group-admin', 'member', 'viewer')),
     token_hash VARCHAR(255) UNIQUE NOT NULL,
+    token_sha256 VARCHAR(64) UNIQUE,
     status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'revoked', 'expired')),
     expires_at DATETIME NOT NULL,
     accepted_at DATETIME,
@@ -131,7 +137,29 @@ CREATE TABLE IF NOT EXISTS invitations (
     CONSTRAINT fk_invitation_group FOREIGN KEY (group_id) REFERENCES groups (id) ON DELETE CASCADE,
     CONSTRAINT fk_invitation_inviter FOREIGN KEY (invited_by) REFERENCES users (id),
     CONSTRAINT fk_invitation_acceptor FOREIGN KEY (accepted_by) REFERENCES users (id) ON DELETE SET NULL,
-    INDEX idx_invitations_email (email)
+    INDEX idx_invitations_email (email),
+    INDEX ix_invitations_token_sha256 (token_sha256)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ----------------------------
+-- Table structure for notifications
+-- ----------------------------
+CREATE TABLE IF NOT EXISTS notifications (
+    id VARCHAR(36) PRIMARY KEY,
+    recipient_user_id VARCHAR(36) NOT NULL,
+    type VARCHAR(50) NOT NULL DEFAULT 'system',
+    priority VARCHAR(20) NOT NULL DEFAULT 'recent' CHECK (priority IN ('urgent', 'today', 'recent')),
+    title VARCHAR(255) NOT NULL,
+    message TEXT NOT NULL,
+    metadata JSON,
+    is_read BOOLEAN DEFAULT FALSE,
+    source_type VARCHAR(50),
+    source_id VARCHAR(36),
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    read_at DATETIME,
+    CONSTRAINT fk_notification_recipient FOREIGN KEY (recipient_user_id) REFERENCES users (id) ON DELETE CASCADE,
+    INDEX idx_notifications_recipient_created (recipient_user_id, created_at),
+    INDEX idx_notifications_source (source_type, source_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ----------------------------
@@ -254,10 +282,33 @@ CREATE TABLE IF NOT EXISTS transcript_segments (
     start_time DECIMAL(10,3) NOT NULL,
     end_time DECIMAL(10,3) NOT NULL,
     text TEXT NOT NULL,
+    language VARCHAR(10) DEFAULT 'auto',
     confidence_score DECIMAL(3,2),
     word_count INTEGER DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT fk_segment_transcript FOREIGN KEY (transcript_id) REFERENCES transcripts (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ----------------------------
+-- Table structure for meeting_transcript_drafts
+-- ----------------------------
+CREATE TABLE IF NOT EXISTS meeting_transcript_drafts (
+    id VARCHAR(36) PRIMARY KEY,
+    meeting_id VARCHAR(36) NOT NULL,
+    user_id VARCHAR(36) NOT NULL,
+    chunk_index INTEGER NOT NULL,
+    text TEXT NOT NULL,
+    segments JSON,
+    language VARCHAR(10) DEFAULT 'auto',
+    provider VARCHAR(50),
+    model VARCHAR(100),
+    start_ms INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_meeting_draft_chunk (meeting_id, user_id, chunk_index),
+    KEY idx_meeting_draft_meeting_user (meeting_id, user_id),
+    CONSTRAINT fk_draft_meeting FOREIGN KEY (meeting_id) REFERENCES meetings (id) ON DELETE CASCADE,
+    CONSTRAINT fk_draft_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ----------------------------

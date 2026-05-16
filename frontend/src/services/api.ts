@@ -37,4 +37,23 @@ api.interceptors.request.use(
   }
 );
 
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error?.response?.status === 401 && typeof window !== "undefined") {
+      const url = String(error.config?.url || "");
+      const isAuthAttempt = url.includes("/api/auth/login") || url.includes("/auth/login");
+      if (!isAuthAttempt) {
+        localStorage.removeItem("user");
+        localStorage.removeItem("session");
+        localStorage.removeItem("auth-storage");
+        if (window.location.pathname !== "/login") {
+          window.location.assign("/login");
+        }
+      }
+    }
+    return Promise.reject(error);
+  }
+);
+
 export default api;

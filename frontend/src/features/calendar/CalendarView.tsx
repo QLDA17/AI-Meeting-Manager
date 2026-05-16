@@ -4,30 +4,93 @@ import dayGridPlugin from '@fullcalendar/daygrid';
 import timeGridPlugin from '@fullcalendar/timegrid';
 import interactionPlugin from '@fullcalendar/interaction';
 import viLocale from '@fullcalendar/core/locales/vi';
-import { Plus, Calendar as CalendarIcon, List, Clock } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { Plus, Calendar as CalendarIcon, AlertCircle, Loader2 } from 'lucide-react';
 import { Card, Button } from '../../components/ui';
 import { useCalendarStore, useAppStore, useOrgStore } from '../../stores';
 import ScheduleMeetingModal from '../../components/meeting/ScheduleMeetingModal';
+import MeetingDetailPopup from '../../components/meeting/MeetingDetailPopup';
+import api from '../../services/api';
+import { toast } from '../../components/ui/Toast';
+import type { Meeting } from '../../types';
+import { getMeetingEnd, getMeetingStart, toMeetingApiDateTime } from '../../utils/meetingDateTime';
+
+const isEditableMeeting = (meeting?: Meeting) =>
+  Boolean(meeting && !['completed', 'canceled'].includes(meeting.status));
+
+const toCalendarEvent = (meeting: Meeting) => {
+  const startStr = getMeetingStart(meeting);
+  const endStr = getMeetingEnd(meeting);
+
+  if (!startStr) return null;
+
+  const startDate = new Date(startStr);
+  if (isNaN(startDate.getTime())) return null;
+
+  const endDate = endStr && !isNaN(new Date(endStr).getTime())
+    ? new Date(endStr)
+    : new Date(startDate.getTime() + 3600000);
+  const now = Date.now();
+  const isPast = endDate.getTime() < now;
+  const isLive = startDate.getTime() <= now && endDate.getTime() >= now;
+
+  let bgColor = '#3b82f6';
+  if (meeting.status === 'completed' || isPast) {
+    bgColor = '#10b981';
+  } else if (meeting.status === 'live' || isLive) {
+    bgColor = '#ef4444';
+  } else if (meeting.status === 'canceled') {
+    bgColor = '#64748b';
+  }
+
+  return {
+    id: meeting.id,
+    title: meeting.title,
+    start: startDate.toISOString(),
+    end: endDate.toISOString(),
+    editable: isEditableMeeting(meeting),
+    className: isPast ? 'fc-event-past' : isLive ? 'fc-event-live' : 'fc-event-upcoming',
+    backgroundColor: bgColor,
+    borderColor: bgColor,
+    extendedProps: {
+      status: meeting.status,
+      groupName: meeting.groupName,
+      bgColor,
+      isPast,
+      isLive,
+    },
+  };
+};
 
 const CalendarView: React.FC = () => {
   const { viewType, setViewType, setSelectedDate, toggleScheduleModal } = useCalendarStore();
   const { meetings, loadMeetings } = useAppStore();
   const { currentOrgId } = useOrgStore();
   const calendarRef = React.useRef<FullCalendar>(null);
-  const navigate = useNavigate();
+  const [selectedMeetingId, setSelectedMeetingId] = React.useState<string | null>(null);
+  const [isPopupOpen, setIsPopupOpen] = React.useState(false);
+  const [isLoading, setIsLoading] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+  const [isUpdatingEvent, setIsUpdatingEvent] = React.useState(false);
 
-  // Load meetings on mount and when org changes
-  React.useEffect(() => {
-    if (currentOrgId) {
-      loadMeetings(currentOrgId);
+  const refreshMeetings = React.useCallback(async () => {
+    if (!currentOrgId) return;
+    setIsLoading(true);
+    setError(null);
+    try {
+      await loadMeetings(currentOrgId);
+    } catch (err: any) {
+      const message = err.response?.data?.detail || 'Không thể tải lịch họp';
+      setError(message);
+      toast.error(message);
+    } finally {
+      setIsLoading(false);
     }
   }, [currentOrgId, loadMeetings]);
 
-  // Debug log
+  // Load meetings on mount and when org changes
   React.useEffect(() => {
-    console.log('DEBUG: Meetings from store:', meetings);
-  }, [meetings]);
+    refreshMeetings();
+  }, [refreshMeetings]);
 
   // Sync FullCalendar instance with viewType from store
   React.useEffect(() => {
@@ -37,59 +100,17 @@ const CalendarView: React.FC = () => {
     }
   }, [viewType]);
 
-  const events = meetings
-    .filter((m) => m.scheduled_start || m.startTime) // Handle both formats
-    .map((m) => {
-      const startStr = m.scheduled_start || m.startTime;
-      const endStr = m.scheduled_end || m.endTime;
-      
-      if (!startStr) return null;
+  const visibleMeetings = React.useMemo(
+    () => currentOrgId
+      ? meetings.filter((meeting) => meeting.orgId === currentOrgId || meeting.organization_id === currentOrgId)
+      : [],
+    [currentOrgId, meetings],
+  );
 
-      try {
-        const startDate = new Date(startStr);
-        const endDate = endStr 
-          ? new Date(endStr) 
-          : new Date(startDate.getTime() + 3600000);
-
-        if (isNaN(startDate.getTime())) {
-          console.error('DEBUG: Invalid Start Date:', startStr);
-          return null;
-        }
-
-        const isPast = endDate.getTime() < new Date().getTime();
-        const now = new Date().getTime();
-        const isLive = startDate.getTime() <= now && endDate.getTime() >= now;
-
-        // Determine color based on status
-        let bgColor = '#3b82f6'; // Default Blue (Upcoming)
-        if (m.status === 'completed' || isPast) {
-          bgColor = '#10b981'; // Emerald (Completed/Past)
-        } else if (m.status === 'live' || isLive) {
-          bgColor = '#ef4444'; // Red (Live/Ongoing)
-        }
-
-        return {
-          id: m.id,
-          title: m.title,
-          start: startDate.toISOString(),
-          end: endDate.toISOString(),
-          className: isPast ? 'fc-event-past' : isLive ? 'fc-event-live' : 'fc-event-upcoming',
-          backgroundColor: bgColor,
-          borderColor: bgColor,
-          extendedProps: {
-            status: m.status,
-            groupName: m.groupName,
-            bgColor,
-            isPast,
-            isLive,
-          },
-        };
-      } catch (e) {
-        console.error('DEBUG: Date parsing error:', e);
-        return null;
-      }
-    })
-    .filter(Boolean) as any[];
+  const events = React.useMemo(
+    () => visibleMeetings.map(toCalendarEvent).filter(Boolean) as any[],
+    [visibleMeetings],
+  );
 
   const handleDateClick = (arg: any) => {
     setSelectedDate(arg.date);
@@ -97,7 +118,61 @@ const CalendarView: React.FC = () => {
   };
 
   const handleEventClick = (arg: any) => {
-    navigate(`/meetings/${arg.event.id}`);
+    setSelectedMeetingId(arg.event.id);
+    setIsPopupOpen(true);
+  };
+
+  const handleEventDrop = async (arg: any) => {
+    const { event } = arg;
+    const meeting = visibleMeetings.find((item) => item.id === event.id);
+    if (!isEditableMeeting(meeting)) {
+      arg.revert();
+      toast.error('Không thể đổi lịch cuộc họp đã hoàn thành hoặc đã hủy');
+      return;
+    }
+    try {
+      setIsUpdatingEvent(true);
+      await api.put(`/api/meetings/${event.id}`, {
+        scheduled_start: toMeetingApiDateTime(event.start),
+        scheduled_end: toMeetingApiDateTime(event.end || new Date(event.start.getTime() + 3600000)),
+      });
+      toast.success('Đã cập nhật thời gian cuộc họp');
+      await refreshMeetings();
+    } catch (err: any) {
+      arg.revert();
+      toast.error(err.response?.data?.detail || 'Lỗi khi cập nhật thời gian');
+    } finally {
+      setIsUpdatingEvent(false);
+    }
+  };
+
+  const handleEventResize = async (arg: any) => {
+    const { event } = arg;
+    const meeting = visibleMeetings.find((item) => item.id === event.id);
+    if (!isEditableMeeting(meeting)) {
+      arg.revert();
+      toast.error('Không thể đổi thời lượng cuộc họp đã hoàn thành hoặc đã hủy');
+      return;
+    }
+    if (!event.end || event.end <= event.start) {
+      arg.revert();
+      toast.error('Giờ kết thúc phải sau giờ bắt đầu');
+      return;
+    }
+    try {
+      setIsUpdatingEvent(true);
+      await api.put(`/api/meetings/${event.id}`, {
+        scheduled_start: toMeetingApiDateTime(event.start),
+        scheduled_end: toMeetingApiDateTime(event.end),
+      });
+      toast.success('Đã cập nhật thời lượng cuộc họp');
+      await refreshMeetings();
+    } catch (err: any) {
+      arg.revert();
+      toast.error(err.response?.data?.detail || 'Lỗi khi cập nhật thời lượng');
+    } finally {
+      setIsUpdatingEvent(false);
+    }
   };
 
   return (
@@ -116,12 +191,24 @@ const CalendarView: React.FC = () => {
           variant="primary" 
           className="flex items-center gap-2"
           onClick={() => toggleScheduleModal(true)}
+          disabled={!currentOrgId}
         >
           <Plus size={18} />
           Lên lịch họp mới
         </Button>
       </div>
 
+      {!currentOrgId && (
+        <Card className="flex min-h-[320px] flex-col items-center justify-center border-dashed p-8 text-center">
+          <CalendarIcon className="mb-4 h-12 w-12 text-gray-300" />
+          <h2 className="text-lg font-bold text-gray-900 dark:text-white">Chưa chọn tổ chức</h2>
+          <p className="mt-2 max-w-md text-sm text-gray-500 dark:text-slate-400">
+            Chọn hoặc thiết lập tổ chức trước khi xem và lên lịch cuộc họp.
+          </p>
+        </Card>
+      )}
+
+      {currentOrgId && (
       <Card className="p-0 overflow-hidden border-none shadow-xl bg-white dark:bg-slate-900">
         <div className="p-4 border-b border-gray-100 dark:border-slate-800 flex justify-between items-center bg-gray-50/50 dark:bg-slate-800/50">
            <div className="flex bg-white dark:bg-slate-900 rounded-lg p-1 border border-gray-200 dark:border-slate-700 shadow-sm">
@@ -161,7 +248,32 @@ const CalendarView: React.FC = () => {
            </div>
         </div>
 
-        <div className="p-4 calendar-container">
+        {error && (
+          <div className="mx-4 mt-4 flex items-center justify-between gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-200">
+            <div className="flex items-center gap-2">
+              <AlertCircle size={16} />
+              <span>{error}</span>
+            </div>
+            <button className="font-bold hover:underline" onClick={refreshMeetings}>
+              Tải lại
+            </button>
+          </div>
+        )}
+
+        <div className="relative p-4 calendar-container">
+          {(isLoading || isUpdatingEvent) && (
+            <div className="absolute inset-4 z-20 flex items-center justify-center rounded-xl bg-white/70 backdrop-blur-sm dark:bg-slate-900/70">
+              <Loader2 className="h-8 w-8 animate-spin text-primary-500" />
+            </div>
+          )}
+          {!isLoading && events.length === 0 && (
+            <div className="pointer-events-none absolute inset-x-4 top-24 z-10 flex justify-center">
+              <div className="rounded-2xl border border-dashed border-gray-200 bg-white/90 px-5 py-4 text-center shadow-sm dark:border-slate-700 dark:bg-slate-900/90">
+                <p className="font-bold text-gray-800 dark:text-slate-100">Chưa có cuộc họp nào</p>
+                <p className="mt-1 text-sm text-gray-500 dark:text-slate-400">Bấm vào một ngày hoặc dùng nút lên lịch để tạo cuộc họp.</p>
+              </div>
+            </div>
+          )}
           <FullCalendar
             ref={calendarRef}
             plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin]}
@@ -175,6 +287,11 @@ const CalendarView: React.FC = () => {
             events={events}
             dateClick={handleDateClick}
             eventClick={handleEventClick}
+            editable={!isUpdatingEvent}
+            eventDurationEditable={!isUpdatingEvent}
+            eventDrop={handleEventDrop}
+            eventResize={handleEventResize}
+            snapDuration="00:15:00"
             height="auto"
             stickyHeaderDates={true}
             eventTimeFormat={{
@@ -198,8 +315,17 @@ const CalendarView: React.FC = () => {
           />
         </div>
       </Card>
+      )}
 
       <ScheduleMeetingModal />
+
+      <MeetingDetailPopup
+        meetingId={selectedMeetingId}
+        isOpen={isPopupOpen}
+        onClose={() => { setIsPopupOpen(false); setSelectedMeetingId(null); }}
+        onDeleted={refreshMeetings}
+        onUpdated={refreshMeetings}
+      />
 
       <style>{`
         .fc {

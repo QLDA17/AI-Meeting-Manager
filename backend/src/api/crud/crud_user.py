@@ -1,6 +1,6 @@
 from sqlalchemy.orm import Session, joinedload
 from typing import List, Optional
-from datetime import datetime
+from datetime import date, datetime, time
 import uuid
 from .. import models, auth
 
@@ -27,7 +27,17 @@ def get_users(db: Session, skip: int = 0, limit: int = 100) -> List[models.User]
     return db.query(models.User).offset(skip).limit(limit).all()
 
 
-def create_user(db: Session, user_data: dict) -> models.User:
+def _as_datetime(value):
+    if isinstance(value, datetime) or value is None:
+        return value
+    if isinstance(value, date):
+        return datetime.combine(value, time.min)
+    if isinstance(value, str) and value:
+        return datetime.fromisoformat(value)
+    return None
+
+
+def create_user(db: Session, user_data: dict, commit: bool = True) -> models.User:
     hashed_password = auth.get_password_hash(user_data["password"])
     db_user = models.User(
         id=user_data.get("id", str(uuid.uuid4())),
@@ -43,9 +53,15 @@ def create_user(db: Session, user_data: dict) -> models.User:
         notification_preferences=user_data.get("notification_preferences"),
         is_active=user_data.get("is_active", True),
         is_verified=user_data.get("is_verified", False),
+        phone=user_data.get("phone"),
+        gender=user_data.get("gender"),
+        date_of_birth=_as_datetime(user_data.get("date_of_birth")),
     )
     db.add(db_user)
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     db.refresh(db_user)
     return db_user
 

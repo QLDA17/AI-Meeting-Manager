@@ -3,7 +3,7 @@
  * Ensures hardware release on camera toggle and premium sidebar experience.
  */
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Mic,
@@ -34,6 +34,9 @@ import { useWebSocket, useAudioRecorder } from "../hooks";
 import { useAuth } from "../context/AuthContext";
 import { useAppStore } from "../stores";
 import { clsx } from "clsx";
+import api from "../services/api";
+import { normalizeMeetingDetail } from "../services/mappers";
+import type { MeetingDetail } from "../types";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -172,18 +175,27 @@ class MeetingRoomErrorBoundary extends React.Component<
 
 const MeetingRoomInner: React.FC = () => {
   const navigate = useNavigate();
+  const location = useLocation();
   const { code } = useParams<{ code: string }>();
   const { user } = useAuth();
   const { meetings } = useAppStore();
+  const roomState = (location.state || {}) as {
+    enableCamera?: boolean;
+    enableMic?: boolean;
+    enableRecord?: boolean;
+  };
+  const [remoteMeeting, setRemoteMeeting] = useState<MeetingDetail | null>(null);
+  const [isMeetingLoading, setIsMeetingLoading] = useState(true);
+  const [meetingLoadError, setMeetingLoadError] = useState<string | null>(null);
   
   const meeting = useMemo(() => {
     if (!code) return null;
-    return (meetings as any[]).find(m => m.code === code || m.id === code) || null;
-  }, [code, meetings]);
+    return (meetings as any[]).find(m => m.code === code || m.id === code) || remoteMeeting;
+  }, [code, meetings, remoteMeeting]);
 
-  const [isRecording] = useState(true);
-  const [micOn, setMicOn] = useState(true);
-  const [cameraOn, setCameraOn] = useState(true);
+  const [isRecording] = useState(roomState.enableRecord !== false);
+  const [micOn, setMicOn] = useState(roomState.enableMic !== false);
+  const [cameraOn, setCameraOn] = useState(roomState.enableCamera !== false);
   const [screenSharing, setScreenSharing] = useState(false);
   const [screenStream, setScreenStream] = useState<MediaStream | null>(null);
   const [sidePanel, setSidePanel] = useState<SidePanel>("ai-notes");
@@ -193,7 +205,7 @@ const MeetingRoomInner: React.FC = () => {
   const [mainView, setMainView] = useState<"camera" | "screen">("camera");
   
   const [participants] = useState<Participant[]>(() => [
-    { id: "me", name: user?.displayName || user?.email?.split('@')[0] || "Bạn", role: "organizer", micOn: true, cameraOn: true, handRaised: false },
+    { id: "me", name: user?.displayName || user?.email?.split('@')[0] || "Bạn", role: "organizer", micOn: roomState.enableMic !== false, cameraOn: roomState.enableCamera !== false, handRaised: false },
   ]);
 
   const [spotlightId, setSpotlightId] = useState<string>("me");
@@ -210,6 +222,7 @@ const MeetingRoomInner: React.FC = () => {
     startRecording,
     stopRecording,
     finalize,
+    hydrateDraft,
     error: recorderError,
   } = useAudioRecorder(localStream, meetingId);
 
@@ -220,6 +233,40 @@ const MeetingRoomInner: React.FC = () => {
   const galleryParticipants = useMemo(() => 
     participants.filter(p => p.id !== spotlightId)
   , [participants, spotlightId]);
+
+  useEffect(() => {
+    if (!code) return;
+    const localMeeting = (meetings as any[]).find(m => m.code === code || m.id === code);
+    if (localMeeting) {
+      setIsMeetingLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setIsMeetingLoading(true);
+    setMeetingLoadError(null);
+    const looksLikeUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(code);
+    api.get(looksLikeUuid ? `/api/meetings/${code}` : `/api/meetings/by-code/${code}`)
+      .then((response) => {
+        if (!cancelled) setRemoteMeeting(normalizeMeetingDetail(response.data));
+      })
+      .catch((err) => {
+        if (!cancelled) setMeetingLoadError(err.response?.data?.detail || "Không thể tải cuộc họp");
+      })
+      .finally(() => {
+        if (!cancelled) setIsMeetingLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [code, meetings]);
+
+  useEffect(() => {
+    if (meetingId) {
+      hydrateDraft(meetingId);
+    }
+  }, [hydrateDraft, meetingId]);
 
   // Handle Camera Hardware Toggle
   const stopCameraHardware = useCallback(() => {
@@ -236,8 +283,8 @@ const MeetingRoomInner: React.FC = () => {
       // If we already have a stream, stop the old tracks first
       stopCameraHardware();
       
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        video: { width: 1280, height: 720, facingMode: 'user' }, 
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: cameraOn ? { width: 1280, height: 720, facingMode: 'user' } : false,
         audio: true // Keep audio on
       });
       
@@ -254,7 +301,7 @@ const MeetingRoomInner: React.FC = () => {
       showToast.error("Không thể truy cập Camera. Kiểm tra quyền trình duyệt.");
       return null;
     }
-  }, [micOn, stopCameraHardware]);
+  }, [cameraOn, micOn, stopCameraHardware]);
 
   // Initial Camera Start
   useEffect(() => {
@@ -267,14 +314,14 @@ const MeetingRoomInner: React.FC = () => {
 
   // Auto-start audio recording when stream is ready
   useEffect(() => {
-    if (localStream && !isAudioRecording && meetingId) {
+    if (isRecording && localStream && !isAudioRecording && meetingId) {
       const timer = setTimeout(() => {
         startRecording();
         showToast.info("Đã bắt đầu ghi âm và phiên âm AI");
       }, 1000);
       return () => clearTimeout(timer);
     }
-  }, [localStream, meetingId]);
+  }, [isRecording, localStream, meetingId]);
 
   // Strict Camera Toggle Effect
   useEffect(() => {
@@ -341,7 +388,7 @@ const MeetingRoomInner: React.FC = () => {
       setIsFinalizing(true);
       showToast.info("Đang lưu transcript và tóm tắt AI...");
       try {
-        const result = await finalize(meetingId, meeting?.language || user?.language || "vi");
+        const result = await finalize(meetingId, "vi");
         if (result?.transcript_status === "EMPTY") {
           showToast.info("Không có giọng nói rõ để lưu transcript.");
         } else if (result?.summary_status === "FAILED") {
@@ -366,6 +413,28 @@ const MeetingRoomInner: React.FC = () => {
       navigate("/meetings");
     }
   };
+
+  if (isMeetingLoading) {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#020617] text-white">
+        <div className="h-10 w-10 animate-spin rounded-full border-4 border-indigo-500 border-t-transparent" />
+      </div>
+    );
+  }
+
+  if (meetingLoadError || !meeting) {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#020617] p-6 text-white">
+        <div className="max-w-md rounded-3xl border border-slate-800 bg-slate-900 p-8 text-center">
+          <h2 className="text-xl font-black">Không thể vào phòng họp</h2>
+          <p className="mt-3 text-sm text-slate-400">{meetingLoadError || "Cuộc họp không tồn tại hoặc bạn không có quyền truy cập."}</p>
+          <button onClick={() => navigate("/meetings")} className="mt-6 rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-bold text-white">
+            Quay lại danh sách
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   const sendChat = (e: React.FormEvent) => {
     e.preventDefault();
@@ -792,7 +861,7 @@ const MeetingRoomInner: React.FC = () => {
                            onClick={async () => {
                              setIsFinalizing(true);
                              try {
-                               const result = await finalize(meetingId, meeting?.language || user?.language || "vi");
+                               const result = await finalize(meetingId, "vi");
                                if (result?.summary_status === "COMPLETED") {
                                  showToast.success("Đã tạo AI Notes thành công!");
                                } else if (result?.summary_status === "FAILED") {

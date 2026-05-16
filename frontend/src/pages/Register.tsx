@@ -4,7 +4,7 @@ import { motion } from 'framer-motion';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { Check, Mail, Lock, ArrowRight, Eye, EyeOff } from 'lucide-react';
+import { Check, Mail, Lock, ArrowRight, Eye, EyeOff, UserRound, Phone, CalendarDays } from 'lucide-react';
 import { Button, Input, Logo } from '../components/ui';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
@@ -13,7 +13,16 @@ const registerSchema = z
   .object({
     firstName: z.string().min(1, 'Vui long nhap ho'),
     lastName: z.string().min(1, 'Vui long nhap ten'),
+    username: z.string().min(3, 'Username toi thieu 3 ky tu').max(50, 'Username toi da 50 ky tu').optional().or(z.literal('')),
     email: z.string().email('Email khong hop le'),
+    phone: z.string().regex(/^(0|\+84)\d{9,10}$/, 'SDT khong hop le').optional().or(z.literal('')),
+    gender: z.enum(['male', 'female', 'other', '']).optional(),
+    dateOfBirth: z.string().min(1, 'Vui long chon ngay sinh').refine((val) => {
+      const birthDate = new Date(val);
+      if (Number.isNaN(birthDate.getTime())) return false;
+      const age = (Date.now() - birthDate.getTime()) / (365.25 * 24 * 60 * 60 * 1000);
+      return age >= 13;
+    }, { message: 'Ban phai tu 13 tuoi tro len' }),
     password: z.string().min(8, 'Mat khau toi thieu 8 ky tu'),
     confirmPassword: z.string(),
     acceptTerms: z.literal(true, {
@@ -87,7 +96,7 @@ const formatApiError = (err: unknown): string => {
 
 const Register: React.FC = () => {
   const navigate = useNavigate();
-  const { login } = useAuth();
+  const { registerAndSetSession } = useAuth();
   const [searchParams] = useSearchParams();
   const inviteToken = searchParams.get('inviteToken');
   const [apiError, setApiError] = React.useState('');
@@ -144,28 +153,25 @@ const Register: React.FC = () => {
     setApiError('');
 
     try {
-      await api.post('/api/auth/register', {
+      const response = await api.post('/api/auth/register', {
+        username: data.username || undefined,
         firstName: data.firstName,
         lastName: data.lastName,
         email: data.email,
+        phone: data.phone || undefined,
+        gender: data.gender || undefined,
+        dateOfBirth: data.dateOfBirth,
         password: data.password,
         inviteToken,
       });
+      const { access_token, user, nextStep } = response.data;
+      registerAndSetSession(access_token, user);
       setSuccess(true);
 
-      try {
-        await login(data.email, data.password);
-        setTimeout(() => {
-          navigate(
-            inviteToken
-              ? `/invite?token=${encodeURIComponent(inviteToken)}`
-              : '/setup-organization',
-          );
-        }, 1200);
-      } catch {
-        setTimeout(() => {
-          navigate(inviteToken ? `/login?inviteToken=${encodeURIComponent(inviteToken)}` : '/login');
-        }, 1200);
+      if (nextStep === 'dashboard') {
+        navigate('/dashboard');
+      } else {
+        navigate('/setup-organization');
       }
     } catch (err: unknown) {
       const response = (err as { response?: { status?: number; data?: any } })?.response;
@@ -333,6 +339,20 @@ const Register: React.FC = () => {
 
                 <div className="space-y-2">
                   <label className="ml-1 text-[10px] font-black uppercase tracking-widest text-slate-500">
+                    Username
+                  </label>
+                  <Input
+                    placeholder="De trong de tu tao tu email"
+                    error={errors.username?.message}
+                    disabled={isLoading}
+                    leftIcon={<UserRound size={18} className="text-slate-500" />}
+                    className="h-12 rounded-xl border-white/10 bg-white/[0.03] text-white placeholder:text-slate-700 focus:border-primary-500/50 focus:bg-white/[0.05]"
+                    {...register('username')}
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <label className="ml-1 text-[10px] font-black uppercase tracking-widest text-slate-500">
                     Email cong viec
                   </label>
                   <Input
@@ -344,6 +364,52 @@ const Register: React.FC = () => {
                     className="h-12 rounded-xl border-white/10 bg-white/[0.03] text-white placeholder:text-slate-700 focus:border-primary-500/50 focus:bg-white/[0.05]"
                     {...register('email')}
                   />
+                </div>
+
+                <div className="grid gap-4 sm:grid-cols-3">
+                  <div className="space-y-2">
+                    <label className="ml-1 text-[10px] font-black uppercase tracking-widest text-slate-500">
+                      SDT
+                    </label>
+                    <Input
+                      placeholder="0901234567"
+                      error={errors.phone?.message}
+                      disabled={isLoading}
+                      leftIcon={<Phone size={18} className="text-slate-500" />}
+                      className="h-12 rounded-xl border-white/10 bg-white/[0.03] text-white placeholder:text-slate-700 focus:border-primary-500/50 focus:bg-white/[0.05]"
+                      {...register('phone')}
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="ml-1 text-[10px] font-black uppercase tracking-widest text-slate-500">
+                      Gioi tinh
+                    </label>
+                    <select
+                      disabled={isLoading}
+                      className="h-12 w-full rounded-xl border border-white/10 bg-white/[0.03] px-4 text-sm font-semibold text-white outline-none transition focus:border-primary-500/50 focus:bg-white/[0.05]"
+                      {...register('gender')}
+                    >
+                      <option value="" className="bg-slate-950">Khong chon</option>
+                      <option value="male" className="bg-slate-950">Nam</option>
+                      <option value="female" className="bg-slate-950">Nu</option>
+                      <option value="other" className="bg-slate-950">Khac</option>
+                    </select>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="ml-1 text-[10px] font-black uppercase tracking-widest text-slate-500">
+                      Ngay sinh
+                    </label>
+                    <Input
+                      type="date"
+                      error={errors.dateOfBirth?.message}
+                      disabled={isLoading}
+                      leftIcon={<CalendarDays size={18} className="text-slate-500" />}
+                      className="h-12 rounded-xl border-white/10 bg-white/[0.03] text-white placeholder:text-slate-700 focus:border-primary-500/50 focus:bg-white/[0.05]"
+                      {...register('dateOfBirth')}
+                    />
+                  </div>
                 </div>
 
                 <div className="space-y-2">

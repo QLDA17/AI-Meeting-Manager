@@ -106,6 +106,9 @@ export interface User {
   lastName: string;
   displayName?: string;
   avatarUrl?: string;
+  phone?: string;
+  gender?: 'male' | 'female' | 'other';
+  dateOfBirth?: string;
   createdAt: string;
   updatedAt: string;
   lastLoginAt?: string;
@@ -166,6 +169,17 @@ export interface MeetingTranscript {
   createdAt: string;
 }
 
+export interface MeetingTranscriptSegment {
+  id: string;
+  transcriptId: string;
+  speakerLabel: string;
+  startTime: number;
+  endTime: number;
+  text: string;
+  language: string;
+  confidenceScore?: number;
+}
+
 export interface MeetingSummaryRecord {
   id: string;
   meetingSummary: string;
@@ -180,6 +194,7 @@ export interface MeetingDetail extends Meeting {
   group?: Group;
   createdByUser?: User;
   transcripts: MeetingTranscript[];
+  transcriptSegments: MeetingTranscriptSegment[];
   summaries: MeetingSummaryRecord[];
   actionItems: ActionItem[];
   transcriptContent?: string;
@@ -203,6 +218,10 @@ export interface GroupMessage {
   reactions?: Array<{ emoji: string; count: number }>;
   isPinned: boolean;
   is_pinned?: boolean;
+  replyToId?: string;
+  reply_to_id?: string;
+  replyTo?: GroupMessage;
+  reply_to?: GroupMessage;
   createdAt: string;
   created_at?: string;
   updatedAt: string;
