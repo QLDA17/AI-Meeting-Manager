@@ -29,6 +29,8 @@ def create_transcript(db: Session, transcript_data: dict) -> models.Transcript:
         processing_status=transcript_data.get("processing_status", "PENDING"),
         stt_provider=transcript_data.get("stt_provider", "whisper"),
         confidence_score=transcript_data.get("confidence_score"),
+        post_processed=transcript_data.get("post_processed", False),
+        nlp_metadata=transcript_data.get("nlp_metadata"),
     )
     db.add(db_transcript)
     db.commit()
@@ -70,8 +72,10 @@ def create_transcript_segment(db: Session, segment_data: dict) -> models.Transcr
         start_time=segment_data["start_time"],
         end_time=segment_data["end_time"],
         text=segment_data["text"],
+        original_text=segment_data.get("original_text"),
         language=segment_data.get("language", "auto"),
         confidence_score=segment_data.get("confidence_score"),
+        nlp_metadata=segment_data.get("nlp_metadata"),
         word_count=segment_data.get("word_count", 0),
     )
     db.add(db_segment)
@@ -90,8 +94,10 @@ def create_transcript_segments_bulk(db: Session, segments: List[dict]) -> List[m
             start_time=segment_data["start_time"],
             end_time=segment_data["end_time"],
             text=segment_data["text"],
+            original_text=segment_data.get("original_text"),
             language=segment_data.get("language", "auto"),
             confidence_score=segment_data.get("confidence_score"),
+            nlp_metadata=segment_data.get("nlp_metadata"),
             word_count=segment_data.get("word_count", 0),
         )
         db_segments.append(db_segment)
@@ -123,6 +129,10 @@ def create_meeting_summary(db: Session, summary_data: dict) -> models.MeetingSum
         key_points=summary_data.get("key_points"),
         decisions=summary_data.get("decisions"),
         action_items=summary_data.get("action_items"),
+        risks=summary_data.get("risks"),
+        open_questions=summary_data.get("open_questions"),
+        timeline_highlights=summary_data.get("timeline_highlights"),
+        speaker_summaries=summary_data.get("speaker_summaries"),
         meeting_summary=summary_data.get("meeting_summary"),
         ai_provider=summary_data.get("ai_provider", "openai"),
         model_name=summary_data.get("model_name"),

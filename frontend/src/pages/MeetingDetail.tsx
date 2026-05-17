@@ -35,6 +35,7 @@ type DetailTab = 'summary' | 'transcript' | 'actions' | 'ai-notes';
 type TranscriptGroup = {
   id: string;
   speakerLabel: string;
+  speakerRawLabel: string;
   startTime: number;
   endTime: number;
   languages: string[];
@@ -69,6 +70,7 @@ const groupTranscriptSegments = (segments: MeetingTranscriptSegment[]): Transcri
     groups.push({
       id: segment.id,
       speakerLabel,
+      speakerRawLabel: segment.speakerRawLabel || speakerLabel,
       startTime: segment.startTime,
       endTime: segment.endTime || segment.startTime,
       languages: [language],
@@ -88,6 +90,8 @@ const MeetingDetail: React.FC = () => {
   const [summaryLanguage, setSummaryLanguage] = useState<string>('vi');
   const [isEditTitleOpen, setIsEditTitleOpen] = useState(false);
   const [selectedTranscriptSpeaker, setSelectedTranscriptSpeaker] = useState('all');
+  const [editingSpeakerLabel, setEditingSpeakerLabel] = useState<string | null>(null);
+  const [speakerNameInput, setSpeakerNameInput] = useState('');
 
   const query = useQuery({
     queryKey: ['meeting-detail', id],
@@ -100,8 +104,40 @@ const MeetingDetail: React.FC = () => {
 
   const meeting = query.data;
   const actionItems = meeting?.actionItems || [];
+
+  // RSVP: fetch current user's invite status
+  const [myInviteStatus, setMyInviteStatus] = useState<string | null>(null);
+  const [myParticipantId, setMyParticipantId] = useState<string | null>(null);
+  const [isRsvpLoading, setIsRsvpLoading] = useState(false);
+
+  React.useEffect(() => {
+    if (!id || !user) return;
+    api.get(`/api/meetings/${id}/my-status`)
+      .then((res) => {
+        setMyInviteStatus(res.data.invite_status);
+        setMyParticipantId(res.data.participant_id);
+      })
+      .catch(() => {});
+  }, [id, user]);
+
+  const handleRsvp = async (status: 'accepted' | 'declined') => {
+    if (!myParticipantId) return;
+    setIsRsvpLoading(true);
+    try {
+      await api.put(`/api/participants/${myParticipantId}/rsvp`, { invite_status: status });
+      setMyInviteStatus(status);
+    } catch {
+      // silent
+    } finally {
+      setIsRsvpLoading(false);
+    }
+  };
   const keyPoints = meeting?.keyPointsText?.length ? meeting.keyPointsText : meeting?.keyPoints || [];
   const decisions = meeting?.decisionsText?.length ? meeting.decisionsText : meeting?.decisions || [];
+  const risks = meeting?.risksText || [];
+  const openQuestions = meeting?.openQuestionsText || [];
+  const timelineHighlights = meeting?.timelineHighlightsText || [];
+  const speakerSummaries = meeting?.speakerSummariesText || [];
   const transcript = useMemo(() => {
     if (!meeting) return '';
     return meeting.transcriptContent || meeting.transcripts[0]?.content || '';
@@ -121,8 +157,25 @@ const MeetingDetail: React.FC = () => {
   );
   const summary = meeting?.meetingSummaryText || meeting?.summary || '';
   const summaryFailed = meeting?.summaryStatus === 'FAILED';
-  const summaryErrorText = meeting?.summaryErrorText || 'AgentRouter khong tao duoc AI Notes. Kiem tra token, model hoac log backend.';
+  const summaryErrorText = meeting?.summaryErrorText || 'AgentRouter không tạo được AI Notes. Kiểm tra token, model hoặc log backend.';
   const currentLanguage = meeting?.transcriptLanguage || summaryLanguage;
+  const hasAiNotes = Boolean(
+    summary ||
+    keyPoints.length > 0 ||
+    decisions.length > 0 ||
+    risks.length > 0 ||
+    openQuestions.length > 0 ||
+    timelineHighlights.length > 0 ||
+    speakerSummaries.length > 0 ||
+    actionItems.length > 0,
+  );
+  const aiNotesStatusLabel = isRegenerating
+    ? 'Đang tạo AI Notes'
+    : summaryFailed
+      ? 'Lỗi tạo AI Notes'
+      : hasAiNotes
+        ? 'AI Notes đã sẵn sàng'
+        : 'Chưa có AI Notes';
   const formatSegmentTime = (seconds: number) => {
     const safeSeconds = Number.isFinite(seconds) ? Math.max(0, seconds) : 0;
     const minutes = Math.floor(safeSeconds / 60);
@@ -151,7 +204,7 @@ const MeetingDetail: React.FC = () => {
       const response = await api.post(`/api/meetings/${id}/finalize`, {
         transcript,
         segments: transcriptSegments.map((segment) => ({
-          speaker: segment.speakerLabel,
+          speaker: segment.speakerRawLabel || segment.speakerLabel,
           start: segment.startTime,
           end: segment.endTime,
           text: segment.text,
@@ -175,6 +228,22 @@ const MeetingDetail: React.FC = () => {
     }
   };
 
+  const handleSaveSpeakerName = async () => {
+    if (!id || !editingSpeakerLabel || !speakerNameInput.trim()) return;
+    try {
+      await api.patch(
+        `/api/meetings/${id}/speaker-mappings/${encodeURIComponent(editingSpeakerLabel)}`,
+        { display_name: speakerNameInput.trim() },
+      );
+      setEditingSpeakerLabel(null);
+      setSpeakerNameInput('');
+      await query.refetch();
+      showToast.success("Đã cập nhật tên người nói");
+    } catch (err: any) {
+      showToast.error(err?.response?.data?.detail || "Không cập nhật được tên người nói");
+    }
+  };
+
   if (query.isLoading) {
     return (
       <div className="flex min-h-[60vh] items-center justify-center">
@@ -189,9 +258,9 @@ const MeetingDetail: React.FC = () => {
         <div className="mb-6 rounded-full bg-red-50 p-6 dark:bg-red-900/20">
           <AlertCircle className="h-12 w-12 text-red-600 dark:text-red-400" />
         </div>
-        <h2 className="text-3xl font-black text-gray-900 dark:text-slate-100">Khong tim thay cuoc hop</h2>
+        <h2 className="text-3xl font-black text-gray-900 dark:text-slate-100">Không tìm thấy cuộc họp</h2>
         <p className="mt-4 max-w-md text-lg text-gray-500 dark:text-slate-400">
-          Cuoc hop nay khong ton tai hoac ban khong con quyen truy cap.
+          Cuộc họp này không tồn tại hoặc bạn không còn quyền truy cập.
         </p>
         <button
           onClick={() => navigate('/meetings')}
@@ -273,7 +342,7 @@ const MeetingDetail: React.FC = () => {
       <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="space-y-4">
         <div className="flex items-center justify-between">
           <nav className="flex items-center gap-2 text-sm font-medium text-gray-500 dark:text-slate-400">
-            <Link to="/meetings" className="transition hover:text-primary-600">Cuoc hop</Link>
+            <Link to="/meetings" className="transition hover:text-primary-600">Cuộc họp</Link>
             <span>/</span>
             {meeting.organization && (
               <>
@@ -378,6 +447,46 @@ const MeetingDetail: React.FC = () => {
         </div>
       </motion.div>
 
+      {/* RSVP Banner */}
+      {meeting && myInviteStatus === 'pending' && (
+        <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="rounded-2xl border border-amber-200 bg-amber-50 p-5 dark:border-amber-900/30 dark:bg-amber-900/10">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h3 className="text-sm font-bold text-amber-800 dark:text-amber-200">Bạn được mời tham gia cuộc họp này</h3>
+              <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">Vui lòng xác nhận tham gia hoặc từ chối lời mời.</p>
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => handleRsvp('declined')}
+                disabled={isRsvpLoading}
+                className="rounded-lg border border-gray-200 bg-white px-4 py-2 text-xs font-bold text-gray-600 transition hover:bg-gray-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
+              >
+                Từ chối
+              </button>
+              <button
+                onClick={() => handleRsvp('accepted')}
+                disabled={isRsvpLoading}
+                className="rounded-lg bg-emerald-600 px-4 py-2 text-xs font-bold text-white transition hover:bg-emerald-700"
+              >
+                Chấp nhận tham gia
+              </button>
+            </div>
+          </div>
+        </motion.div>
+      )}
+
+      {meeting && myInviteStatus === 'accepted' && isUpcomingMeeting && (
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-xs font-bold text-emerald-700 dark:border-emerald-900/30 dark:bg-emerald-900/10 dark:text-emerald-300">
+          Bạn đã chấp nhận tham gia cuộc họp này
+        </div>
+      )}
+
+      {meeting && myInviteStatus === 'declined' && (
+        <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-2.5 text-xs font-bold text-red-700 dark:border-red-900/30 dark:bg-red-900/10 dark:text-red-300">
+          Bạn đã từ chối tham gia cuộc họp này
+        </div>
+      )}
+
       {!isUpcomingMeeting && (
         <div className="sticky top-4 z-30">
           <AudioPlayer src={meeting.audioUrl} />
@@ -388,15 +497,15 @@ const MeetingDetail: React.FC = () => {
         <div className="lg:col-span-2">
           {isUpcomingMeeting ? (
             <div className="rounded-3xl border border-blue-200 bg-blue-50/40 p-8 shadow-sm dark:border-blue-900/30 dark:bg-blue-900/10">
-              <h3 className="text-xl font-black text-blue-900 dark:text-blue-200">Cuoc hop sap toi</h3>
+              <h3 className="text-xl font-black text-blue-900 dark:text-blue-200">Cuộc họp sắp tới</h3>
               <p className="mt-3 text-sm leading-relaxed text-blue-800 dark:text-blue-300">
-                Cuoc hop nay chua dien ra nen chua co ban ghi, tom tat AI va viec can lam.
-                Sau khi hop ket thuc va he thong xu ly xong, cac noi dung nay se tu dong xuat hien tai day.
+                Cuộc họp này chưa diễn ra nên chưa có bản ghi, tóm tắt AI và việc cần làm.
+                Sau khi họp kết thúc và hệ thống xử lý xong, các nội dung này sẽ tự động xuất hiện tại đây.
               </p>
               <div className="mt-4 flex flex-wrap gap-2 text-xs font-bold text-blue-700 dark:text-blue-300">
-                <span className="rounded-full bg-white/70 px-3 py-1 dark:bg-slate-900/40">Trang thai: Sap toi</span>
+                <span className="rounded-full bg-white/70 px-3 py-1 dark:bg-slate-900/40">Trạng thái: Sắp tới</span>
                 <span className="rounded-full bg-white/70 px-3 py-1 dark:bg-slate-900/40">
-                  Bat dau: {format(new Date(meeting.startTime), 'HH:mm dd/MM/yyyy')}
+                  Bắt đầu: {format(new Date(meeting.startTime), 'HH:mm dd/MM/yyyy')}
                 </span>
               </div>
             </div>
@@ -424,9 +533,9 @@ const MeetingDetail: React.FC = () => {
                   {activeTab === 'summary' && (
                     <motion.div key="summary" initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 10 }} className="space-y-8">
                       <section>
-                        <h3 className="mb-4 text-lg font-black text-gray-900 dark:text-slate-100">Tom tat cuoc hop</h3>
+                        <h3 className="mb-4 text-lg font-black text-gray-900 dark:text-slate-100">Tóm tắt cuộc họp</h3>
                         <div className="rounded-2xl border border-primary-100 bg-primary-50/30 p-6 leading-relaxed text-gray-800 dark:border-primary-900/20 dark:bg-primary-900/10 dark:text-slate-300">
-                          {summary || 'Chua co tom tat cho cuoc hop nay.'}
+                          {summary || 'Chưa có tóm tắt cho cuộc họp này.'}
                         </div>
                       </section>
 
@@ -434,7 +543,7 @@ const MeetingDetail: React.FC = () => {
                         <section>
                           <h3 className="mb-4 flex items-center gap-2 text-lg font-black text-gray-900 dark:text-slate-100">
                             <Key size={20} className="text-blue-500" />
-                            Diem chinh thao luan
+                            Điểm chính thảo luận
                           </h3>
                           <div className="grid gap-3">
                             {keyPoints.map((point, index) => (
@@ -453,7 +562,7 @@ const MeetingDetail: React.FC = () => {
                         <section>
                           <h3 className="mb-4 flex items-center gap-2 text-lg font-black text-gray-900 dark:text-slate-100">
                             <Target size={20} className="text-green-500" />
-                            Quyet dinh da thong nhat
+                            Quyết định đã thống nhất
                           </h3>
                           <div className="space-y-3">
                             {decisions.map((decision, index) => (
@@ -508,6 +617,16 @@ const MeetingDetail: React.FC = () => {
                               <div className="mb-3 flex flex-wrap items-center gap-2 text-xs font-bold text-gray-500 dark:text-slate-400">
                                 <span className="rounded-full bg-white px-2.5 py-1 dark:bg-slate-900">{formatSegmentTime(group.startTime)}</span>
                                 <span className="text-gray-800 dark:text-slate-200">{group.speakerLabel}</span>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setEditingSpeakerLabel(group.speakerRawLabel);
+                                    setSpeakerNameInput(group.speakerLabel);
+                                  }}
+                                  className="rounded-full bg-slate-100 px-2 py-1 text-[10px] font-black uppercase tracking-widest text-slate-500 transition hover:bg-primary-50 hover:text-primary-700 dark:bg-slate-900 dark:text-slate-400"
+                                >
+                                  Đổi tên
+                                </button>
                                 {group.languages.map((language) => (
                                   <span key={language} className="rounded-full bg-primary-50 px-2 py-1 uppercase text-primary-700 dark:bg-primary-900/20 dark:text-primary-300">
                                     {language}
@@ -540,11 +659,11 @@ const MeetingDetail: React.FC = () => {
 
                   {activeTab === 'actions' && (
                     <motion.div key="actions" initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 10 }} className="space-y-4">
-                      <h3 className="text-lg font-black text-gray-900 dark:text-slate-100">Viec can lam</h3>
+                      <h3 className="text-lg font-black text-gray-900 dark:text-slate-100">Việc cần làm</h3>
                       {actionItems.length === 0 ? (
                         <div className="rounded-2xl border border-dashed border-gray-200 bg-gray-50 p-10 text-center dark:border-slate-700 dark:bg-slate-800/30">
                           <CheckCircle2 size={32} className="mx-auto mb-3 text-gray-300 dark:text-slate-600" />
-                          <p className="text-sm font-bold text-gray-500 dark:text-slate-400">Chua co viec can lam nao duoc trich xuat</p>
+                          <p className="text-sm font-bold text-gray-500 dark:text-slate-400">Chưa có việc cần làm nào được trích xuất</p>
                         </div>
                       ) : (
                         <div className="space-y-3">
@@ -605,7 +724,7 @@ const MeetingDetail: React.FC = () => {
                           AI Notes
                         </h3>
                         <p className="mt-1 text-xs font-semibold uppercase tracking-widest text-gray-400">
-                          {meeting.transcriptLanguage || 'vi'} / {keyPoints.length} diem chinh / {actionItems.length} viec can lam
+                          {aiNotesStatusLabel} / {currentLanguage || 'vi'} / {keyPoints.length} điểm chính / {decisions.length} quyết định / {actionItems.length} việc cần làm
                         </p>
                       </div>
 
@@ -614,7 +733,7 @@ const MeetingDetail: React.FC = () => {
                           <div className="flex items-start gap-3">
                             <AlertCircle size={20} className="mt-0.5 shrink-0" />
                             <div className="flex-1">
-                              <p className="text-sm font-black uppercase tracking-widest">AI Notes dang loi</p>
+                              <p className="text-sm font-black uppercase tracking-widest">AI Notes đang lỗi</p>
                               <p className="mt-2 text-sm leading-6">{summaryErrorText}</p>
                               {(meeting.summaryProvider || meeting.summaryModelName) && (
                                 <p className="mt-3 text-xs font-bold uppercase tracking-widest text-red-500 dark:text-red-300">
@@ -651,11 +770,11 @@ const MeetingDetail: React.FC = () => {
                         </div>
                       )}
 
-                      {!summary && keyPoints.length === 0 && decisions.length === 0 && actionItems.length === 0 ? (
+                      {!hasAiNotes ? (
                         <div className="rounded-2xl border border-dashed border-gray-200 bg-gray-50 p-10 text-center dark:border-slate-700 dark:bg-slate-800/30">
                           <Sparkles size={32} className="mx-auto mb-3 text-gray-300 dark:text-slate-600" />
                           <p className="text-sm font-bold text-gray-500 dark:text-slate-400">
-                            {summaryFailed ? 'Transcript da luu, nhung AI Notes chua tao duoc.' : 'Chua co AI Notes cho cuoc hop nay.'}
+                            {summaryFailed ? 'Transcript đã lưu, nhưng AI Notes chưa tạo được.' : 'Chưa có AI Notes cho cuộc họp này.'}
                           </p>
                         </div>
                       ) : (
@@ -664,9 +783,9 @@ const MeetingDetail: React.FC = () => {
                             <section className="rounded-2xl border border-primary-100 bg-primary-50/30 p-5 dark:border-primary-900/20 dark:bg-primary-900/10">
                               <h4 className="mb-3 flex items-center gap-2 text-sm font-black uppercase tracking-widest text-primary-700 dark:text-primary-300">
                                 <FileText size={16} />
-                                Tom tat
+                                Tóm tắt
                               </h4>
-                              <p className="text-sm leading-7 text-gray-800 dark:text-slate-300">{summary}</p>
+                              <p className="max-w-3xl whitespace-pre-line text-sm leading-7 text-gray-800 dark:text-slate-300">{summary}</p>
                             </section>
                           )}
 
@@ -674,7 +793,7 @@ const MeetingDetail: React.FC = () => {
                             <section className="space-y-3">
                               <h4 className="flex items-center gap-2 text-sm font-black uppercase tracking-widest text-blue-600 dark:text-blue-300">
                                 <Key size={16} />
-                                Diem chinh
+                                Điểm chính
                               </h4>
                               {keyPoints.map((point, index) => (
                                 <div key={`${point}-${index}`} className="flex items-start gap-3 rounded-xl border border-gray-100 bg-gray-50/60 p-4 dark:border-slate-800 dark:bg-slate-800/30">
@@ -691,7 +810,7 @@ const MeetingDetail: React.FC = () => {
                             <section className="space-y-3">
                               <h4 className="flex items-center gap-2 text-sm font-black uppercase tracking-widest text-emerald-600 dark:text-emerald-300">
                                 <Target size={16} />
-                                Quyet dinh
+                                Quyết định
                               </h4>
                               {decisions.map((decision, index) => (
                                 <div key={`${decision}-${index}`} className="flex items-start gap-3 rounded-xl border border-emerald-100 bg-emerald-50/40 p-4 dark:border-emerald-900/20 dark:bg-emerald-900/10">
@@ -702,11 +821,72 @@ const MeetingDetail: React.FC = () => {
                             </section>
                           )}
 
+                          {timelineHighlights.length > 0 && (
+                            <section className="space-y-3">
+                              <h4 className="flex items-center gap-2 text-sm font-black uppercase tracking-widest text-violet-600 dark:text-violet-300">
+                                <Clock size={16} />
+                                Dòng thời gian nổi bật
+                              </h4>
+                              {timelineHighlights.map((highlight, index) => (
+                                <div key={`${highlight}-${index}`} className="flex items-start gap-3 rounded-xl border border-violet-100 bg-violet-50/40 p-4 dark:border-violet-900/20 dark:bg-violet-900/10">
+                                  <span className="mt-0.5 text-xs font-black text-violet-600 dark:text-violet-300">{String(index + 1).padStart(2, '0')}</span>
+                                  <p className="text-sm font-medium leading-relaxed text-gray-700 dark:text-slate-300">{highlight}</p>
+                                </div>
+                              ))}
+                            </section>
+                          )}
+
+                          {speakerSummaries.length > 0 && (
+                            <section className="space-y-3">
+                              <h4 className="flex items-center gap-2 text-sm font-black uppercase tracking-widest text-sky-600 dark:text-sky-300">
+                                <Users size={16} />
+                                Theo người nói
+                              </h4>
+                              {speakerSummaries.map((item, index) => (
+                                <div key={`${item}-${index}`} className="rounded-xl border border-sky-100 bg-sky-50/40 p-4 dark:border-sky-900/20 dark:bg-sky-900/10">
+                                  <p className="text-sm font-medium leading-relaxed text-gray-700 dark:text-slate-300">{item}</p>
+                                </div>
+                              ))}
+                            </section>
+                          )}
+
+                          {(risks.length > 0 || openQuestions.length > 0) && (
+                            <section className="grid gap-4 md:grid-cols-2">
+                              {risks.length > 0 && (
+                                <div className="space-y-3">
+                                  <h4 className="flex items-center gap-2 text-sm font-black uppercase tracking-widest text-red-600 dark:text-red-300">
+                                    <AlertCircle size={16} />
+                                    Rủi ro / điểm nghẽn
+                                  </h4>
+                                  {risks.map((risk, index) => (
+                                    <div key={`${risk}-${index}`} className="rounded-xl border border-red-100 bg-red-50/40 p-4 dark:border-red-900/20 dark:bg-red-900/10">
+                                      <p className="text-sm font-medium leading-relaxed text-red-900 dark:text-red-100">{risk}</p>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+
+                              {openQuestions.length > 0 && (
+                                <div className="space-y-3">
+                                  <h4 className="flex items-center gap-2 text-sm font-black uppercase tracking-widest text-orange-600 dark:text-orange-300">
+                                    <MessageSquare size={16} />
+                                    Câu hỏi mở
+                                  </h4>
+                                  {openQuestions.map((question, index) => (
+                                    <div key={`${question}-${index}`} className="rounded-xl border border-orange-100 bg-orange-50/40 p-4 dark:border-orange-900/20 dark:bg-orange-900/10">
+                                      <p className="text-sm font-medium leading-relaxed text-orange-900 dark:text-orange-100">{question}</p>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </section>
+                          )}
+
                           {actionItems.length > 0 && (
                             <section className="space-y-3">
                               <h4 className="flex items-center gap-2 text-sm font-black uppercase tracking-widest text-amber-600 dark:text-amber-300">
                                 <CheckCircle2 size={16} />
-                                Viec can lam
+                                Việc cần làm
                               </h4>
                               {actionItems.map((item) => (
                                 <div key={item.id} className="rounded-xl border border-gray-100 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
@@ -737,21 +917,54 @@ const MeetingDetail: React.FC = () => {
           <div className="rounded-3xl border border-gray-200 bg-white p-6 shadow-sm dark:border-slate-700 dark:bg-slate-900">
             <h3 className="text-sm font-black uppercase tracking-widest text-gray-400">Nguoi tao</h3>
             <p className="mt-3 font-bold text-gray-900 dark:text-slate-100">
-              {meeting.createdByUser?.displayName || meeting.createdByUser?.email || 'Khong xac dinh'}
+              {meeting.createdByUser?.displayName || meeting.createdByUser?.email || 'Không xác định'}
             </p>
           </div>
 
           <div className="rounded-3xl border border-gray-200 bg-white p-6 shadow-sm dark:border-slate-700 dark:bg-slate-900">
-            <h3 className="text-sm font-black uppercase tracking-widest text-gray-400">Ngu canh</h3>
+            <h3 className="text-sm font-black uppercase tracking-widest text-gray-400">Ngữ cảnh</h3>
             <div className="mt-3 space-y-2 text-sm text-gray-600 dark:text-slate-300">
-              <p>To chuc: {meeting.organization?.name || 'Chua co'}</p>
-              <p>Nhom: {meeting.group?.name || 'Nhom chung'}</p>
-              <p>Trang thai: {meeting.status}</p>
+              <p>Tổ chức: {meeting.organization?.name || 'Chưa có'}</p>
+              <p>Nhóm: {meeting.group?.name || 'Nhóm chung'}</p>
+              <p>Trạng thái: {meeting.status}</p>
             </div>
           </div>
         </aside>
       </div>
     </div>
+    {editingSpeakerLabel && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+        <div className="w-full max-w-md rounded-3xl border border-gray-200 bg-white p-6 shadow-xl dark:border-slate-700 dark:bg-slate-900">
+          <h3 className="text-lg font-black text-gray-900 dark:text-slate-100">Đổi tên người nói</h3>
+          <p className="mt-2 text-sm text-gray-500 dark:text-slate-400">
+            Label gốc: <span className="font-bold">{editingSpeakerLabel}</span>
+          </p>
+          <input
+            value={speakerNameInput}
+            onChange={(event) => setSpeakerNameInput(event.target.value)}
+            autoFocus
+            className="mt-5 w-full rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm font-semibold outline-none focus:border-primary-500 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+            placeholder="Ví dụ: Huyền"
+          />
+          <div className="mt-6 flex justify-end gap-3">
+            <button
+              type="button"
+              onClick={() => setEditingSpeakerLabel(null)}
+              className="rounded-xl border border-gray-200 px-4 py-2 text-sm font-bold text-gray-600 dark:border-slate-700 dark:text-slate-300"
+            >
+              Hủy
+            </button>
+            <button
+              type="button"
+              onClick={handleSaveSpeakerName}
+              className="rounded-xl bg-primary-600 px-4 py-2 text-sm font-bold text-white hover:bg-primary-700"
+            >
+              Lưu tên
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
     <EditTitleModal
       isOpen={isEditTitleOpen}
       currentTitle={meeting.title}

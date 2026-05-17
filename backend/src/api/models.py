@@ -45,6 +45,7 @@ class User(Base):
     password_reset_otps = relationship("PasswordResetOtp", back_populates="user", cascade="all, delete-orphan")
     created_meetings = relationship("Meeting", back_populates="created_by_user", foreign_keys="Meeting.created_by")
     meeting_participants = relationship("MeetingParticipant", back_populates="user", cascade="all, delete-orphan")
+    meeting_messages = relationship("MeetingMessage", back_populates="user", cascade="all, delete-orphan")
     assigned_action_items = relationship("ActionItem", back_populates="assigned_to_user", foreign_keys="ActionItem.assigned_to")
     created_action_items = relationship("ActionItem", back_populates="created_by_user", foreign_keys="ActionItem.created_by")
     sent_invitations = relationship("Invitation", back_populates="invited_by_user", foreign_keys="Invitation.invited_by")
@@ -255,6 +256,7 @@ class Meeting(Base):
     transcript_url: Mapped[str] = mapped_column(String(500), nullable=True)
     audio_url: Mapped[str] = mapped_column(String(500), nullable=True)
     is_pinned: Mapped[bool] = mapped_column(Boolean, default=False)
+    reminder_sent: Mapped[bool] = mapped_column(Boolean, default=False)
     created_by: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
     created_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
@@ -277,6 +279,8 @@ class Meeting(Base):
     action_items = relationship("ActionItem", back_populates="meeting", cascade="all, delete-orphan")
     export_files = relationship("ExportFile", back_populates="meeting", cascade="all, delete-orphan")
     cost_tracking = relationship("CostTracking", back_populates="meeting", cascade="all, delete-orphan")
+    messages = relationship("MeetingMessage", back_populates="meeting", cascade="all, delete-orphan")
+    speaker_mappings = relationship("MeetingSpeakerMapping", back_populates="meeting", cascade="all, delete-orphan")
 
 
 class MeetingParticipant(Base):
@@ -289,6 +293,7 @@ class MeetingParticipant(Base):
     email: Mapped[str] = mapped_column(String(255), nullable=True)
     name: Mapped[str] = mapped_column(String(255), nullable=True)
     role: Mapped[str] = mapped_column(String(50), default='PARTICIPANT')
+    invite_status: Mapped[str] = mapped_column(String(20), default='accepted')  # pending, accepted, declined, attended
     is_required: Mapped[bool] = mapped_column(Boolean, default=False)
     attended: Mapped[bool] = mapped_column(Boolean, default=False)
     joined_at: Mapped[DateTime] = mapped_column(DateTime, nullable=True)
@@ -302,6 +307,48 @@ class MeetingParticipant(Base):
     # Relationships
     meeting = relationship("Meeting", back_populates="participants")
     user = relationship("User", back_populates="meeting_participants")
+
+
+class MeetingMessage(Base):
+    __tablename__ = "meeting_messages"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    meeting_id: Mapped[str] = mapped_column(String(36), ForeignKey("meetings.id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    message_type: Mapped[str] = mapped_column(String(20), default="chat")
+    reply_to_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("meeting_messages.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        CheckConstraint("message_type IN ('chat', 'system')", name='check_meeting_message_type'),
+        Index('idx_meeting_messages_meeting_id', 'meeting_id'),
+    )
+
+    meeting = relationship("Meeting", back_populates="messages")
+    user = relationship("User", back_populates="meeting_messages")
+    reply_to = relationship("MeetingMessage", remote_side=[id], foreign_keys=[reply_to_id])
+
+
+class MeetingSpeakerMapping(Base):
+    __tablename__ = "meeting_speaker_mappings"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    meeting_id: Mapped[str] = mapped_column(String(36), ForeignKey("meetings.id", ondelete="CASCADE"), nullable=False)
+    speaker_label: Mapped[str] = mapped_column(String(50), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    user_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint('meeting_id', 'speaker_label', name='uq_meeting_speaker_label'),
+        Index('idx_meeting_speaker_mappings_meeting_id', 'meeting_id'),
+    )
+
+    meeting = relationship("Meeting", back_populates="speaker_mappings")
+    user = relationship("User", foreign_keys=[user_id])
 
 
 # ==================== Audio Files ====================
@@ -346,6 +393,8 @@ class Transcript(Base):
     processing_status: Mapped[str] = mapped_column(String(20), default='PENDING')  # PENDING, PROCESSING, COMPLETED, FAILED
     stt_provider: Mapped[str] = mapped_column(String(50), default='whisper')
     confidence_score: Mapped[float] = mapped_column(Numeric(3, 2), nullable=True)
+    post_processed: Mapped[bool] = mapped_column(Boolean, default=False)
+    nlp_metadata: Mapped[dict] = mapped_column(JSON, nullable=True)
     created_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
@@ -369,8 +418,10 @@ class TranscriptSegment(Base):
     start_time: Mapped[float] = mapped_column(Numeric(10, 3), nullable=False)
     end_time: Mapped[float] = mapped_column(Numeric(10, 3), nullable=False)
     text: Mapped[str] = mapped_column(Text, nullable=False)
+    original_text: Mapped[str] = mapped_column(Text, nullable=True)
     language: Mapped[str] = mapped_column(String(10), default='auto')
     confidence_score: Mapped[float] = mapped_column(Numeric(3, 2), nullable=True)
+    nlp_metadata: Mapped[dict] = mapped_column(JSON, nullable=True)
     word_count: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now())
 
@@ -412,6 +463,10 @@ class MeetingSummary(Base):
     key_points: Mapped[dict] = mapped_column(JSON, nullable=True)
     decisions: Mapped[dict] = mapped_column(JSON, nullable=True)
     action_items: Mapped[dict] = mapped_column(JSON, nullable=True)
+    risks: Mapped[dict] = mapped_column(JSON, nullable=True)
+    open_questions: Mapped[dict] = mapped_column(JSON, nullable=True)
+    timeline_highlights: Mapped[dict] = mapped_column(JSON, nullable=True)
+    speaker_summaries: Mapped[dict] = mapped_column(JSON, nullable=True)
     meeting_summary: Mapped[str] = mapped_column(Text, nullable=True)
     ai_provider: Mapped[str] = mapped_column(String(50), default='openai')
     model_name: Mapped[str] = mapped_column(String(100), nullable=True)

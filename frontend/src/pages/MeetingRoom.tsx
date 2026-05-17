@@ -11,6 +11,7 @@ import {
   Video,
   VideoOff,
   PhoneOff,
+  LogOut,
   MonitorUp,
   MessageSquare,
   Users,
@@ -35,8 +36,8 @@ import { useAuth } from "../context/AuthContext";
 import { useAppStore } from "../stores";
 import { clsx } from "clsx";
 import api from "../services/api";
-import { normalizeMeetingDetail } from "../services/mappers";
-import type { MeetingDetail } from "../types";
+import { normalizeMeetingDetail, normalizeMeetingMessage } from "../services/mappers";
+import type { MeetingDetail, MeetingMessage } from "../types";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -49,13 +50,6 @@ interface Participant {
   cameraOn: boolean;
   handRaised: boolean;
   isSpeaking?: boolean;
-}
-
-interface ChatMsg {
-  id: string;
-  sender: string;
-  text: string;
-  timestamp: number;
 }
 
 type SidePanel = "chat" | "participants" | "ai-notes" | null;
@@ -193,24 +187,27 @@ const MeetingRoomInner: React.FC = () => {
     return (meetings as any[]).find(m => m.code === code || m.id === code) || remoteMeeting;
   }, [code, meetings, remoteMeeting]);
 
+  const isOrganizer = meeting?.createdBy === user?.id;
+
   const [isRecording] = useState(roomState.enableRecord !== false);
   const [micOn, setMicOn] = useState(roomState.enableMic !== false);
   const [cameraOn, setCameraOn] = useState(roomState.enableCamera !== false);
   const [screenSharing, setScreenSharing] = useState(false);
   const [screenStream, setScreenStream] = useState<MediaStream | null>(null);
   const [sidePanel, setSidePanel] = useState<SidePanel>("ai-notes");
-  const [, setChatMessages] = useState<ChatMsg[]>([]);
+  const [chatMessages, setChatMessages] = useState<MeetingMessage[]>([]);
   const [chatInput, setChatInput] = useState("");
+  const [unreadChatCount, setUnreadChatCount] = useState(0);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [mainView, setMainView] = useState<"camera" | "screen">("camera");
   
-  const [participants] = useState<Participant[]>(() => [
-    { id: "me", name: user?.displayName || user?.email?.split('@')[0] || "Bạn", role: "organizer", micOn: roomState.enableMic !== false, cameraOn: roomState.enableCamera !== false, handRaised: false },
+  const [participants, setParticipants] = useState<Participant[]>(() => [
+    { id: user?.id || "me", name: user?.displayName || user?.email?.split('@')[0] || "Bạn", role: "organizer", micOn: roomState.enableMic !== false, cameraOn: roomState.enableCamera !== false, handRaised: false },
   ]);
 
   const [spotlightId, setSpotlightId] = useState<string>("me");
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const { status: wsStatus, connect, disconnect } = useWebSocket();
+  const { transcript: wsTranscripts, lastEvent: wsEvent, status: wsStatus, connect, sendJson, disconnect, isConnected, onReconnect } = useWebSocket();
 
   // Audio Recorder - PhoWhisper STT
   const meetingId = meeting?.id || null;
@@ -267,6 +264,128 @@ const MeetingRoomInner: React.FC = () => {
       hydrateDraft(meetingId);
     }
   }, [hydrateDraft, meetingId]);
+
+  useEffect(() => {
+    if (!meetingId) return;
+    connect(meetingId);
+    api.get(`/api/meetings/${meetingId}/messages`)
+      .then((response) => {
+        const rows = Array.isArray(response.data) ? response.data : [];
+        setChatMessages(rows.map(normalizeMeetingMessage));
+      })
+      .catch(() => {
+        showToast.error("Không thể tải chat cuộc họp");
+      });
+    return () => disconnect();
+  }, [connect, disconnect, meetingId]);
+
+  // Fetch missed data after WebSocket reconnect
+  useEffect(() => {
+    onReconnect(() => {
+      if (!meetingId) return;
+      api.get(`/api/meetings/${meetingId}/messages`)
+        .then((response) => {
+          const rows = Array.isArray(response.data) ? response.data : [];
+          setChatMessages((current) => {
+            const existingIds = new Set(current.map((m) => m.id));
+            const newMessages = rows.map(normalizeMeetingMessage).filter((m) => !existingIds.has(m.id));
+            return newMessages.length > 0 ? [...current, ...newMessages] : current;
+          });
+        })
+        .catch(() => {});
+    });
+  }, [onReconnect, meetingId]);
+
+  useEffect(() => {
+    if (!wsEvent) return;
+    if (wsEvent.type === "chat.message" && wsEvent.message) {
+      const message = normalizeMeetingMessage(wsEvent.message);
+      setChatMessages((current) =>
+        current.some((item) => item.id === message.id) ? current : [...current, message],
+      );
+      if (sidePanel !== 'chat') {
+        setUnreadChatCount((prev) => prev + 1);
+      }
+    } else if (wsEvent.type === "ai.notes" && wsEvent.summary_status === "COMPLETED") {
+      showToast.success("AI Notes đã sẵn sàng");
+    } else if (wsEvent.type === "meeting.status" && wsEvent.status) {
+      showToast.info(`Trạng thái cuộc họp: ${wsEvent.status}`);
+    } else if (wsEvent.type === "participant.list" && wsEvent.participants) {
+      const remoteParticipants: Participant[] = wsEvent.participants
+        .filter((p: any) => p.id !== user?.id)
+        .map((p: any) => ({
+          id: p.id,
+          name: p.displayName || p.email || 'Thành viên',
+          role: 'attendee' as const,
+          micOn: true,
+          cameraOn: true,
+          handRaised: false,
+        }));
+      setParticipants(prev => {
+        const local = prev.find(p => p.id === user?.id) || prev[0];
+        return [local, ...remoteParticipants];
+      });
+    } else if (wsEvent.type === "participant.joined" && wsEvent.user) {
+      if (wsEvent.user.id !== user?.id) {
+        setParticipants(prev => {
+          if (prev.some(p => p.id === wsEvent.user.id)) return prev;
+          return [...prev, {
+            id: wsEvent.user.id,
+            name: wsEvent.user.displayName || wsEvent.user.email || 'Thành viên',
+            role: 'attendee' as const,
+            micOn: true,
+            cameraOn: true,
+            handRaised: false,
+          }];
+        });
+        const name = wsEvent.user.displayName || wsEvent.user.email || "Một thành viên";
+        showToast.info(`${name} đã vào phòng`);
+      }
+    } else if (wsEvent.type === "participant.left" && wsEvent.user) {
+      setParticipants(prev => prev.filter(p => p.id !== wsEvent.user.id));
+      const name = wsEvent.user.displayName || wsEvent.user.email || "Một thành viên";
+      showToast.info(`${name} đã rời phòng`);
+    } else if (wsEvent.type === "participant.state" && wsEvent.user_id) {
+      setParticipants(prev => prev.map(p =>
+        p.id === wsEvent.user_id
+          ? { ...p, micOn: wsEvent.micOn ?? p.micOn, cameraOn: wsEvent.cameraOn ?? p.cameraOn }
+          : p
+      ));
+    }
+  }, [user?.id, wsEvent, sidePanel]);
+
+  // Transition meeting status: upcoming → live when entering room (organizer only)
+  const statusUpdatedRef = useRef(false);
+  useEffect(() => {
+    if (
+      meeting?.id &&
+      isOrganizer &&
+      ['upcoming', 'live'].includes(meeting.status) &&
+      !statusUpdatedRef.current
+    ) {
+      statusUpdatedRef.current = true;
+      api.post(`/api/meetings/${meeting.id}/start`).catch(() => {});
+    }
+  }, [meeting?.id, meeting?.status, isOrganizer]);
+
+  // Auto-end meeting when organizer closes tab/browser
+  useEffect(() => {
+    if (!meetingId || !isOrganizer) return;
+    const handleBeforeUnload = () => {
+      const baseURL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+      const sessionStr = localStorage.getItem("session");
+      let token = "";
+      try { token = sessionStr ? JSON.parse(sessionStr)?.token || "" : ""; } catch {}
+      fetch(`${baseURL}/api/meetings/${meetingId}/end`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ status: "completed" }),
+        keepalive: true,
+      });
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [meetingId, isOrganizer]);
 
   // Handle Camera Hardware Toggle
   const stopCameraHardware = useCallback(() => {
@@ -352,6 +471,12 @@ const MeetingRoomInner: React.FC = () => {
     }
   }, [micOn, localStream]);
 
+  useEffect(() => {
+    if (meetingId && isConnected) {
+      sendJson({ type: "participant.state", micOn, cameraOn });
+    }
+  }, [cameraOn, isConnected, meetingId, micOn, sendJson]);
+
   const toggleScreenShare = async () => {
     if (screenSharing) {
       screenStream?.getTracks().forEach(t => t.stop());
@@ -384,20 +509,50 @@ const MeetingRoomInner: React.FC = () => {
   const [isFinalizing, setIsFinalizing] = useState(false);
 
   const leaveMeeting = async () => {
+    // Participant: chỉ rời phòng, không kết thúc cuộc họp
+    if (!isOrganizer) {
+      stopCameraHardware();
+      localStream?.getAudioTracks().forEach(t => t.stop());
+      screenStream?.getTracks().forEach(t => t.stop());
+      disconnect();
+      navigate("/meetings");
+      return;
+    }
+
+    // Organizer: kết thúc cuộc họp + finalize
     if (meetingId) {
       setIsFinalizing(true);
       showToast.info("Đang lưu transcript và tóm tắt AI...");
       try {
-        const result = await finalize(meetingId, "vi");
-        if (result?.transcript_status === "EMPTY") {
-          showToast.info("Không có giọng nói rõ để lưu transcript.");
-        } else if (result?.summary_status === "FAILED") {
-          showToast.error("Đã lưu transcript, nhưng AI Notes chưa tạo được.");
+        await api.post(`/api/meetings/${meetingId}/start`).catch(() => {});
+        await api.post(`/api/meetings/${meetingId}/end`, { status: "processing" });
+        if (isRecording) {
+          try {
+            const result = await finalize(meetingId, "vi");
+            if (result?.transcript_status === "EMPTY") {
+              showToast.info("Không có giọng nói rõ để lưu transcript.");
+            } else if (result?.summary_status === "FAILED") {
+              showToast.error("Đã lưu transcript, nhưng AI Notes chưa tạo được.");
+            } else {
+              showToast.success("Đã lưu transcript và AI Notes thành công!");
+            }
+          } catch (err: any) {
+            if (err?.response?.status === 400) {
+              showToast.info("Cuộc họp đã kết thúc, chưa có transcript để xử lý.");
+            } else {
+              console.error("Finalize error:", err);
+              showToast.error("Lưu transcript thất bại.");
+            }
+          }
         } else {
-          showToast.success("Đã lưu transcript và AI Notes thành công!");
+          showToast.success("Cuộc họp đã kết thúc.");
         }
+        // Always set meeting to completed, even if finalize failed
+        await api.post(`/api/meetings/${meetingId}/end`, { status: "completed" }).catch(() => {});
         navigate(`/meetings/${meetingId}`);
       } catch {
+        // Last resort: try to end the meeting anyway
+        await api.post(`/api/meetings/${meetingId}/end`, { status: "completed" }).catch(() => {});
         showToast.error("Lưu transcript thất bại, nhưng meeting vẫn được tạo");
         navigate("/meetings");
       } finally {
@@ -413,6 +568,16 @@ const MeetingRoomInner: React.FC = () => {
       navigate("/meetings");
     }
   };
+
+  const displayTranscripts = liveTranscripts.length > 0
+    ? liveTranscripts
+    : wsTranscripts.map((item, index) => ({
+        id: item.id,
+        chunkIndex: index,
+        text: item.text,
+        segments: item.segments || [],
+        timestamp: item.timestamp,
+      }));
 
   if (isMeetingLoading) {
     return (
@@ -436,11 +601,46 @@ const MeetingRoomInner: React.FC = () => {
     );
   }
 
-  const sendChat = (e: React.FormEvent) => {
+  // Block entry if meeting is upcoming and more than 15 minutes away (unless organizer)
+  if (meeting?.status === 'upcoming' && !isOrganizer) {
+    const meetingStart = meeting.startTime ? new Date(meeting.startTime).getTime() : 0;
+    const minutesUntilStart = Math.round((meetingStart - Date.now()) / 60000);
+    if (minutesUntilStart > 15) {
+      return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#020617] p-6 text-white">
+          <div className="max-w-md rounded-3xl border border-slate-800 bg-slate-900 p-8 text-center">
+            <h2 className="text-xl font-black">Cuộc họp chưa tới giờ</h2>
+            <p className="mt-3 text-sm text-slate-400">
+              Cuộc họp "{meeting.title}" bắt đầu trong {minutesUntilStart} phút nữa.
+              Bạn có thể vào phòng khi còn 15 phút nữa.
+            </p>
+            <button onClick={() => navigate("/meetings")} className="mt-6 rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-bold text-white">
+              Quay lại danh sách
+            </button>
+          </div>
+        </div>
+      );
+    }
+  }
+
+  const sendChat = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!chatInput.trim()) return;
-    setChatMessages(prev => [...prev, { id: Date.now().toString(), sender: "Bạn", text: chatInput, timestamp: Date.now() }]);
+    const text = chatInput.trim();
+    if (!text || !meetingId) return;
     setChatInput("");
+    const sentViaSocket = sendJson({ type: "chat.send", text });
+    if (!sentViaSocket) {
+      try {
+        const response = await api.post(`/api/meetings/${meetingId}/messages`, { text });
+        const message = normalizeMeetingMessage(response.data);
+        setChatMessages((current) =>
+          current.some((item) => item.id === message.id) ? current : [...current, message],
+        );
+      } catch (err: any) {
+        showToast.error(err?.response?.data?.detail || "Không gửi được tin nhắn");
+        setChatInput(text);
+      }
+    }
   };
 
   return (
@@ -458,6 +658,10 @@ const MeetingRoomInner: React.FC = () => {
                 {localStream && cameraOn ? '● Camera sẵn sàng' : '○ Camera đang tắt'}
               </span>
               <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Mã: {code}</span>
+              <div className="h-1 w-1 rounded-full bg-slate-700" />
+              <span className={clsx("text-[10px] font-bold uppercase tracking-widest", isConnected ? "text-emerald-400" : "text-amber-400")}>
+                {isConnected ? "Realtime" : wsStatus === "connecting" ? "Đang nối realtime" : "Realtime fallback"}
+              </span>
               <div className="h-1 w-1 rounded-full bg-slate-700" />
               <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 text-[9px] font-black uppercase tracking-tighter">
                 <Users size={10} /> {participants.length} Người tham gia
@@ -758,15 +962,24 @@ const MeetingRoomInner: React.FC = () => {
                 <button onClick={toggleScreenShare} className={clsx("p-4 rounded-full transition-all", screenSharing ? "bg-indigo-500 text-white" : "bg-slate-800 text-white hover:bg-slate-700")}>
                    <MonitorUp size={22} />
                  </button>
-                <button onClick={() => setSidePanel(sidePanel === 'chat' ? null : 'chat')} className={clsx("p-4 rounded-full transition-all", sidePanel === 'chat' ? "bg-indigo-500 text-white" : "bg-slate-800 text-white hover:bg-slate-700")}>
+                <button onClick={() => { const next = sidePanel === 'chat' ? null : 'chat'; setSidePanel(next); if (next === 'chat') setUnreadChatCount(0); }} className={clsx("p-4 rounded-full transition-all relative", sidePanel === 'chat' ? "bg-indigo-500 text-white" : "bg-slate-800 text-white hover:bg-slate-700")}>
                    <MessageSquare size={22} />
+                   {unreadChatCount > 0 && sidePanel !== 'chat' && (
+                     <span className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center">
+                       {unreadChatCount > 9 ? '9+' : unreadChatCount}
+                     </span>
+                   )}
                 </button>
                 <button onClick={() => setSidePanel(sidePanel === 'ai-notes' ? null : 'ai-notes')} className={clsx("p-4 rounded-full transition-all", sidePanel === 'ai-notes' ? "bg-indigo-500 text-white" : "bg-slate-800 text-white hover:bg-slate-700")}>
                    <Sparkles size={22} />
                 </button>
                 <div className="w-px h-8 bg-white/10 mx-1" />
-                <button onClick={leaveMeeting} disabled={isFinalizing} className={clsx("p-4 rounded-full shadow-lg transition-all active:scale-95 group/leave", isFinalizing ? "bg-amber-600 cursor-wait" : "bg-rose-600 hover:bg-rose-700 shadow-rose-600/40")}>
-                   <PhoneOff size={22} className={clsx("transition-transform duration-500", isFinalizing ? "animate-spin" : "group-hover/leave:-rotate-[135deg]")} />
+                <button onClick={leaveMeeting} disabled={isFinalizing} title={isOrganizer ? "Kết thúc cuộc họp" : "Rời phòng"} className={clsx("p-4 rounded-full shadow-lg transition-all active:scale-95", isOrganizer ? (isFinalizing ? "bg-amber-600 cursor-wait" : "bg-rose-600 hover:bg-rose-700 shadow-rose-600/40") : "bg-slate-700 hover:bg-slate-600")}>
+                   {isOrganizer ? (
+                     <PhoneOff size={22} className={clsx("transition-transform duration-500", isFinalizing ? "animate-spin" : "group-hover/leave:-rotate-[135deg]")} />
+                   ) : (
+                     <LogOut size={22} />
+                   )}
                 </button>
              </div>
           </div>
@@ -802,8 +1015,8 @@ const MeetingRoomInner: React.FC = () => {
                          <span className="text-xs font-bold text-slate-300">
                             {isAudioRecording ? 'Đang ghi âm & phiên âm AI...' : isFinalizing ? 'Đang lưu và tóm tắt...' : 'Chưa ghi âm'}
                          </span>
-                         {liveTranscripts.length > 0 && (
-                            <span className="ml-auto text-[10px] font-bold text-indigo-400">{liveTranscripts.length} đoạn</span>
+                         {displayTranscripts.length > 0 && (
+                            <span className="ml-auto text-[10px] font-bold text-indigo-400">{displayTranscripts.length} đoạn</span>
                          )}
                       </div>
 
@@ -813,6 +1026,19 @@ const MeetingRoomInner: React.FC = () => {
                          </div>
                       )}
 
+                      <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
+                        <div className="mb-3 flex items-center gap-2 text-slate-300">
+                          <Sparkles size={15} className="text-indigo-400" />
+                          <span className="text-xs font-black uppercase tracking-widest">AI readiness</span>
+                        </div>
+                        <div className="space-y-2 text-xs text-slate-400">
+                          <p><span className="font-bold text-slate-200">Cuộc họp:</span> {meeting.title}</p>
+                          <p><span className="font-bold text-slate-200">Nhóm:</span> {meeting.groupName || meeting.group?.name || "Chưa gắn nhóm"}</p>
+                          <p><span className="font-bold text-slate-200">Người tham gia:</span> {meeting.attendees?.length || participants.length}</p>
+                          <p><span className="font-bold text-slate-200">Trạng thái:</span> {displayTranscripts.length > 0 ? "Đã có transcript để phân tích" : isAudioRecording ? "Đang nghe và chờ phát hiện giọng nói" : "Sẵn sàng ghi âm"}</p>
+                        </div>
+                      </div>
+
                       {/* Live Transcript Sections */}
                       <div className="space-y-4">
                          <div className="flex items-center gap-2 text-indigo-400">
@@ -820,12 +1046,12 @@ const MeetingRoomInner: React.FC = () => {
                             <span className="text-xs font-bold uppercase tracking-widest">Phiên âm trực tiếp</span>
                          </div>
                          <div className="space-y-3 max-h-[60vh] overflow-y-auto custom-scrollbar">
-                            {liveTranscripts.length === 0 ? (
+                            {displayTranscripts.length === 0 ? (
                                <div className="p-5 rounded-[1.5rem] bg-indigo-500/5 border border-indigo-500/10 text-slate-500 text-sm text-center">
                                   {isAudioRecording ? "Đang lắng nghe... Hãy nói chuyện để xem phiên âm real-time." : "Chờ bắt đầu ghi âm..."}
                                </div>
                             ) : (
-                               liveTranscripts.map((t) => (
+                               displayTranscripts.map((t) => (
                                   <div key={t.id} className="p-4 rounded-2xl bg-indigo-500/5 border border-indigo-500/10">
                                      <div className="flex items-center gap-2 mb-2">
                                         <span className="text-[10px] font-bold text-indigo-400">
@@ -835,7 +1061,27 @@ const MeetingRoomInner: React.FC = () => {
                                            {t.segments.length > 0 ? `${t.segments.length} câu` : ""}
                                         </span>
                                      </div>
-                                     <p className="text-sm text-slate-300 leading-relaxed">{t.text}</p>
+                                     {t.segments.length > 0 ? (
+                                       <div className="space-y-2">
+                                         {t.segments.map((segment: any, index: number) => (
+                                           <div key={`${t.id}-${index}`}>
+                                             <div className="mb-1 flex items-center gap-2">
+                                               <span className="text-[10px] font-black uppercase tracking-widest text-emerald-400">
+                                                 {segment.speaker_display_name || segment.speaker || segment.speaker_label || "Speaker_01"}
+                                               </span>
+                                               {segment.language && (
+                                                 <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[9px] font-bold uppercase text-slate-500">
+                                                   {segment.language}
+                                                 </span>
+                                               )}
+                                             </div>
+                                             <p className="text-sm text-slate-300 leading-relaxed">{segment.text}</p>
+                                           </div>
+                                         ))}
+                                       </div>
+                                     ) : (
+                                       <p className="text-sm text-slate-300 leading-relaxed">{t.text}</p>
+                                     )}
                                   </div>
                                ))
                             )}
@@ -886,18 +1132,24 @@ const MeetingRoomInner: React.FC = () => {
                  ) : (
                    <div className="flex flex-col h-full">
                       <div className="flex-1 space-y-4">
-                         {liveTranscripts.length === 0 ? (
+                         {chatMessages.length === 0 ? (
                             <div className="p-4 text-center text-slate-600 text-sm">
-                               Chưa có transcript. Hãy nói chuyện để xem phiên âm.
+                               Chưa có tin nhắn nào. Chat trong phòng sẽ được lưu lại sau khi reload.
                             </div>
                          ) : (
-                            liveTranscripts.map((t) => (
-                               <div key={t.id} className="flex flex-col gap-1">
-                                  <span className="text-[10px] font-black text-indigo-400 uppercase tracking-tighter">
-                                     {new Date(t.timestamp).toLocaleTimeString("vi-VN")}
-                                  </span>
-                                  <div className="px-4 py-2.5 rounded-2xl bg-slate-900 border border-slate-800 text-sm text-slate-300">
-                                     {t.text}
+                            chatMessages.map((message) => (
+                               <div key={message.id} className={clsx("flex flex-col gap-1", message.userId === user?.id ? "items-end" : "items-start")}>
+                                  <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-tighter text-indigo-400">
+                                    <span>{message.user?.displayName || message.user?.email || "Thành viên"}</span>
+                                    <span className="text-slate-600">{new Date(message.createdAt).toLocaleTimeString("vi-VN")}</span>
+                                  </div>
+                                  <div className={clsx(
+                                    "max-w-[85%] px-4 py-2.5 rounded-2xl border text-sm",
+                                    message.userId === user?.id
+                                      ? "bg-indigo-600 border-indigo-500 text-white"
+                                      : "bg-slate-900 border-slate-800 text-slate-300"
+                                  )}>
+                                     {message.text}
                                   </div>
                                </div>
                             ))

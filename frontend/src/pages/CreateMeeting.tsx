@@ -1,79 +1,121 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { motion } from "framer-motion";
-import { QRCodeSVG } from "qrcode.react";
+import { motion, AnimatePresence } from "framer-motion";
 import {
   AlertCircle,
   ArrowLeft,
-  ArrowRight,
-  BookOpen,
   Check,
   ChevronDown,
-  Copy,
-  Link2,
+  FolderOpen,
   Mic,
-  Radio,
-  User,
+  MicOff,
+  Settings2,
+  Sparkles,
+  UserPlus,
   Users,
   Video,
-  Zap,
+  VideoOff,
 } from "lucide-react";
-import { Badge, Button, Card, Input, MultiSelect, showToast } from "../components/ui";
+import { Button, showToast } from "../components/ui";
 import { useAuth } from "../context/AuthContext";
 import { useAppStore, useGlossaryStore, useOrgStore } from "../stores";
+import { useGroupMembers } from "../hooks/useGroupMembers";
 import api from "../services/api";
 
-interface GroupMember {
-  id: string;
-  user_id: string;
-  name: string;
-  email?: string;
-  avatar_url?: string;
-  role: string;
-}
+type Tab = "room" | "members";
 
 const generateMeetingCode = (): string => {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  let code = "";
-  for (let i = 0; i < 3; i += 1) {
-    if (i > 0) code += "-";
-    for (let j = 0; j < 3; j += 1) {
-      code += chars[Math.floor(Math.random() * chars.length)];
-    }
-  }
-  return code;
+  return Array.from({ length: 3 }, () =>
+    Array.from({ length: 3 }, () => chars[Math.floor(Math.random() * chars.length)]).join(""),
+  ).join("-");
 };
 
 const CreateMeeting: React.FC = () => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const { user } = useAuth();
-  const { currentOrgId, currentOrg, groups, loadGroups } = useOrgStore();
+  const { currentOrgId, groups, loadGroups } = useOrgStore();
   const { loadMeetings } = useAppStore();
   const { glossaries, loadGlossaries } = useGlossaryStore();
 
+  const [activeTab, setActiveTab] = useState<Tab>("room");
   const [title, setTitle] = useState("");
   const [selectedGroupId, setSelectedGroupId] = useState("");
-  const [selectedParticipants, setSelectedParticipants] = useState<string[]>([]);
-  const [groupMembers, setGroupMembers] = useState<GroupMember[]>([]);
-  const [loadingMembers, setLoadingMembers] = useState(false);
   const [selectedGlossaries, setSelectedGlossaries] = useState<string[]>([]);
   const [language, setLanguage] = useState("vi");
   const [enableCamera, setEnableCamera] = useState(true);
   const [enableMic, setEnableMic] = useState(true);
-  const [enableRecord, setEnableRecord] = useState(true);
-  const [enableSummary, setEnableSummary] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [copiedTarget, setCopiedTarget] = useState<"code" | "link" | null>(null);
   const [meetingCode] = useState(generateMeetingCode);
+
+  const streamRef = useRef<MediaStream | null>(null);
+  const [streamReady, setStreamReady] = useState(false);
+
+  // Manage webcam stream
+  useEffect(() => {
+    if (!enableCamera) {
+      // Stop existing stream
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((t) => t.stop());
+        streamRef.current = null;
+      }
+      setStreamReady(false);
+      return;
+    }
+
+    let cancelled = false;
+
+    const startCamera = async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: false,
+        });
+        if (cancelled) {
+          stream.getTracks().forEach((t) => t.stop());
+          return;
+        }
+        streamRef.current = stream;
+        setStreamReady(true);
+      } catch {
+        if (!cancelled) setEnableCamera(false);
+      }
+    };
+
+    startCamera();
+
+    return () => {
+      cancelled = true;
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((t) => t.stop());
+        streamRef.current = null;
+      }
+      setStreamReady(false);
+    };
+  }, [enableCamera]);
+
+  // Callback ref: attach stream when <video> mounts
+  const videoCallbackRef = (node: HTMLVideoElement | null) => {
+    if (node && streamRef.current) {
+      node.srcObject = streamRef.current;
+    }
+  };
 
   const requestedGroupId = searchParams.get("groupId") || "";
   const selectedGroup = useMemo(
     () => groups.find((group) => group.id === selectedGroupId),
     [groups, selectedGroupId],
   );
-  const joinUrl = `${window.location.origin}/join/${meetingCode}`;
-  const allSelected = groupMembers.length > 0 && selectedParticipants.length === groupMembers.length;
+
+  const {
+    members,
+    loading: loadingMembers,
+    selectedIds: selectedParticipants,
+    setSelectedIds: setSelectedParticipants,
+    toggleSelectAll,
+    toggleMember,
+  } = useGroupMembers(selectedGroupId, user?.id);
 
   useEffect(() => {
     if (!currentOrgId) return;
@@ -95,84 +137,16 @@ const CreateMeeting: React.FC = () => {
     }
   }, [groups, requestedGroupId, selectedGroupId]);
 
-  useEffect(() => {
-    if (!selectedGroupId) {
-      setGroupMembers([]);
-      setSelectedParticipants([]);
-      return;
-    }
-
-    setLoadingMembers(true);
-    api
-      .get(`/api/groups/${selectedGroupId}/members`)
-      .then((res) => {
-        const members = (res.data || [])
-          .map((member: any) => ({
-            id: member.id || member.user_id || member.userId,
-            user_id: member.id || member.user_id || member.userId,
-            name:
-              `${member.first_name || ""} ${member.last_name || ""}`.trim() ||
-              member.username ||
-              member.email ||
-              "Thành viên",
-            email: member.email,
-            avatar_url: member.avatar_url,
-            role: member.role,
-          }))
-          .filter((member: GroupMember) => member.user_id !== user?.id);
-
-        setGroupMembers(members);
-        setSelectedParticipants(members.map((member: GroupMember) => member.user_id));
-      })
-      .catch(() => {
-        setGroupMembers([]);
-        setSelectedParticipants([]);
-        showToast.error("Không thể tải thành viên trong nhóm");
-      })
-      .finally(() => setLoadingMembers(false));
-  }, [selectedGroupId, user?.id]);
-
-  const toggleSelectAll = () => {
-    setSelectedParticipants(allSelected ? [] : groupMembers.map((member) => member.user_id));
-  };
-
-  const toggleParticipant = (userId: string) => {
-    setSelectedParticipants((current) =>
-      current.includes(userId) ? current.filter((id) => id !== userId) : [...current, userId],
-    );
-  };
-
-  const copyToClipboard = async (value: string, target: "code" | "link") => {
-    try {
-      await navigator.clipboard.writeText(value);
-      setCopiedTarget(target);
-      showToast.success(target === "code" ? "Đã sao chép mã tham gia" : "Đã sao chép link tham gia");
-      window.setTimeout(() => setCopiedTarget(null), 1800);
-    } catch {
-      showToast.error("Không thể sao chép");
-    }
-  };
-
-  const handleSubmit = async (event: React.FormEvent) => {
+  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!currentOrgId) {
-      showToast.error("Chưa chọn tổ chức");
-      return;
-    }
-    if (!title.trim()) {
-      showToast.error("Vui lòng nhập tiêu đề cuộc họp");
-      return;
-    }
-    if (!selectedGroupId) {
-      showToast.error("Vui lòng chọn nhóm/phòng ban");
-      return;
-    }
-
-    const start = new Date(Date.now() + 5000);
-    const end = new Date(start.getTime() + 60 * 60 * 1000);
+    if (!currentOrgId) { showToast.error("Chưa chọn tổ chức"); return; }
+    if (!title.trim()) { showToast.error("Vui lòng nhập tiêu đề cuộc họp"); return; }
+    if (!selectedGroupId) { showToast.error("Vui lòng chọn nhóm/phòng ban"); return; }
 
     setIsSubmitting(true);
     try {
+      const start = new Date();
+      const end = new Date(start.getTime() + 60 * 60 * 1000);
       const response = await api.post("/api/meetings", {
         title: title.trim(),
         organization_id: currentOrgId,
@@ -181,10 +155,11 @@ const CreateMeeting: React.FC = () => {
         status: "live",
         scheduled_start: start.toISOString(),
         scheduled_end: end.toISOString(),
+        actual_start: start.toISOString(),
         description: `Cuộc họp live trong nhóm ${selectedGroup?.name || selectedGroupId}`,
         settings: {
-          enableRecord,
-          enableSummary,
+          enableRecord: true,
+          enableSummary: true,
           language,
           enableCamera,
           enableMic,
@@ -203,8 +178,8 @@ const CreateMeeting: React.FC = () => {
           organizer: user?.displayName || user?.email || "Bạn",
           enableCamera,
           enableMic,
-          enableRecord,
-          enableSummary,
+          enableRecord: true,
+          enableSummary: true,
           participants: selectedParticipants,
         },
       });
@@ -217,386 +192,458 @@ const CreateMeeting: React.FC = () => {
 
   if (!currentOrgId) {
     return (
-      <div className="mx-auto max-w-3xl px-4 py-8">
-        <Card className="p-8 text-center">
-          <AlertCircle className="mx-auto mb-4 h-10 w-10 text-amber-500" />
+      <div className="flex min-h-[60vh] items-center justify-center px-4">
+        <motion.div
+          initial={{ opacity: 0, scale: 0.95 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="text-center"
+        >
+          <div className="mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-3xl bg-amber-50 dark:bg-amber-900/20">
+            <AlertCircle className="h-10 w-10 text-amber-500" />
+          </div>
           <h1 className="text-2xl font-black text-gray-900 dark:text-slate-100">Chưa chọn tổ chức</h1>
-          <p className="mt-2 text-sm text-gray-500 dark:text-slate-400">
-            Bạn cần chọn hoặc tham gia một tổ chức trước khi tạo cuộc họp live.
+          <p className="mt-2 max-w-sm text-sm text-gray-500 dark:text-slate-400">
+            Bạn cần chọn hoặc tham gia một tổ chức trước khi tạo cuộc họp.
           </p>
-          <Button className="mt-6" onClick={() => navigate("/setup-organization")}>
-            Thiết lập tổ chức
-          </Button>
-        </Card>
+          <Button className="mt-8" onClick={() => navigate("/setup-organization")}>Thiết lập tổ chức</Button>
+        </motion.div>
       </div>
     );
   }
 
   return (
-    <div className="mx-auto max-w-4xl space-y-6 px-4 pb-6 pt-6 lg:px-0">
-      {/* Header */}
-      <motion.section
-        initial={{ opacity: 0, y: 12 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm dark:border-slate-700 dark:bg-slate-900"
-      >
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+    <div className="mx-auto max-w-3xl px-4 py-6 lg:px-0">
+      <form onSubmit={handleSubmit}>
+        {/* Header */}
+        <motion.div
+          initial={{ opacity: 0, y: -12 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="mb-6 flex items-center gap-4"
+        >
+          <button
+            type="button"
+            onClick={() => navigate(-1)}
+            className="flex h-10 w-10 items-center justify-center rounded-full text-gray-400 transition hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-slate-800 dark:hover:text-slate-300"
+          >
+            <ArrowLeft size={20} />
+          </button>
           <div>
-            <div className="mb-3 inline-flex items-center gap-2 rounded-full bg-red-50 px-3 py-1 text-xs font-bold uppercase tracking-wide text-red-600 dark:bg-red-900/20 dark:text-red-300">
-              <Radio size={14} className="animate-pulse" />
-              Live meeting
-            </div>
-            <h1 className="text-2xl font-black text-gray-900 dark:text-slate-100 sm:text-3xl">
-              Tạo cuộc họp live
+            <h1 className="text-xl font-black text-gray-900 dark:text-slate-100">
+              {title || "Tạo cuộc họp"}
             </h1>
-            <p className="mt-1 text-sm text-gray-500 dark:text-slate-400">
-              Chọn nhóm, người tham gia và cấu hình AI trước khi vào phòng họp.
+            <p className="text-xs text-gray-400 dark:text-slate-500">
+              {selectedGroup?.name || currentOrgId ? "Thiết lập và bắt đầu" : ""}
             </p>
           </div>
-          <Button variant="secondary" onClick={() => navigate(-1)} icon={<ArrowLeft size={16} />}>
-            Quay lại
-          </Button>
-        </div>
-      </motion.section>
 
-      <form onSubmit={handleSubmit} className="space-y-6">
-        {/* Meeting Info */}
-        <Card>
-          <div className="mb-5 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-            <div>
-              <h2 className="text-lg font-bold text-gray-900 dark:text-slate-100">Thông tin cuộc họp</h2>
-              <p className="mt-0.5 text-sm text-gray-500 dark:text-slate-400">
-                Tổ chức: <span className="font-medium text-gray-700 dark:text-slate-300">{currentOrg?.name || currentOrgId}</span>
-              </p>
-            </div>
-            <Badge variant="primary" className="w-fit text-[10px]">
-              Tạo ngay
-            </Badge>
+          {/* Live badge */}
+          <div className="ml-auto inline-flex items-center gap-2 rounded-full bg-red-500/10 px-3 py-1.5 text-[11px] font-bold uppercase tracking-widest text-red-500">
+            <span className="relative flex h-2 w-2">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-400 opacity-75" />
+              <span className="relative inline-flex h-2 w-2 rounded-full bg-red-500" />
+            </span>
+            Live
           </div>
+        </motion.div>
 
-          <div className="space-y-4">
-            <Input
-              label="Tiêu đề cuộc họp"
-              placeholder="Ví dụ: Daily sync, Họp xử lý gấp..."
-              value={title}
-              onChange={(event) => setTitle(event.target.value)}
-              required
-            />
+        {/* Tab switcher */}
+        <motion.div
+          initial={{ opacity: 0, y: -8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.05 }}
+          className="mb-6 flex rounded-2xl bg-gray-100 p-1.5 dark:bg-slate-800"
+        >
+          <button
+            type="button"
+            onClick={() => setActiveTab("room")}
+            className={`relative flex flex-1 items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-bold transition-all ${
+              activeTab === "room"
+                ? "bg-white text-gray-900 shadow-sm dark:bg-slate-700 dark:text-slate-100"
+                : "text-gray-500 hover:text-gray-700 dark:text-slate-400 dark:hover:text-slate-200"
+            }`}
+          >
+            <Video size={16} />
+            Phòng họp
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab("members")}
+            className={`relative flex flex-1 items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-bold transition-all ${
+              activeTab === "members"
+                ? "bg-white text-gray-900 shadow-sm dark:bg-slate-700 dark:text-slate-100"
+                : "text-gray-500 hover:text-gray-700 dark:text-slate-400 dark:hover:text-slate-200"
+            }`}
+          >
+            <Users size={16} />
+            Thành viên
+            {selectedParticipants.length > 0 && (
+              <span className="flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-primary-500 px-1 text-[10px] font-bold text-white">
+                {selectedParticipants.length}
+              </span>
+            )}
+          </button>
+        </motion.div>
 
-            <div className="space-y-1.5">
-              <label className="text-sm font-medium text-gray-700 dark:text-slate-200">
-                Nhóm / Phòng ban
-              </label>
-              <div className="relative group">
-                <select
-                  value={selectedGroupId}
-                  onChange={(event) => {
-                    setSelectedGroupId(event.target.value);
-                    setSelectedParticipants([]);
-                  }}
-                  className="h-11 w-full appearance-none rounded-xl border border-gray-200 bg-white pl-4 pr-10 text-gray-900 transition-all focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
-                >
-                  {groups.length === 0 ? (
-                    <option value="" disabled>
-                      Chưa có nhóm nào
-                    </option>
+        {/* Tab content */}
+        <AnimatePresence mode="wait">
+          {activeTab === "room" && (
+            <motion.div
+              key="room"
+              initial={{ opacity: 0, x: -20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: 20 }}
+              transition={{ duration: 0.2 }}
+              className="space-y-5"
+            >
+              {/* Camera preview */}
+              <div className="relative overflow-hidden rounded-3xl bg-gray-900">
+                <div className="relative flex aspect-video items-center justify-center">
+                  {enableCamera && streamReady ? (
+                    <>
+                      <video
+                        ref={videoCallbackRef}
+                        autoPlay
+                        muted
+                        playsInline
+                        className="h-full w-full object-cover"
+                        style={{ transform: "scaleX(-1)" }}
+                      />
+                      {/* User name overlay */}
+                      <div className="absolute bottom-16 left-4 rounded-lg bg-black/50 px-3 py-1.5 backdrop-blur-sm">
+                        <p className="text-sm font-medium text-white">
+                          {user?.displayName || user?.email || "Bạn"}
+                        </p>
+                      </div>
+                    </>
                   ) : (
-                    groups.map((group) => (
-                      <option key={group.id} value={group.id}>
-                        {group.name}
-                      </option>
-                    ))
+                    <div className="flex flex-col items-center gap-4">
+                      <div className="flex h-28 w-28 items-center justify-center rounded-full bg-gray-800 text-5xl font-black text-gray-600">
+                        {(user?.displayName?.[0] || user?.email?.[0] || "B").toUpperCase()}
+                      </div>
+                      <p className="text-base text-gray-500">Camera đã tắt</p>
+                    </div>
                   )}
-                </select>
-                <ChevronDown
-                  className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 transition-colors group-focus-within:text-primary-500"
-                  size={18}
+                </div>
+
+                {/* Device controls */}
+                <div className="absolute bottom-0 left-0 right-0 flex items-center justify-center gap-4 bg-gradient-to-t from-black/70 via-black/30 to-transparent px-6 pb-6 pt-14">
+                  <button
+                    type="button"
+                    onClick={() => setEnableMic((v) => !v)}
+                    className={`flex h-14 w-14 items-center justify-center rounded-full transition-all ${
+                      enableMic
+                        ? "bg-white/20 text-white backdrop-blur-md hover:bg-white/30"
+                        : "bg-red-500 text-white shadow-lg shadow-red-500/30 hover:bg-red-600"
+                    }`}
+                  >
+                    {enableMic ? <Mic size={22} /> : <MicOff size={22} />}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEnableCamera((v) => !v)}
+                    className={`flex h-14 w-14 items-center justify-center rounded-full transition-all ${
+                      enableCamera
+                        ? "bg-white/20 text-white backdrop-blur-md hover:bg-white/30"
+                        : "bg-red-500 text-white shadow-lg shadow-red-500/30 hover:bg-red-600"
+                    }`}
+                  >
+                    {enableCamera ? <Video size={22} /> : <VideoOff size={22} />}
+                  </button>
+                </div>
+              </div>
+
+              {/* Meeting title */}
+              <div>
+                <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-gray-400 dark:text-slate-500">
+                  Tên cuộc họp
+                </label>
+                <input
+                  type="text"
+                  placeholder="Daily sync, Họp xử lý gấp..."
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  className="w-full rounded-2xl border border-gray-200 bg-white px-5 py-4 text-base font-medium text-gray-800 shadow-sm placeholder:text-gray-400 transition-all focus:border-primary-400 focus:outline-none focus:ring-2 focus:ring-primary-500/20 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:placeholder:text-slate-500 dark:focus:border-primary-600"
                 />
               </div>
-              {groups.length === 0 && (
-                <p className="text-xs font-medium text-amber-600 dark:text-amber-300">
-                  Tổ chức này chưa có phòng ban/danh mục. Hãy tạo nhóm trước khi mở cuộc họp live.
-                </p>
-              )}
-            </div>
-          </div>
-        </Card>
 
-        {/* Device + Invite side by side */}
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-          {/* Devices */}
-          <Card>
-            <h2 className="mb-4 text-lg font-bold text-gray-900 dark:text-slate-100">Thiết bị</h2>
-            <div className="grid grid-cols-3 gap-3">
-              {[
-                { label: "Camera", icon: <Video size={20} />, active: enableCamera, toggle: () => setEnableCamera((v) => !v), color: "primary" },
-                { label: "Micro", icon: <Mic size={20} />, active: enableMic, toggle: () => setEnableMic((v) => !v), color: "primary" },
-                { label: "Ghi âm", icon: <Radio size={20} />, active: enableRecord, toggle: () => setEnableRecord((v) => !v), color: "red" },
-              ].map((device) => (
-                <button
-                  key={device.label}
-                  type="button"
-                  onClick={device.toggle}
-                  className={`flex flex-col items-center justify-center gap-2 rounded-xl border-2 p-4 transition-all ${
-                    device.active
-                      ? device.color === "red"
-                        ? "border-red-300 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-200"
-                        : "border-primary-300 bg-primary-50 text-primary-700 dark:border-primary-800 dark:bg-primary-900/20 dark:text-primary-200"
-                      : "border-gray-200 bg-gray-50 text-gray-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-500"
-                  }`}
-                >
-                  <div className={`flex h-10 w-10 items-center justify-center rounded-full ${
-                    device.active
-                      ? device.color === "red" ? "bg-red-100 dark:bg-red-900/30" : "bg-primary-100 dark:bg-primary-900/30"
-                      : "bg-gray-100 dark:bg-slate-700"
-                  }`}>
-                    {device.icon}
+              {/* Group selector */}
+              <div>
+                <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-gray-400 dark:text-slate-500">
+                  Nhóm / Phòng ban
+                </label>
+                <div className="relative">
+                  <div className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 dark:text-slate-500">
+                    <FolderOpen size={18} />
                   </div>
-                  <span className="text-xs font-bold">{device.label}</span>
-                  <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
-                    device.active
-                      ? device.color === "red" ? "bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-300" : "bg-primary-100 text-primary-600 dark:bg-primary-900/30 dark:text-primary-300"
-                      : "bg-gray-100 text-gray-500 dark:bg-slate-700 dark:text-slate-400"
-                  }`}>
-                    {device.active ? "Bật" : "Tắt"}
-                  </span>
-                </button>
-              ))}
-            </div>
-          </Card>
-
-          {/* QR Invite */}
-          <Card>
-            <div className="mb-4 flex items-center justify-between">
-              <h2 className="text-lg font-bold text-gray-900 dark:text-slate-100">Mời tham gia</h2>
-              <Badge variant="primary" className="text-[10px]">QR / Link</Badge>
-            </div>
-
-            <div className="flex flex-col items-center gap-4 sm:flex-row sm:items-start">
-              <div className="shrink-0 rounded-2xl border border-gray-200 bg-white p-3 dark:border-slate-700">
-                <QRCodeSVG value={joinUrl} size={120} level="M" />
-              </div>
-              <div className="w-full min-w-0 space-y-3">
-                <div>
-                  <label className="mb-1 block text-xs font-bold uppercase tracking-wider text-gray-500 dark:text-slate-400">
-                    Mã tham gia
-                  </label>
-                  <div className="flex items-center gap-2">
-                    <div className="flex h-10 flex-1 items-center rounded-xl border border-gray-200 bg-gray-50 px-3 font-mono text-sm font-bold tracking-wider text-primary-700 dark:border-slate-700 dark:bg-slate-800 dark:text-primary-300">
-                      {meetingCode}
-                    </div>
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      size="lg"
-                      onClick={() => copyToClipboard(meetingCode, "code")}
-                      icon={copiedTarget === "code" ? <Check size={16} className="text-primary-500" /> : <Copy size={16} />}
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <label className="mb-1 block text-xs font-bold uppercase tracking-wider text-gray-500 dark:text-slate-400">
-                    Link tham gia
-                  </label>
-                  <div className="flex items-center gap-2">
-                    <div className="flex h-10 min-w-0 flex-1 items-center rounded-xl border border-gray-200 bg-gray-50 px-3 text-xs font-medium text-gray-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">
-                      <Link2 size={14} className="mr-2 shrink-0 text-gray-400" />
-                      <span className="truncate">{joinUrl}</span>
-                    </div>
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      onClick={() => copyToClipboard(joinUrl, "link")}
-                      icon={copiedTarget === "link" ? <Check size={16} className="text-primary-500" /> : <Copy size={16} />}
-                    />
+                  <select
+                    value={selectedGroupId}
+                    onChange={(e) => {
+                      setSelectedGroupId(e.target.value);
+                      setSelectedParticipants([]);
+                    }}
+                    className="h-14 w-full appearance-none rounded-2xl border border-gray-200 bg-white pl-12 pr-12 text-sm font-medium text-gray-700 shadow-sm transition-all focus:border-primary-400 focus:outline-none focus:ring-2 focus:ring-primary-500/20 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:focus:border-primary-600"
+                  >
+                    {groups.length === 0 && <option value="">Chưa có nhóm</option>}
+                    {groups.map((g) => (
+                      <option key={g.id} value={g.id}>{g.name}</option>
+                    ))}
+                  </select>
+                  <div className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-gray-400 dark:text-slate-500">
+                    <ChevronDown size={18} />
                   </div>
                 </div>
               </div>
-            </div>
-          </Card>
-        </div>
 
-        {/* AI Config */}
-        <Card>
-          <div className="mb-5 flex items-center justify-between">
-            <h2 className="flex items-center gap-2 text-lg font-bold text-gray-900 dark:text-slate-100">
-              <Zap size={18} className="text-primary-500" />
-              Cấu hình AI & Kho kiến thức
-            </h2>
-            <Badge variant="primary" className="text-[10px]">Premium</Badge>
-          </div>
-
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            <div className="space-y-1.5">
-              <label className="text-sm font-medium text-gray-700 dark:text-slate-200">
-                Ngôn ngữ chính
-              </label>
-              <div className="relative group">
-                <select
-                  value={language}
-                  onChange={(event) => setLanguage(event.target.value)}
-                  className="h-11 w-full appearance-none rounded-xl border border-gray-200 bg-white pl-4 pr-10 text-gray-900 transition-all focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
-                >
-                  <option value="vi">🇻🇳 Tiếng Việt</option>
-                  <option value="en">🇺🇸 Tiếng Anh</option>
-                  <option value="zh">🇨🇳 Tiếng Trung</option>
-                  <option value="ja">🇯🇵 Tiếng Nhật</option>
-                  <option value="ko">🇰🇷 Tiếng Hàn</option>
-                </select>
-                <ChevronDown className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
-              </div>
-            </div>
-
-            <MultiSelect
-              label="Kho kiến thức áp dụng"
-              placeholder="Chọn từ điển chuyên ngành..."
-              options={glossaries.map((glossary) => ({
-                id: glossary.id,
-                name: `${glossary.name}${glossary.scope === "GLOBAL" ? " (Hệ thống)" : ""}`,
-              }))}
-              selectedIds={selectedGlossaries}
-              onChange={setSelectedGlossaries}
-            />
-          </div>
-
-          <div className="mt-5 flex flex-wrap gap-6 border-t border-gray-100 pt-4 dark:border-slate-800">
-            <label className="flex cursor-pointer items-center gap-2.5">
-              <input
-                type="checkbox"
-                checked={enableRecord}
-                onChange={(event) => setEnableRecord(event.target.checked)}
-                className="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-              />
-              <span className="text-sm font-medium text-gray-700 dark:text-slate-300">Ghi âm & transcribe AI</span>
-            </label>
-            <label className="flex cursor-pointer items-center gap-2.5">
-              <input
-                type="checkbox"
-                checked={enableSummary}
-                onChange={(event) => setEnableSummary(event.target.checked)}
-                className="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-              />
-              <span className="text-sm font-medium text-gray-700 dark:text-slate-300">Tự động tóm tắt biên bản</span>
-            </label>
-          </div>
-
-          <div className="mt-4 flex items-start gap-2 rounded-xl bg-primary-50/50 p-3 text-xs text-primary-700 dark:bg-primary-900/10 dark:text-primary-300">
-            <BookOpen size={14} className="mt-0.5 shrink-0" />
-            <p>
-              Đang áp dụng <span className="font-bold">{selectedGlossaries.length}</span> kho kiến thức cho nhận diện giọng nói và biên bản.
-            </p>
-          </div>
-        </Card>
-
-        {/* Participants */}
-        <Card>
-          <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-            <h2 className="flex items-center gap-2 text-lg font-bold text-gray-900 dark:text-slate-100">
-              <Users size={18} className="text-primary-500" />
-              Thành viên tham gia
-              {selectedParticipants.length > 0 && (
-                <span className="rounded-full bg-primary-100 px-2 py-0.5 text-xs font-bold text-primary-700 dark:bg-primary-900/30 dark:text-primary-300">
-                  {selectedParticipants.length}
-                </span>
-              )}
-            </h2>
-            <span className="text-xs text-gray-500 dark:text-slate-400">
-              Người tạo được thêm tự động
-            </span>
-          </div>
-
-          {loadingMembers ? (
-            <div className="flex items-center justify-center py-8 text-sm text-gray-400">
-              <div className="mr-2 h-5 w-5 animate-spin rounded-full border-2 border-primary-500 border-t-transparent" />
-              Đang tải thành viên...
-            </div>
-          ) : groupMembers.length === 0 ? (
-            <div className="rounded-xl border border-dashed border-gray-200 py-8 text-center text-sm text-gray-400 dark:border-slate-700">
-              Nhóm chưa có thành viên nào
-            </div>
-          ) : (
-            <div className="overflow-hidden rounded-xl border border-gray-200 dark:border-slate-700">
-              <button
-                type="button"
-                onClick={toggleSelectAll}
-                className="flex w-full cursor-pointer items-center gap-3 border-b border-gray-100 bg-gray-50 px-4 py-3 text-left transition hover:bg-gray-100 dark:border-slate-700 dark:bg-slate-800/50 dark:hover:bg-slate-800"
-              >
-                <div className={`flex h-5 w-5 items-center justify-center rounded border-2 transition ${allSelected ? "border-primary-500 bg-primary-500" : "border-gray-300 dark:border-slate-600"}`}>
-                  {allSelected && <Check size={12} className="text-white" />}
+              {/* AI Settings */}
+              <div className="rounded-2xl border border-gray-200 bg-white p-5 dark:border-slate-700 dark:bg-slate-800">
+                <div className="mb-4 flex items-center gap-2">
+                  <Settings2 size={16} className="text-primary-500" />
+                  <p className="text-sm font-bold text-gray-800 dark:text-slate-200">Cài đặt AI</p>
                 </div>
-                <span className="text-sm font-bold text-gray-800 dark:text-slate-200">Chọn tất cả</span>
-                <span className="ml-auto text-xs text-gray-400">{groupMembers.length} thành viên</span>
-              </button>
 
-              <div className="max-h-64 divide-y divide-gray-50 overflow-y-auto dark:divide-slate-800">
-                {groupMembers.map((member) => {
-                  const isSelected = selectedParticipants.includes(member.user_id);
-                  return (
-                    <button
-                      type="button"
-                      key={member.user_id}
-                      onClick={() => toggleParticipant(member.user_id)}
-                      className="flex w-full cursor-pointer items-center gap-3 px-4 py-2.5 text-left transition hover:bg-gray-50 dark:hover:bg-slate-800/50"
+                <div className="space-y-4">
+                  {/* Language */}
+                  <div>
+                    <label className="mb-1.5 block text-xs font-semibold text-gray-500 dark:text-slate-400">
+                      Ngôn ngữ chính
+                    </label>
+                    <select
+                      value={language}
+                      onChange={(e) => setLanguage(e.target.value)}
+                      className="h-11 w-full rounded-xl border border-gray-200 bg-gray-50 px-3.5 text-sm font-medium text-gray-700 focus:border-primary-400 focus:outline-none focus:ring-2 focus:ring-primary-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-300"
                     >
-                      <div className={`flex h-5 w-5 shrink-0 items-center justify-center rounded border-2 transition ${isSelected ? "border-primary-500 bg-primary-500" : "border-gray-300 dark:border-slate-600"}`}>
-                        {isSelected && <Check size={12} className="text-white" />}
+                      <option value="vi">Tiếng Việt</option>
+                      <option value="en">English</option>
+                      <option value="ja">日本語</option>
+                      <option value="ko">한국어</option>
+                      <option value="zh">中文</option>
+                    </select>
+                  </div>
+
+                  {/* Glossary */}
+                  {glossaries.length > 0 && (
+                    <div>
+                      <label className="mb-1.5 block text-xs font-semibold text-gray-500 dark:text-slate-400">
+                        Từ điển chuyên ngành
+                      </label>
+                      <div className="max-h-36 space-y-1 overflow-y-auto rounded-xl bg-gray-50 p-2 dark:bg-slate-700/50">
+                        {glossaries.map((g) => {
+                          const isSelected = selectedGlossaries.includes(g.id);
+                          return (
+                            <button
+                              key={g.id}
+                              type="button"
+                              onClick={() =>
+                                setSelectedGlossaries((prev) =>
+                                  isSelected ? prev.filter((id) => id !== g.id) : [...prev, g.id],
+                                )
+                              }
+                              className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm transition ${
+                                isSelected
+                                  ? "bg-primary-50 text-primary-700 dark:bg-primary-900/10 dark:text-primary-300"
+                                  : "text-gray-600 hover:bg-white dark:text-slate-300 dark:hover:bg-slate-700"
+                              }`}
+                            >
+                              <div
+                                className={`flex h-5 w-5 items-center justify-center rounded-md border-2 transition ${
+                                  isSelected
+                                    ? "border-primary-500 bg-primary-500 text-white"
+                                    : "border-gray-300 dark:border-slate-500"
+                                }`}
+                              >
+                                {isSelected && <Check size={12} strokeWidth={3} />}
+                              </div>
+                              <span className="font-medium">
+                                {g.name}
+                                {g.scope === "GLOBAL" && (
+                                  <span className="ml-1.5 text-[10px] font-normal text-gray-400 dark:text-slate-500">(Hệ thống)</span>
+                                )}
+                              </span>
+                            </button>
+                          );
+                        })}
                       </div>
-                      {member.avatar_url ? (
-                        <img src={member.avatar_url} alt="" className="h-8 w-8 rounded-full object-cover" />
-                      ) : (
-                        <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary-100 text-primary-600 dark:bg-primary-900/30 dark:text-primary-400">
-                          <User size={14} />
-                        </div>
-                      )}
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-medium text-gray-800 dark:text-slate-200">{member.name}</p>
-                        {member.email && <p className="truncate text-xs text-gray-400">{member.email}</p>}
-                      </div>
-                      <span className="shrink-0 rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-medium text-gray-500 dark:bg-slate-700 dark:text-slate-400">
-                        {member.role === "group-admin" ? "Admin" : "Member"}
-                      </span>
-                    </button>
-                  );
-                })}
+                    </div>
+                  )}
+
+                  {/* Always-on badge */}
+                  <div className="flex items-center gap-3 rounded-xl border border-primary-100 bg-primary-50/60 px-4 py-3 dark:border-primary-900/30 dark:bg-primary-900/10">
+                    <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary-100 dark:bg-primary-900/30">
+                      <Sparkles size={15} className="text-primary-600 dark:text-primary-400" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-bold text-primary-700 dark:text-primary-300">Ghi âm & AI tóm tắt</p>
+                      <p className="text-[11px] text-primary-500 dark:text-primary-400">Tự động bật khi vào phòng</p>
+                    </div>
+                    <div className="ml-auto flex h-6 w-6 items-center justify-center rounded-full bg-primary-500">
+                      <Check size={12} strokeWidth={3} className="text-white" />
+                    </div>
+                  </div>
+                </div>
               </div>
-            </div>
+            </motion.div>
           )}
-        </Card>
 
-        {/* Sticky Footer */}
-        <div className="sticky bottom-0 z-30 -mx-4 border-t border-gray-200 bg-white px-4 py-4 dark:border-slate-700 dark:bg-slate-900 lg:-mx-0 lg:rounded-b-2xl">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            {/* Info row */}
-            <div className="flex items-center gap-3">
-              <div className="flex items-center gap-1.5 rounded-lg bg-gray-100 px-2.5 py-1.5 dark:bg-slate-800">
-                <Users size={14} className="text-gray-500 dark:text-slate-400" />
-                <span className="text-xs font-bold text-gray-800 dark:text-slate-200">{selectedParticipants.length + 1}</span>
-                <span className="text-xs text-gray-500 dark:text-slate-400">người</span>
-              </div>
-              <div className="flex items-center gap-1.5 rounded-lg bg-primary-50 px-2.5 py-1.5 dark:bg-primary-900/20">
-                <Link2 size={14} className="text-primary-500" />
-                <span className="font-mono text-xs font-bold text-primary-700 dark:text-primary-300">{meetingCode}</span>
-              </div>
-            </div>
+          {activeTab === "members" && (
+            <motion.div
+              key="members"
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -20 }}
+              transition={{ duration: 0.2 }}
+            >
+              <div className="rounded-2xl border border-gray-200 bg-white dark:border-slate-700 dark:bg-slate-800">
+                {/* Header */}
+                <div className="flex items-center justify-between border-b border-gray-100 px-5 py-4 dark:border-slate-700">
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary-50 dark:bg-primary-900/20">
+                      <UserPlus size={16} className="text-primary-500" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-bold text-gray-800 dark:text-slate-200">
+                        Chọn thành viên tham gia
+                      </p>
+                      <p className="text-xs text-gray-400 dark:text-slate-500">
+                        Bạn được thêm tự động
+                      </p>
+                    </div>
+                  </div>
+                  {selectedParticipants.length > 0 && (
+                    <span className="flex h-7 min-w-[1.75rem] items-center justify-center rounded-full bg-primary-500 px-2 text-xs font-bold text-white">
+                      {selectedParticipants.length + 1}
+                    </span>
+                  )}
+                </div>
 
-            {/* Buttons */}
-            <div className="flex gap-3">
-              <Button type="button" variant="ghost" onClick={() => navigate("/calendar")} className="flex-1 sm:flex-none">
-                Hủy bỏ
-              </Button>
-              <Button
-                type="submit"
-                isLoading={isSubmitting}
-                disabled={!selectedGroupId || groups.length === 0}
-                icon={<ArrowRight size={16} />}
-                className="flex-1 shadow-lg shadow-primary-500/20 sm:flex-none"
-              >
-                Vào phòng họp
-              </Button>
-            </div>
+                {/* Select all */}
+                {members.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={toggleSelectAll}
+                    className="flex w-full items-center gap-3 border-b border-gray-100 px-5 py-3 text-left transition hover:bg-gray-50 dark:border-slate-700 dark:hover:bg-slate-700/50"
+                  >
+                    <div
+                      className={`flex h-5 w-5 items-center justify-center rounded-md border-2 transition ${
+                        members.length > 0 && selectedParticipants.length === members.length
+                          ? "border-primary-500 bg-primary-500 text-white"
+                          : "border-gray-300 dark:border-slate-500"
+                      }`}
+                    >
+                      {members.length > 0 && selectedParticipants.length === members.length && (
+                        <Check size={12} strokeWidth={3} />
+                      )}
+                    </div>
+                    <Users size={16} className="text-gray-400 dark:text-slate-500" />
+                    <span className="text-sm font-semibold text-gray-600 dark:text-slate-300">
+                      Chọn tất cả
+                    </span>
+                    <span className="ml-auto rounded-full bg-gray-100 px-2 py-0.5 text-xs font-bold text-gray-500 dark:bg-slate-700 dark:text-slate-400">
+                      {members.length}
+                    </span>
+                  </button>
+                )}
+
+                {/* Member list */}
+                <div className="max-h-[400px] overflow-y-auto">
+                  {loadingMembers ? (
+                    <div className="flex items-center justify-center py-12 text-sm text-gray-400">
+                      <div className="mr-3 h-5 w-5 animate-spin rounded-full border-2 border-primary-500 border-t-transparent" />
+                      Đang tải thành viên...
+                    </div>
+                  ) : members.length === 0 ? (
+                    <div className="flex flex-col items-center py-12 text-center">
+                      <div className="mb-3 flex h-14 w-14 items-center justify-center rounded-2xl bg-gray-100 dark:bg-slate-700">
+                        <Users size={24} className="text-gray-300 dark:text-slate-500" />
+                      </div>
+                      <p className="text-sm font-medium text-gray-500 dark:text-slate-400">
+                        Chưa có thành viên trong nhóm
+                      </p>
+                      <p className="mt-1 text-xs text-gray-400 dark:text-slate-500">
+                        Hãy thêm thành viên vào nhóm trước
+                      </p>
+                    </div>
+                  ) : (
+                    members.map((member) => {
+                      const isSelected = selectedParticipants.includes(member.user_id);
+                      return (
+                        <button
+                          key={member.user_id}
+                          type="button"
+                          onClick={() => toggleMember(member.user_id)}
+                          className={`flex w-full items-center gap-4 px-5 py-3.5 text-left transition-all ${
+                            isSelected
+                              ? "bg-primary-50/60 dark:bg-primary-900/10"
+                              : "hover:bg-gray-50 dark:hover:bg-slate-700/30"
+                          }`}
+                        >
+                          <div
+                            className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md border-2 transition ${
+                              isSelected
+                                ? "border-primary-500 bg-primary-500 text-white"
+                                : "border-gray-300 dark:border-slate-500"
+                            }`}
+                          >
+                            {isSelected && <Check size={12} strokeWidth={3} />}
+                          </div>
+                          <div className="relative shrink-0">
+                            {member.avatar_url ? (
+                              <img src={member.avatar_url} alt="" className="h-10 w-10 rounded-full object-cover ring-2 ring-white dark:ring-slate-800" />
+                            ) : (
+                              <div className="flex h-10 w-10 items-center justify-center rounded-full bg-gradient-to-br from-gray-200 to-gray-300 text-sm font-bold text-gray-500 dark:from-slate-600 dark:to-slate-700 dark:text-slate-400">
+                                {(member.name?.[0] || "?").toUpperCase()}
+                              </div>
+                            )}
+                            {isSelected && (
+                              <div className="absolute -bottom-0.5 -right-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-primary-500 ring-2 ring-white dark:ring-slate-800">
+                                <Check size={8} strokeWidth={3} className="text-white" />
+                              </div>
+                            )}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <p className={`text-sm font-semibold ${isSelected ? "text-gray-900 dark:text-slate-100" : "text-gray-700 dark:text-slate-300"}`}>
+                              {member.name}
+                            </p>
+                            {member.email && (
+                              <p className="truncate text-xs text-gray-400 dark:text-slate-500">{member.email}</p>
+                            )}
+                          </div>
+                          <span className={`shrink-0 rounded-lg px-2 py-0.5 text-[10px] font-bold uppercase ${
+                            isSelected
+                              ? "bg-primary-100 text-primary-600 dark:bg-primary-900/20 dark:text-primary-400"
+                              : "bg-gray-100 text-gray-400 dark:bg-slate-700 dark:text-slate-500"
+                          }`}>
+                            {member.role}
+                          </span>
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Bottom bar */}
+        <motion.div
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.15 }}
+          className="sticky bottom-0 mt-6 -mx-4 border-t border-gray-200 bg-white/95 px-4 py-4 backdrop-blur-sm dark:border-slate-700 dark:bg-slate-900/95 lg:mx-0 lg:px-0"
+        >
+          <div className="flex items-center justify-end gap-2 pr-4">
+            <Button type="button" variant="ghost" onClick={() => navigate(-1)}>
+              Hủy
+            </Button>
+            <Button
+              type="submit"
+              isLoading={isSubmitting}
+              disabled={!selectedGroupId || groups.length === 0}
+            >
+              Vào phòng họp
+            </Button>
           </div>
-        </div>
+        </motion.div>
       </form>
     </div>
   );

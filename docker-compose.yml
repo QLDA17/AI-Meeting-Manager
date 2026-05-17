@@ -21,6 +21,12 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
       - HUGGINGFACE_API_KEY=${HUGGINGFACE_API_KEY}
+      - PHOBERT_ENABLED=${PHOBERT_ENABLED:-false}
+      - PHOBERT_MODEL=${PHOBERT_MODEL:-vinai/phobert-base}
+      - PHOBERT_DEVICE=${PHOBERT_DEVICE:-auto}
+      - PHOBERT_DIALECT_ENABLED=${PHOBERT_DIALECT_ENABLED:-true}
+      - PHOBERT_MLM_CORRECTION_ENABLED=${PHOBERT_MLM_CORRECTION_ENABLED:-false}
+      - PHOBERT_MAX_LENGTH=${PHOBERT_MAX_LENGTH:-256}
     volumes:
       - ./backend/data:/app/data
       - ./backend/logs:/app/logs

@@ -7,8 +7,12 @@ from google.genai import types
 logger = logging.getLogger(__name__)
 
 class GoogleSTTProvider:
-    """Google Gemini Native Audio STT Provider."""
-    
+    """Google Gemini Native Audio STT Provider.
+    WARNING: This provider uses a general LLM for transcription, not a dedicated STT model.
+    Timestamps are fabricated and speaker diarization is not supported.
+    Use Deepgram (default) for production-quality STT.
+    """
+
     def __init__(self, api_key: str = None):
         self.api_key = api_key or os.getenv("GOOGLE_API_KEY")
         self.client = None

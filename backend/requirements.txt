@@ -10,6 +10,7 @@ python-multipart
 cryptography
 torch
 transformers
+sentencepiece
 numpy
 tenacity
 pydantic[email]

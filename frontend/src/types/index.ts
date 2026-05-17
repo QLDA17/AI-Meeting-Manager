@@ -159,6 +159,7 @@ export interface Meeting {
   isPinned?: boolean;
   groupName?: string;
   organizationName?: string;
+  actionItemsCount?: number;
 }
 
 export interface MeetingTranscript {
@@ -173,6 +174,8 @@ export interface MeetingTranscriptSegment {
   id: string;
   transcriptId: string;
   speakerLabel: string;
+  speakerRawLabel?: string;
+  speakerDisplayName?: string;
   startTime: number;
   endTime: number;
   text: string;
@@ -185,6 +188,11 @@ export interface MeetingSummaryRecord {
   meetingSummary: string;
   keyPoints: unknown[];
   decisions: unknown[];
+  actionItems?: unknown[];
+  risks?: unknown[];
+  openQuestions?: unknown[];
+  timelineHighlights?: unknown[];
+  speakerSummaries?: unknown[];
   processingStatus?: string;
   createdAt: string;
 }
@@ -195,6 +203,7 @@ export interface MeetingDetail extends Meeting {
   createdByUser?: User;
   transcripts: MeetingTranscript[];
   transcriptSegments: MeetingTranscriptSegment[];
+  speakerMappings: MeetingSpeakerMapping[];
   summaries: MeetingSummaryRecord[];
   actionItems: ActionItem[];
   transcriptContent?: string;
@@ -202,10 +211,36 @@ export interface MeetingDetail extends Meeting {
   meetingSummaryText?: string;
   keyPointsText: string[];
   decisionsText: string[];
+  risksText: string[];
+  openQuestionsText: string[];
+  timelineHighlightsText: string[];
+  speakerSummariesText: string[];
   summaryStatus?: string;
   summaryErrorText?: string;
   summaryProvider?: string;
   summaryModelName?: string;
+}
+
+export interface MeetingSpeakerMapping {
+  id: string;
+  meetingId: string;
+  speakerLabel: string;
+  displayName: string;
+  userId?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface MeetingMessage {
+  id: string;
+  meetingId: string;
+  userId: string;
+  text: string;
+  messageType: 'chat' | 'system';
+  replyToId?: string;
+  createdAt: string;
+  updatedAt?: string;
+  user?: User;
 }
 
 export interface GroupMessage {

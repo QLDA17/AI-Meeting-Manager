@@ -7,6 +7,7 @@ import type {
   GroupMessage,
   Meeting,
   MeetingDetail,
+  MeetingMessage,
   NotificationItem,
   Organization,
   OrgUser,
@@ -202,12 +203,13 @@ export const normalizeMeeting = (meeting: any): Meeting => ({
   createdBy: meeting.createdBy ?? meeting.created_by ?? '',
   createdAt: asIsoString(meeting.createdAt ?? meeting.created_at),
   updatedAt: asIsoString(meeting.updatedAt ?? meeting.updated_at),
-  summary: meeting.summary ?? meeting.meeting_summary_text ?? undefined,
-  keyPoints: meeting.keyPoints ?? meeting.key_points_text ?? [],
-  decisions: meeting.decisions ?? meeting.decisions_text ?? [],
+  summary: meeting.summary ?? meeting.summary_text ?? meeting.meeting_summary_text ?? undefined,
+  keyPoints: meeting.keyPoints ?? meeting.key_points_list ?? meeting.key_points_text ?? [],
+  decisions: meeting.decisions ?? meeting.decisions_list ?? meeting.decisions_text ?? [],
   isPinned: asBoolean(meeting.isPinned ?? meeting.is_pinned),
-  groupName: meeting.groupName ?? meeting.group?.name ?? undefined,
-  organizationName: meeting.organizationName ?? meeting.organization?.name ?? undefined,
+  groupName: meeting.groupName ?? meeting.group_name ?? meeting.group?.name ?? undefined,
+  organizationName: meeting.organizationName ?? meeting.organization_name ?? meeting.organization?.name ?? undefined,
+  actionItemsCount: meeting.actionItemsCount ?? meeting.action_items_count ?? 0,
 });
 
 export const normalizeMeetingDetail = (meeting: any): MeetingDetail => ({
@@ -228,12 +230,25 @@ export const normalizeMeetingDetail = (meeting: any): MeetingDetail => ({
     ? meeting.transcript_segments.map((segment: any) => ({
         id: segment.id,
         transcriptId: segment.transcript_id,
-        speakerLabel: segment.speaker_label ?? 'Speaker_01',
+        speakerLabel: segment.speaker_display_name ?? segment.speaker_label ?? 'Speaker_01',
+        speakerRawLabel: segment.speaker_raw_label ?? segment.speaker_label ?? 'Speaker_01',
+        speakerDisplayName: segment.speaker_display_name ?? segment.speaker_label ?? 'Speaker_01',
         startTime: asNumber(segment.start_time),
         endTime: asNumber(segment.end_time),
         text: segment.text ?? '',
         language: segment.language ?? 'auto',
         confidenceScore: segment.confidence_score != null ? asNumber(segment.confidence_score) : undefined,
+      }))
+    : [],
+  speakerMappings: Array.isArray(meeting.speaker_mappings)
+    ? meeting.speaker_mappings.map((mapping: any) => ({
+        id: mapping.id,
+        meetingId: mapping.meeting_id ?? mapping.meetingId ?? '',
+        speakerLabel: mapping.speaker_label ?? mapping.speakerLabel ?? 'Speaker_01',
+        displayName: mapping.display_name ?? mapping.displayName ?? mapping.speaker_label ?? 'Speaker_01',
+        userId: mapping.user_id ?? mapping.userId ?? undefined,
+        createdAt: mapping.created_at ? asIsoString(mapping.created_at) : undefined,
+        updatedAt: mapping.updated_at ? asIsoString(mapping.updated_at) : undefined,
       }))
     : [],
   summaries: Array.isArray(meeting.summaries)
@@ -242,6 +257,11 @@ export const normalizeMeetingDetail = (meeting: any): MeetingDetail => ({
         meetingSummary: summary.meeting_summary ?? '',
         keyPoints: summary.key_points ?? [],
         decisions: summary.decisions ?? [],
+        actionItems: summary.action_items ?? [],
+        risks: summary.risks ?? [],
+        openQuestions: summary.open_questions ?? summary.openQuestions ?? [],
+        timelineHighlights: summary.timeline_highlights ?? summary.timelineHighlights ?? [],
+        speakerSummaries: summary.speaker_summaries ?? summary.speakerSummaries ?? [],
         processingStatus: summary.processing_status ?? undefined,
         createdAt: asIsoString(summary.created_at),
       }))
@@ -252,10 +272,26 @@ export const normalizeMeetingDetail = (meeting: any): MeetingDetail => ({
   meetingSummaryText: meeting.meeting_summary_text ?? undefined,
   keyPointsText: Array.isArray(meeting.key_points_text) ? meeting.key_points_text : [],
   decisionsText: Array.isArray(meeting.decisions_text) ? meeting.decisions_text : [],
+  risksText: Array.isArray(meeting.risks_text) ? meeting.risks_text : [],
+  openQuestionsText: Array.isArray(meeting.open_questions_text) ? meeting.open_questions_text : [],
+  timelineHighlightsText: Array.isArray(meeting.timeline_highlights_text) ? meeting.timeline_highlights_text : [],
+  speakerSummariesText: Array.isArray(meeting.speaker_summaries_text) ? meeting.speaker_summaries_text : [],
   summaryStatus: meeting.summary_status ?? undefined,
   summaryErrorText: meeting.summary_error_text ?? undefined,
   summaryProvider: meeting.summary_provider ?? undefined,
   summaryModelName: meeting.summary_model_name ?? undefined,
+});
+
+export const normalizeMeetingMessage = (message: any): MeetingMessage => ({
+  id: message.id,
+  meetingId: message.meetingId ?? message.meeting_id ?? '',
+  userId: message.userId ?? message.user_id ?? '',
+  text: message.text ?? '',
+  messageType: message.messageType ?? message.message_type ?? 'chat',
+  replyToId: message.replyToId ?? message.reply_to_id ?? undefined,
+  createdAt: asIsoString(message.createdAt ?? message.created_at),
+  updatedAt: message.updatedAt || message.updated_at ? asIsoString(message.updatedAt ?? message.updated_at) : undefined,
+  user: message.user ? normalizeUser(message.user) : undefined,
 });
 
 export const normalizeGlossaryTerm = (term: any): GlossaryTerm => ({

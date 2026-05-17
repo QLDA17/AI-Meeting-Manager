@@ -59,6 +59,12 @@ class AIConfig:
     deepgram_api_key: Optional[str] = None
     deepgram_model: str = "nova-3"
     deepgram_language: str = "vi"
+    phobert_enabled: bool = False
+    phobert_model: str = "vinai/phobert-base"
+    phobert_device: str = "auto"
+    phobert_dialect_enabled: bool = True
+    phobert_mlm_correction_enabled: bool = False
+    phobert_max_length: int = 256
     temperature: float = 0.2
     max_retries: int = 3
     
@@ -74,6 +80,12 @@ class AIConfig:
             deepgram_api_key=os.getenv("DEEPGRAM_API_KEY"),
             deepgram_model=os.getenv("DEEPGRAM_MODEL", "nova-3"),
             deepgram_language=os.getenv("DEEPGRAM_LANGUAGE", "vi"),
+            phobert_enabled=os.getenv("PHOBERT_ENABLED", "false").lower() == "true",
+            phobert_model=os.getenv("PHOBERT_MODEL", "vinai/phobert-base"),
+            phobert_device=os.getenv("PHOBERT_DEVICE", "auto"),
+            phobert_dialect_enabled=os.getenv("PHOBERT_DIALECT_ENABLED", "true").lower() == "true",
+            phobert_mlm_correction_enabled=os.getenv("PHOBERT_MLM_CORRECTION_ENABLED", "false").lower() == "true",
+            phobert_max_length=int(os.getenv("PHOBERT_MAX_LENGTH", "256")),
             temperature=float(os.getenv("AI_TEMPERATURE", "0.2")),
             max_retries=int(os.getenv("AI_MAX_RETRIES", "3")),
         )
@@ -106,6 +118,12 @@ class AIConfig:
         
         if self.max_retries < 0:
             errors.append("AI_MAX_RETRIES must be non-negative")
+
+        if self.phobert_device not in {"auto", "cpu", "cuda"}:
+            errors.append("PHOBERT_DEVICE must be one of: auto, cpu, cuda")
+
+        if self.phobert_max_length <= 0:
+            errors.append("PHOBERT_MAX_LENGTH must be positive")
         
         return errors
 
@@ -204,6 +222,8 @@ class AppConfig:
                 "provider": self.ai.provider,
                 "model": self.ai.gemini_model if self.ai.provider == "google" else self.ai.openai_api_key[:10] + "..." if self.ai.openai_api_key else None,
                 "temperature": self.ai.temperature,
+                "phobert_enabled": self.ai.phobert_enabled,
+                "phobert_model": self.ai.phobert_model,
             },
             "server": {
                 "host": self.server.host,

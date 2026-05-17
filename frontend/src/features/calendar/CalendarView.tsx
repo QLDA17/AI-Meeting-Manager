@@ -15,7 +15,7 @@ import type { Meeting } from '../../types';
 import { getMeetingEnd, getMeetingStart, toMeetingApiDateTime } from '../../utils/meetingDateTime';
 
 const isEditableMeeting = (meeting?: Meeting) =>
-  Boolean(meeting && !['completed', 'canceled'].includes(meeting.status));
+  Boolean(meeting && meeting.status === 'upcoming');
 
 const toCalendarEvent = (meeting: Meeting) => {
   const startStr = getMeetingStart(meeting);
@@ -34,12 +34,16 @@ const toCalendarEvent = (meeting: Meeting) => {
   const isLive = startDate.getTime() <= now && endDate.getTime() >= now;
 
   let bgColor = '#3b82f6';
-  if (meeting.status === 'completed' || isPast) {
-    bgColor = '#10b981';
+  if (meeting.status === 'canceled') {
+    bgColor = '#64748b';
   } else if (meeting.status === 'live' || isLive) {
     bgColor = '#ef4444';
-  } else if (meeting.status === 'canceled') {
-    bgColor = '#64748b';
+  } else if (meeting.status === 'processing' || meeting.status === 'queued') {
+    bgColor = '#f59e0b';
+  } else if (meeting.status === 'failed') {
+    bgColor = '#e11d48';
+  } else if (meeting.status === 'completed' || isPast) {
+    bgColor = '#10b981';
   }
 
   return {
@@ -127,7 +131,7 @@ const CalendarView: React.FC = () => {
     const meeting = visibleMeetings.find((item) => item.id === event.id);
     if (!isEditableMeeting(meeting)) {
       arg.revert();
-      toast.error('Không thể đổi lịch cuộc họp đã hoàn thành hoặc đã hủy');
+      toast.error('Chỉ cuộc họp sắp tới mới được đổi lịch');
       return;
     }
     try {
@@ -151,7 +155,7 @@ const CalendarView: React.FC = () => {
     const meeting = visibleMeetings.find((item) => item.id === event.id);
     if (!isEditableMeeting(meeting)) {
       arg.revert();
-      toast.error('Không thể đổi thời lượng cuộc họp đã hoàn thành hoặc đã hủy');
+      toast.error('Chỉ cuộc họp sắp tới mới được đổi thời lượng');
       return;
     }
     if (!event.end || event.end <= event.start) {

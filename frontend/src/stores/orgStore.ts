@@ -5,7 +5,7 @@
 import { create } from 'zustand';
 import type { Organization, Group, User } from '../types';
 import api from '../services/api';
-import { normalizeGroup, normalizeMeeting, normalizeOrganization, normalizeUser } from '../services/mappers';
+import { normalizeGroup, normalizeOrganization, normalizeUser } from '../services/mappers';
 
 const isActiveOrg = (org: Organization) => org.approvalStatus !== 'pending';
 
@@ -16,7 +16,6 @@ interface OrgState {
   currentGroupId: string | null;
   orgs: Organization[];
   groups: Group[]; // Now acting as Folders/Departments
-  meetings: any[];
   members: User[];
 
   // UI State
@@ -29,7 +28,6 @@ interface OrgState {
   loadOrgs: () => void;
   loadOrgDetails: (orgId: string) => void;
   loadGroups: (orgId: string) => void; // Load Folders/Depts
-  loadMeetings: (orgId: string) => void;
   loadMembers: (orgId: string) => void;
   setOrgs: (orgs: Organization[]) => void;
   createOrg: (name: string, description?: string) => Promise<Organization>;
@@ -49,7 +47,6 @@ export const useOrgStore = create<OrgState>((set, get) => ({
   currentGroupId: null,
   orgs: [],
   groups: [],
-  meetings: [],
   members: [],
   isLoading: false,
   error: null,
@@ -117,16 +114,6 @@ export const useOrgStore = create<OrgState>((set, get) => ({
     }
   },
 
-  loadMeetings: async (orgId: string) => {
-    set({ isLoading: true });
-    try {
-      const response = await api.get(`/api/meetings?organization_id=${orgId}`);
-      set({ meetings: Array.isArray(response.data) ? response.data.map(normalizeMeeting) : [], isLoading: false });
-    } catch (err) {
-      set({ error: 'Failed to load meetings', isLoading: false });
-    }
-  },
-
   loadMembers: async (orgId: string) => {
     set({ isLoading: true });
     try {
@@ -166,7 +153,6 @@ export const useOrgStore = create<OrgState>((set, get) => ({
           currentOrg: null,
           currentGroupId: null,
           groups: [],
-          meetings: [],
           members: [],
         };
       }
@@ -181,7 +167,6 @@ export const useOrgStore = create<OrgState>((set, get) => ({
           ? {
               currentGroupId: null,
               groups: [],
-              meetings: [],
               members: [],
             }
           : {}),
@@ -229,7 +214,6 @@ export const useOrgStore = create<OrgState>((set, get) => ({
       currentGroupId: null,
       orgs: [],
       groups: [],
-      meetings: [],
       members: [],
       error: null,
     }),

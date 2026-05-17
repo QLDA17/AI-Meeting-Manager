@@ -4,7 +4,7 @@ import { cn } from "../../lib/utils";
 
 const variantStyles = {
   primary:
-    "bg-primary-500 text-white hover:bg-primary-600 active:bg-primary-700 shadow-green",
+    "bg-primary-500 text-white hover:bg-primary-600 active:bg-primary-700",
   secondary:
     "bg-white text-gray-700 border border-gray-200 hover:bg-gray-50 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700 dark:hover:bg-slate-800",
   ghost:
@@ -23,7 +23,7 @@ const sizeStyles = {
 } as const;
 
 const baseStyles =
-  "inline-flex items-center justify-center font-medium transition-all duration-150 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed select-none";
+  "inline-flex items-center justify-center font-medium transition-all duration-150 focus:outline-none focus:ring-2 focus:ring-primary-400/50 disabled:opacity-50 disabled:cursor-not-allowed select-none";
 
 interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: keyof typeof variantStyles;

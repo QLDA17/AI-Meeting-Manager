@@ -8,13 +8,15 @@ import hashlib
 import glob
 import subprocess
 from typing import List, Optional, Dict, Any
-from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, BackgroundTasks, status, Request, Form
+from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, BackgroundTasks, status, Request, Form, WebSocket, WebSocketDisconnect, Query
 from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
 from pydantic import BaseModel
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import or_, func
+from jose import jwt
+import asyncio
 import uuid
 import secrets
 
@@ -111,6 +113,16 @@ def _ensure_column(table_name: str, column_name: str, ddl: str) -> None:
 
 def _ensure_meeting_runtime_columns() -> None:
     _ensure_column("transcript_segments", "language", "language VARCHAR(10) DEFAULT 'auto'")
+    _ensure_column("transcripts", "post_processed", "post_processed BOOLEAN DEFAULT FALSE")
+    _ensure_column("transcripts", "nlp_metadata", "nlp_metadata JSON")
+    _ensure_column("transcript_segments", "original_text", "original_text TEXT")
+    _ensure_column("transcript_segments", "nlp_metadata", "nlp_metadata JSON")
+    _ensure_column("meetings", "reminder_sent", "reminder_sent BOOLEAN DEFAULT FALSE")
+    _ensure_column("meeting_participants", "invite_status", "invite_status VARCHAR(20) DEFAULT 'accepted'")
+    _ensure_column("meeting_summaries", "risks", "risks JSON")
+    _ensure_column("meeting_summaries", "open_questions", "open_questions JSON")
+    _ensure_column("meeting_summaries", "timeline_highlights", "timeline_highlights JSON")
+    _ensure_column("meeting_summaries", "speaker_summaries", "speaker_summaries JSON")
 
 
 # ============= MIDDLEWARE =============
@@ -146,12 +158,19 @@ async def startup_event():
     """Initialize application on startup"""
     logger.info("Starting MultiMinutes AI API...")
     start_time = time.time()
+
+    # Start background scheduler for reminders and status transitions
+    import asyncio
+    from .scheduler import run_scheduler
+    asyncio.create_task(run_scheduler())
     
     try:
         # Ensure new lightweight runtime tables exist even without full migrations.
         models.AuditLog.__table__.create(bind=engine, checkfirst=True)
         models.Notification.__table__.create(bind=engine, checkfirst=True)
         models.MeetingTranscriptDraft.__table__.create(bind=engine, checkfirst=True)
+        models.MeetingMessage.__table__.create(bind=engine, checkfirst=True)
+        models.MeetingSpeakerMapping.__table__.create(bind=engine, checkfirst=True)
         _ensure_meeting_runtime_columns()
 
         # 1. Validate database connection
@@ -201,14 +220,14 @@ MAX_ADMIN_AUDIT_LOGS = 2000
 ADMIN_PROMPTS: Dict[str, Dict[str, Any]] = {
     "summary_vi": {
         "key": "summary_vi",
-        "name": "Tom tat cuoc hop (VI)",
-        "description": "Prompt tao tom tat cuoc hop bang tieng Viet",
+        "name": "Tóm tắt cuộc họp (VI)",
+        "description": "Prompt tạo tóm tắt cuộc họp bằng tiếng Việt",
         "content": (
-            "Dựa trên transcript cuộc họp dưới đây, hãy tạo bản tóm tắt CHI TIẾT bằng tiếng Việt. "
-            "Bản tóm tắt phải dài ít nhất 3 đoạn văn, bao quát đầy đủ các chủ đề được thảo luận, "
-            "kết luận và hướng đi tiếp theo. Không tóm tắt quá ngắn gọn."
+            "Tạo executive meeting brief bằng tiếng Việt. Tóm tắt phải ngắn, đúng trọng tâm, "
+            "chỉ nêu mục tiêu, kết quả chính, quyết định rõ ràng và bước tiếp theo. "
+            "Không kể lại transcript, không bịa quyết định hoặc việc cần làm."
         ),
-        "version": "2.0.0",
+        "version": "2.1.0",
         "last_updated": datetime.utcnow().isoformat(),
     },
     "summary_en": {
@@ -216,11 +235,11 @@ ADMIN_PROMPTS: Dict[str, Dict[str, Any]] = {
         "name": "Meeting Summary (EN)",
         "description": "Meeting summary prompt in English",
         "content": (
-            "Based on the meeting transcript below, create a DETAILED summary in English. "
-            "The summary must be at least 3 paragraphs long, covering all topics discussed, "
-            "conclusions reached, and next steps. Do not summarize too briefly."
+            "Create a concise executive meeting brief in English. Focus only on the meeting goal, "
+            "main outcomes, explicit decisions, and next steps. Do not retell the transcript or invent "
+            "decisions/action items."
         ),
-        "version": "2.0.0",
+        "version": "2.1.0",
         "last_updated": datetime.utcnow().isoformat(),
     },
     "summary_zh": {
@@ -228,11 +247,10 @@ ADMIN_PROMPTS: Dict[str, Dict[str, Any]] = {
         "name": "会议摘要 (ZH)",
         "description": "Meeting summary prompt in Chinese",
         "content": (
-            "根据以下会议记录，请用中文创建一份详细的会议摘要。"
-            "摘要至少需要3段文字，涵盖所有讨论的主题、结论和后续步骤。"
-            "请不要过于简短地总结。"
+            "请用中文生成简洁的会议高管摘要，只关注会议目标、主要结果、明确决定和下一步。"
+            "不要复述全文，不要编造决定或待办事项。"
         ),
-        "version": "2.0.0",
+        "version": "2.1.0",
         "last_updated": datetime.utcnow().isoformat(),
     },
     "summary_ja": {
@@ -240,11 +258,11 @@ ADMIN_PROMPTS: Dict[str, Dict[str, Any]] = {
         "name": "会議サマリー (JA)",
         "description": "Meeting summary prompt in Japanese",
         "content": (
-            "以下の会議記録に基づいて、日本語で詳細な会議サマリーを作成してください。"
-            "サマリーは少なくとも3段落以上で、議論されたすべてのトピック、結論、"
-            "次のステップを網羅してください。短すぎる要約は避けてください。"
+            "日本語で簡潔なエグゼクティブ向け会議ブリーフを作成してください。"
+            "会議の目的、主要な結果、明確な決定事項、次のアクションだけに集中してください。"
+            "全文の再説明や決定・タスクの推測はしないでください。"
         ),
-        "version": "2.0.0",
+        "version": "2.1.0",
         "last_updated": datetime.utcnow().isoformat(),
     },
     "summary_ko": {
@@ -252,11 +270,10 @@ ADMIN_PROMPTS: Dict[str, Dict[str, Any]] = {
         "name": "회의 요약 (KO)",
         "description": "Meeting summary prompt in Korean",
         "content": (
-            "아래 회의록을 바탕으로 한국어로 상세한 회의 요약을 작성해 주세요. "
-            "요약은 최소 3단락 이상이어야 하며, 논의된 모든 주제, 결론, "
-            "다음 단계를 포괄해야 합니다. 너무 간략하게 요약하지 마세요."
+            "한국어로 간결한 임원용 회의 브리프를 작성해 주세요. 회의 목적, 핵심 결과, "
+            "명확한 결정, 다음 단계에만 집중하세요. 회의록을 장황하게 반복하거나 결정/할 일을 추측하지 마세요."
         ),
-        "version": "2.0.0",
+        "version": "2.1.0",
         "last_updated": datetime.utcnow().isoformat(),
     },
 }
@@ -627,9 +644,13 @@ def split_transcript_content_for_display(content: str, max_chars: int = 700) -> 
     return chunks
 
 
-def transcript_segment_response_payloads(transcript: Optional[models.Transcript]) -> List[Dict[str, Any]]:
+def transcript_segment_response_payloads(
+    transcript: Optional[models.Transcript],
+    speaker_map: Optional[Dict[str, str]] = None,
+) -> List[Dict[str, Any]]:
     if not transcript:
         return []
+    speaker_map = speaker_map or {}
 
     ordered_segments = sorted(
         transcript.segments or [],
@@ -641,11 +662,18 @@ def transcript_segment_response_payloads(transcript: Optional[models.Transcript]
     )
 
     if ordered_segments:
-        return [
-            {
+        payloads: List[Dict[str, Any]] = []
+        for segment in ordered_segments:
+            if not (segment.text or "").strip():
+                continue
+            raw_label = normalize_speaker_label(segment.speaker_label or "Speaker_01")
+            display_name = speaker_map.get(raw_label, raw_label)
+            payloads.append({
                 "id": segment.id,
                 "transcript_id": segment.transcript_id,
-                "speaker_label": segment.speaker_label or "Speaker_01",
+                "speaker_label": display_name,
+                "speaker_raw_label": raw_label,
+                "speaker_display_name": display_name,
                 "start_time": float(segment.start_time or 0),
                 "end_time": float(segment.end_time or 0),
                 "text": segment.text or "",
@@ -653,20 +681,22 @@ def transcript_segment_response_payloads(transcript: Optional[models.Transcript]
                 "confidence_score": float(segment.confidence_score) if segment.confidence_score is not None else None,
                 "word_count": segment.word_count,
                 "created_at": segment.created_at,
-            }
-            for segment in ordered_segments
-            if (segment.text or "").strip()
-        ]
+            })
+        return payloads
 
     fallback_chunks = split_transcript_content_for_display(transcript.content or "")
     payloads: List[Dict[str, Any]] = []
     start_time = 0.0
     for index, chunk in enumerate(fallback_chunks):
         end_time = estimate_segment_end(start_time, chunk)
+        raw_label = "Speaker_01"
+        display_name = speaker_map.get(raw_label, raw_label)
         payloads.append({
             "id": f"{transcript.id[:28]}-{index:03d}",
             "transcript_id": transcript.id,
-            "speaker_label": "Speaker_01",
+            "speaker_label": display_name,
+            "speaker_raw_label": raw_label,
+            "speaker_display_name": display_name,
             "start_time": start_time,
             "end_time": end_time,
             "text": chunk,
@@ -690,7 +720,7 @@ def _extract_json_object(raw_text: str) -> Dict[str, Any]:
     except json.JSONDecodeError:
         pass
 
-    match = re.search(r"\{.*\}", raw_text, re.DOTALL)
+    match = re.search(r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}", raw_text, re.DOTALL)
     if not match:
         raise ValueError("Router response did not contain a JSON object")
 
@@ -700,23 +730,102 @@ def _extract_json_object(raw_text: str) -> Dict[str, Any]:
     return parsed
 
 
+AI_SUMMARY_MAX_CHARS = 900
+AI_ITEM_MAX_CHARS = 220
+AI_KEY_POINTS_LIMIT = 5
+AI_DECISIONS_LIMIT = 5
+AI_ACTION_ITEMS_LIMIT = 7
+AI_RISKS_LIMIT = 4
+AI_OPEN_QUESTIONS_LIMIT = 4
+AI_TIMELINE_HIGHLIGHTS_LIMIT = 6
+AI_SPEAKER_SUMMARIES_LIMIT = 6
+
+
+def _compact_ai_text(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _try_parse_date(value: Optional[str]) -> Optional[date]:
+    if not value or value.lower() in {"n/a", "unassigned", ""}:
+        return None
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%Y/%m/%d", "%d.%m.%Y"):
+        try:
+            return datetime.strptime(value.strip(), fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _clip_ai_text(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    clipped = text[:max_chars].rstrip()
+    sentence_end = max(clipped.rfind("."), clipped.rfind("!"), clipped.rfind("?"), clipped.rfind("。"))
+    if sentence_end >= max_chars - 160:
+        return clipped[: sentence_end + 1].strip()
+    word_end = clipped.rfind(" ")
+    if word_end >= max_chars - 80:
+        clipped = clipped[:word_end].rstrip()
+    return f"{clipped}..."
+
+
+def _normalize_ai_string_list(value: Any, limit: int, max_chars: int = AI_ITEM_MAX_CHARS) -> List[str]:
+    if isinstance(value, str):
+        raw_items = [line.strip(" -•\t") for line in value.splitlines()]
+    elif isinstance(value, list):
+        raw_items = value
+    else:
+        raw_items = []
+
+    normalized: List[str] = []
+    seen = set()
+    for item in raw_items:
+        text = _clip_ai_text(_compact_ai_text(item), max_chars)
+        if not text:
+            continue
+        dedupe_key = text.lower()
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        normalized.append(text)
+        if len(normalized) >= limit:
+            break
+    return normalized
+
+
 def _normalize_analysis_payload(payload: Dict[str, Any]) -> schemas.MeetingAnalysisOutput:
     normalized_action_items = []
+    seen_tasks = set()
     for item in payload.get("action_items") or []:
         if isinstance(item, dict):
+            task = _clip_ai_text(_compact_ai_text(item.get("task")), AI_ITEM_MAX_CHARS)
+            if not task:
+                continue
+            task_key = task.lower()
+            if task_key in seen_tasks:
+                continue
+            seen_tasks.add(task_key)
+            owner_raw = _clip_ai_text(_compact_ai_text(item.get("owner") or ""), 80)
+            deadline_raw = _clip_ai_text(_compact_ai_text(item.get("deadline") or ""), 80)
             normalized_action_items.append(
                 {
-                    "task": str(item.get("task") or "").strip(),
-                    "owner": str(item.get("owner") or "Unassigned").strip() or "Unassigned",
-                    "deadline": str(item.get("deadline") or "N/A").strip() or "N/A",
+                    "task": task,
+                    "owner": owner_raw if owner_raw and owner_raw.lower() not in {"unassigned", "n/a"} else "",
+                    "deadline": deadline_raw if deadline_raw and deadline_raw.lower() not in {"n/a", "unassigned"} else "",
                 }
             )
+            if len(normalized_action_items) >= AI_ACTION_ITEMS_LIMIT:
+                break
 
     normalized = {
-        "meeting_summary": str(payload.get("meeting_summary") or "").strip(),
-        "key_points": [str(point).strip() for point in payload.get("key_points") or [] if str(point).strip()],
-        "decisions": [str(item).strip() for item in payload.get("decisions") or [] if str(item).strip()],
-        "action_items": [item for item in normalized_action_items if item["task"]],
+        "meeting_summary": _clip_ai_text(_compact_ai_text(payload.get("meeting_summary")), AI_SUMMARY_MAX_CHARS),
+        "key_points": _normalize_ai_string_list(payload.get("key_points"), AI_KEY_POINTS_LIMIT),
+        "decisions": _normalize_ai_string_list(payload.get("decisions"), AI_DECISIONS_LIMIT),
+        "action_items": normalized_action_items,
+        "risks": _normalize_ai_string_list(payload.get("risks"), AI_RISKS_LIMIT),
+        "open_questions": _normalize_ai_string_list(payload.get("open_questions"), AI_OPEN_QUESTIONS_LIMIT),
+        "timeline_highlights": _normalize_ai_string_list(payload.get("timeline_highlights"), AI_TIMELINE_HIGHLIGHTS_LIMIT),
+        "speaker_summaries": _normalize_ai_string_list(payload.get("speaker_summaries"), AI_SPEAKER_SUMMARIES_LIMIT),
     }
     return schemas.MeetingAnalysisOutput.model_validate(normalized)
 
@@ -746,40 +855,109 @@ def build_glossary_context(db: Session, organization_id: Optional[str]) -> str:
     return "\n".join(lines)
 
 
+def build_glossary_dict(db: Session, organization_id: Optional[str]) -> Dict[str, str]:
+    query = db.query(models.GlossaryTerm).filter(models.GlossaryTerm.is_active == True)
+    if organization_id:
+        query = query.filter(or_(models.GlossaryTerm.organization_id.is_(None), models.GlossaryTerm.organization_id == organization_id))
+    else:
+        query = query.filter(models.GlossaryTerm.organization_id.is_(None))
+    terms = query.order_by(models.GlossaryTerm.term.asc()).limit(200).all()
+    glossary: Dict[str, str] = {}
+    for term in terms:
+        if not term.term:
+            continue
+        canonical = term.term
+        glossary[canonical] = canonical
+        for alias in [
+            term.translation_vi,
+            term.translation_en,
+            term.translation_ja,
+            term.translation_zh,
+            term.translation_ko,
+        ]:
+            if alias:
+                glossary[alias] = canonical
+    return glossary
+
+
+_phobert_processor = None
+
+
+def get_phobert_processor():
+    global _phobert_processor
+    if _phobert_processor is None:
+        from src.nlp import PhoBERTPostProcessor
+
+        _phobert_processor = PhoBERTPostProcessor()
+    return _phobert_processor
+
+
+def phobert_enabled_for(language: str) -> bool:
+    return os.getenv("PHOBERT_ENABLED", "false").lower() == "true" and (language or "vi").lower() in {"vi", "auto"}
+
+
 def build_structured_summary_prompts(
     transcript: str,
     custom_instruction: str,
     language: str = "vi",
     glossary_context: str = "",
+    nlp_metadata: Optional[Dict[str, Any]] = None,
 ) -> tuple[str, str]:
     lang_names = {"vi": "Vietnamese", "en": "English", "zh": "Chinese", "ja": "Japanese", "ko": "Korean"}
     lang_name = lang_names.get(language, "Vietnamese")
 
     system_prompt = (
-        f"You are an AI assistant specialized in analyzing meeting transcripts. "
+        f"You are an executive meeting note assistant. "
         f"Respond ONLY in {lang_name}. "
         f"Return ONLY a valid JSON object, no markdown, no explanation, no extra text. "
-        f"JSON must have exactly 4 keys: meeting_summary, key_points, decisions, action_items. "
-        f"meeting_summary is a string (at least 3 paragraphs, detailed). "
-        f"key_points and decisions are arrays of strings. "
-        f"action_items is an array of objects with keys: task, owner, deadline."
+        f"JSON must have exactly 8 keys: meeting_summary, key_points, decisions, action_items, risks, open_questions, timeline_highlights, speaker_summaries. "
+        f"Be concise and decision-focused. Do not retell the transcript. "
+        f"Use only facts explicitly supported by the transcript. Do not invent decisions, owners, deadlines, or tasks. "
+        f"meeting_summary must be 3-5 short sentences and under {AI_SUMMARY_MAX_CHARS} characters. "
+        f"key_points has at most {AI_KEY_POINTS_LIMIT} high-impact items. "
+        f"decisions has at most {AI_DECISIONS_LIMIT} explicit decisions, or an empty array. "
+        f"action_items has at most {AI_ACTION_ITEMS_LIMIT} explicit tasks with keys: task, owner, deadline. "
+        f"For owner: use the speaker's display name from the transcript if a person is clearly responsible. If not stated, use empty string \"\". "
+        f"For deadline: use the exact date/time mentioned. If not stated, use empty string \"\". "
+        f"risks has at most {AI_RISKS_LIMIT} explicit blockers or risks, or an empty array. "
+        f"open_questions has at most {AI_OPEN_QUESTIONS_LIMIT} unresolved questions, or an empty array. "
+        f"timeline_highlights has at most {AI_TIMELINE_HIGHLIGHTS_LIMIT} short highlights with timestamps or order markers when available. "
+        f"speaker_summaries has at most {AI_SPEAKER_SUMMARIES_LIMIT} short strings like 'Name: contribution'."
     )
     glossary_block = (
         f"\nInternal glossary. Preserve these names/terms exactly when they appear, and use the translations as context:\n{glossary_context}\n"
         if glossary_context
         else ""
     )
+    nlp_block = ""
+    if nlp_metadata:
+        dialect_hint = nlp_metadata.get("dialect_hint") or "unknown"
+        dialect_confidence = nlp_metadata.get("dialect_confidence")
+        correction_count = nlp_metadata.get("correction_count", 0)
+        terms = ", ".join(nlp_metadata.get("terms") or [])
+        nlp_block = (
+            "\nLow-priority transcript processing context. Use this only to interpret wording; do not infer facts from it:\n"
+            f"- regional_text_hint: {dialect_hint}\n"
+            f"- regional_text_confidence: {dialect_confidence}\n"
+            f"- correction_count: {correction_count}\n"
+            f"- detected_terms: {terms or '(none)'}\n"
+        )
     user_prompt = (
-        f"{custom_instruction.strip()}\n\n"
+        f"Admin guidance, lower priority than the concise JSON rules above:\n{custom_instruction.strip()}\n\n"
         f"{glossary_block}\n"
+        f"{nlp_block}\n"
         f"Return JSON in exactly this schema:\n"
         "{\n"
-        '  "meeting_summary": "string (detailed, at least 3 paragraphs)",\n'
-        '  "key_points": ["string"],\n'
-        '  "decisions": ["string"],\n'
-        '  "action_items": [{"task": "string", "owner": "string", "deadline": "string"}]\n'
+        '  "meeting_summary": "3-5 short sentences, executive brief, not a transcript recap",\n'
+        '  "key_points": ["max 5 concise high-impact points"],\n'
+        '  "decisions": ["max 5 explicit decisions only"],\n'
+        '  "action_items": [{"task": "string", "owner": "string", "deadline": "string"}],\n'
+        '  "risks": ["max 4 explicit risks or blockers"],\n'
+        '  "open_questions": ["max 4 unresolved questions"],\n'
+        '  "timeline_highlights": ["max 6 short timeline highlights"],\n'
+        '  "speaker_summaries": ["max 6 speaker contribution summaries"]\n'
         "}\n\n"
-        f"If the transcript lacks information for action items or decisions, return empty arrays.\n\n"
+        f"If the transcript lacks clear action items, decisions, risks, questions, timeline events, or speaker-specific information, return empty arrays for those fields.\n\n"
         f"Transcript:\n{transcript}"
     )
     return system_prompt, user_prompt
@@ -828,10 +1006,16 @@ def enrich_group_payload(group: models.Group) -> Dict[str, Any]:
     }
 
 
-def build_meeting_detail_payload(meeting: models.Meeting) -> Dict[str, Any]:
+def build_meeting_detail_payload(meeting: models.Meeting, user_lang: str = "vi") -> Dict[str, Any]:
     latest_transcript = _latest_processed_record(meeting.transcripts or [])
-    latest_summary_any = _latest_processed_record(meeting.summaries or [], fallback_to_any=True)
-    latest_summary = _latest_processed_record(meeting.summaries or [], fallback_to_any=False)
+    speaker_mappings = sorted(meeting.speaker_mappings or [], key=lambda item: item.speaker_label)
+    speaker_map = {item.speaker_label: item.display_name for item in speaker_mappings if item.display_name}
+    # Filter summaries by user's preferred language first
+    summaries = meeting.summaries or []
+    lang_match = [s for s in summaries if (s.language or "vi") == user_lang]
+    summary_pool = lang_match if lang_match else summaries
+    latest_summary_any = _latest_processed_record(summary_pool, fallback_to_any=True)
+    latest_summary = _latest_processed_record(summary_pool, fallback_to_any=False)
     summary_status = latest_summary_any.processing_status if latest_summary_any else None
     summary_error_text = (
         latest_summary_any.meeting_summary
@@ -867,7 +1051,8 @@ def build_meeting_detail_payload(meeting: models.Meeting) -> Dict[str, Any]:
         "participants": meeting.participants or [],
         "audio_files": meeting.audio_files or [],
         "transcripts": meeting.transcripts or [],
-        "transcript_segments": transcript_segment_response_payloads(latest_transcript),
+        "transcript_segments": transcript_segment_response_payloads(latest_transcript, speaker_map),
+        "speaker_mappings": [speaker_mapping_payload(item) for item in speaker_mappings],
         "summaries": meeting.summaries or [],
         "action_items": meeting.action_items or [],
         "transcript_content": latest_transcript.content if latest_transcript else None,
@@ -875,6 +1060,10 @@ def build_meeting_detail_payload(meeting: models.Meeting) -> Dict[str, Any]:
         "meeting_summary_text": latest_summary.meeting_summary if latest_summary else None,
         "key_points_text": summarize_json_items(latest_summary.key_points if latest_summary else None),
         "decisions_text": summarize_json_items(latest_summary.decisions if latest_summary else None),
+        "risks_text": summarize_json_items(latest_summary.risks if latest_summary else None),
+        "open_questions_text": summarize_json_items(latest_summary.open_questions if latest_summary else None),
+        "timeline_highlights_text": summarize_json_items(latest_summary.timeline_highlights if latest_summary else None),
+        "speaker_summaries_text": summarize_json_items(latest_summary.speaker_summaries if latest_summary else None),
         "summary_status": summary_status,
         "summary_error_text": summary_error_text,
         "summary_provider": latest_summary_any.ai_provider if latest_summary_any else None,
@@ -945,14 +1134,156 @@ def require_meeting_manager(db: Session, user: models.User, meeting: models.Meet
     raise HTTPException(status_code=403, detail="Bạn không có quyền chỉnh sửa cuộc họp này")
 
 
-def normalize_segment_payload(segment: Dict[str, Any], default_language: str = "auto") -> Dict[str, Any]:
+def normalize_speaker_label(value: Any) -> str:
+    raw = str(value or "").strip()
+    canonical = re.match(r"^speaker_(\d{2,})$", raw, re.IGNORECASE)
+    if canonical:
+        return f"Speaker_{int(canonical.group(1)):02d}"
+    match = re.search(r"(\d+)", raw)
+    if match:
+        number = int(match.group(1)) + 1
+        return f"Speaker_{number:02d}"
+    return "Speaker_01"
+
+
+def speaker_mapping_payload(mapping: models.MeetingSpeakerMapping) -> Dict[str, Any]:
     return {
-        "speaker_label": segment.get("speaker_label") or segment.get("speaker") or "Speaker_01",
+        "id": mapping.id,
+        "meeting_id": mapping.meeting_id,
+        "speaker_label": mapping.speaker_label,
+        "display_name": mapping.display_name,
+        "user_id": mapping.user_id,
+        "created_at": mapping.created_at.isoformat() if mapping.created_at else None,
+        "updated_at": mapping.updated_at.isoformat() if mapping.updated_at else None,
+    }
+
+
+def get_speaker_mapping_dict(db: Session, meeting_id: str) -> Dict[str, str]:
+    rows = db.query(models.MeetingSpeakerMapping).filter(
+        models.MeetingSpeakerMapping.meeting_id == meeting_id
+    ).all()
+    return {row.speaker_label: row.display_name for row in rows if row.display_name}
+
+
+def ensure_speaker_mapping(db: Session, meeting_id: str, speaker_label: str, display_name: Optional[str] = None) -> models.MeetingSpeakerMapping:
+    normalized_label = normalize_speaker_label(speaker_label)
+    mapping = db.query(models.MeetingSpeakerMapping).filter(
+        models.MeetingSpeakerMapping.meeting_id == meeting_id,
+        models.MeetingSpeakerMapping.speaker_label == normalized_label,
+    ).first()
+    if mapping:
+        if display_name and mapping.display_name == mapping.speaker_label:
+            mapping.display_name = display_name
+        return mapping
+    mapping = models.MeetingSpeakerMapping(
+        meeting_id=meeting_id,
+        speaker_label=normalized_label,
+        display_name=display_name or normalized_label,
+    )
+    db.add(mapping)
+    db.flush()
+    return mapping
+
+
+def format_meeting_message_payload(message: models.MeetingMessage) -> Dict[str, Any]:
+    return {
+        "id": message.id,
+        "meeting_id": message.meeting_id,
+        "user_id": message.user_id,
+        "text": message.text,
+        "message_type": message.message_type,
+        "reply_to_id": message.reply_to_id,
+        "created_at": message.created_at.isoformat() if message.created_at else None,
+        "updated_at": message.updated_at.isoformat() if message.updated_at else None,
+        "user": format_user_payload(message.user) if message.user else None,
+    }
+
+
+def build_speaker_aware_transcript(
+    transcript_text: str,
+    segments: List[Dict[str, Any]],
+    speaker_map: Dict[str, str],
+) -> str:
+    if not segments:
+        return transcript_text
+    lines = []
+    for segment in segments:
+        text = (segment.get("text") or "").strip()
+        if not text:
+            continue
+        raw_label = normalize_speaker_label(segment.get("speaker") or segment.get("speaker_label"))
+        display_name = speaker_map.get(raw_label, raw_label)
+        start = float(segment.get("start", segment.get("start_time", 0)) or 0)
+        lines.append(f"[{start:0.1f}s] {display_name}: {text}")
+    return "\n".join(lines) or transcript_text
+
+
+class MeetingRoomConnectionManager:
+    def __init__(self) -> None:
+        self.active_connections: Dict[str, List[Tuple[WebSocket, Dict[str, Any]]]] = {}
+        self._lock = asyncio.Lock()
+
+    async def connect(self, meeting_id: str, websocket: WebSocket, user_info: Dict[str, Any]) -> None:
+        await websocket.accept()
+        async with self._lock:
+            self.active_connections.setdefault(meeting_id, []).append((websocket, user_info))
+
+    async def disconnect(self, meeting_id: str, websocket: WebSocket) -> None:
+        async with self._lock:
+            connections = self.active_connections.get(meeting_id, [])
+            self.active_connections[meeting_id] = [(ws, u) for ws, u in connections if ws != websocket]
+            if not self.active_connections.get(meeting_id):
+                self.active_connections.pop(meeting_id, None)
+
+    def get_participants(self, meeting_id: str) -> List[Dict[str, Any]]:
+        return [u for _, u in self.active_connections.get(meeting_id, [])]
+
+    async def broadcast(self, meeting_id: str, payload: Dict[str, Any]) -> None:
+        connections = list(self.active_connections.get(meeting_id, []))
+        stale: List[WebSocket] = []
+        for websocket, _ in connections:
+            try:
+                await websocket.send_json(payload)
+            except Exception:
+                stale.append(websocket)
+        if stale:
+            async with self._lock:
+                current = self.active_connections.get(meeting_id, [])
+                self.active_connections[meeting_id] = [(ws, u) for ws, u in current if ws not in stale]
+
+
+meeting_room_manager = MeetingRoomConnectionManager()
+
+
+def get_ws_user(db: Session, token: Optional[str]) -> models.User:
+    if token and token.lower().startswith("bearer "):
+        token = token.split(" ", 1)[1].strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing websocket token")
+    try:
+        payload = jwt.decode(token, auth.SECRET_KEY, algorithms=[auth.ALGORITHM])
+        username = payload.get("sub")
+        if not username:
+            raise ValueError("Missing subject")
+    except Exception as exc:
+        raise HTTPException(status_code=401, detail="Invalid websocket token") from exc
+    user = get_user_by_username(db, username)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid websocket user")
+    return user
+
+
+def normalize_segment_payload(segment: Dict[str, Any], default_language: str = "auto") -> Dict[str, Any]:
+    speaker_label = normalize_speaker_label(segment.get("speaker_label") or segment.get("speaker") or "Speaker_01")
+    return {
+        "speaker_label": speaker_label,
         "start_time": float(segment.get("start_time", segment.get("start", 0)) or 0),
         "end_time": float(segment.get("end_time", segment.get("end", 0)) or 0),
         "text": segment.get("text", "") or "",
+        "original_text": segment.get("original_text"),
         "language": segment.get("language") or segment.get("detected_language") or default_language or "auto",
         "confidence_score": segment.get("confidence_score") or segment.get("confidence"),
+        "nlp_metadata": segment.get("nlp_metadata"),
         "word_count": len((segment.get("text", "") or "").split()),
     }
 
@@ -2292,7 +2623,30 @@ def list_meetings(
             )
         )
 
-    return query.order_by(models.Meeting.created_at.desc()).offset(skip).limit(limit).all()
+    meetings = query.options(
+        joinedload(models.Meeting.organization),
+        joinedload(models.Meeting.group),
+        joinedload(models.Meeting.created_by_user),
+        joinedload(models.Meeting.summaries),
+        joinedload(models.Meeting.action_items),
+    ).order_by(models.Meeting.created_at.desc()).offset(skip).limit(limit).all()
+
+    # Enrich with computed fields for list view
+    user_lang = getattr(current_user, "language", None) or "vi"
+    for m in meetings:
+        m.group_name = m.group.name if m.group else None
+        m.organization_name = m.organization.name if m.organization else None
+        m.action_items_count = len(m.action_items) if m.action_items else 0
+        if m.summaries:
+            # Prefer summary in user's language, fall back to any
+            lang_match = [s for s in m.summaries if (s.language or "vi") == user_lang]
+            pool = lang_match if lang_match else m.summaries
+            latest = max(pool, key=lambda s: s.created_at or s.id)
+            m.summary_text = latest.meeting_summary
+            m.key_points_list = latest.key_points if isinstance(latest.key_points, list) else []
+            m.decisions_list = latest.decisions if isinstance(latest.decisions, list) else []
+
+    return meetings
 
 
 @app.get("/api/meetings/by-code/{meeting_code}", response_model=schemas.MeetingDetailResponse)
@@ -2310,24 +2664,260 @@ def get_meeting_by_code(
         joinedload(models.Meeting.transcripts).joinedload(models.Transcript.segments),
         joinedload(models.Meeting.summaries),
         joinedload(models.Meeting.action_items),
+        joinedload(models.Meeting.speaker_mappings),
     ).filter(models.Meeting.code == meeting_code).first()
     if not meeting:
         raise HTTPException(status_code=404, detail="Meeting not found")
     auth.require_org_member(db, current_user, meeting.organization_id)
-    return schemas.MeetingDetailResponse.model_validate(build_meeting_detail_payload(meeting))
+    user_lang = getattr(current_user, "language", None) or "vi"
+    return schemas.MeetingDetailResponse.model_validate(build_meeting_detail_payload(meeting, user_lang))
 
 
 @app.get("/api/meetings/{meeting_id}", response_model=schemas.MeetingDetailResponse)
 def get_meeting(
-    meeting_id: str, 
-    db: Session = Depends(get_db), 
+    meeting_id: str,
+    db: Session = Depends(get_db),
     current_user = Depends(auth.get_current_user)
 ):
     meeting = get_meeting_by_id(db, meeting_id)
     if not meeting:
         raise HTTPException(status_code=404, detail="Meeting not found")
     auth.require_org_member(db, current_user, meeting.organization_id)
-    return schemas.MeetingDetailResponse.model_validate(build_meeting_detail_payload(meeting))
+    user_lang = getattr(current_user, "language", None) or "vi"
+    return schemas.MeetingDetailResponse.model_validate(build_meeting_detail_payload(meeting, user_lang))
+
+
+@app.get("/api/meetings/{meeting_id}/my-status")
+def get_my_meeting_status(
+    meeting_id: str,
+    db: Session = Depends(get_db),
+    current_user = Depends(auth.get_current_user),
+):
+    """Get current user's participant status for a meeting."""
+    meeting = get_meeting_by_id(db, meeting_id)
+    if not meeting:
+        raise HTTPException(status_code=404, detail="Meeting not found")
+    auth.require_org_member(db, current_user, meeting.organization_id)
+
+    participant = db.query(models.MeetingParticipant).filter(
+        models.MeetingParticipant.meeting_id == meeting_id,
+        models.MeetingParticipant.user_id == current_user.id,
+    ).first()
+
+    if not participant:
+        return {"is_participant": False, "invite_status": None, "role": None}
+
+    return {
+        "is_participant": True,
+        "invite_status": participant.invite_status,
+        "role": participant.role,
+        "participant_id": participant.id,
+    }
+
+
+@app.get("/api/meetings/{meeting_id}/messages", response_model=List[schemas.MeetingMessage])
+def list_meeting_messages(
+    meeting_id: str,
+    limit: int = 100,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+    current_user = Depends(auth.get_current_user),
+):
+    meeting = get_meeting_by_id(db, meeting_id)
+    if not meeting:
+        raise HTTPException(status_code=404, detail="Meeting not found")
+    auth.require_org_member(db, current_user, meeting.organization_id)
+    messages = db.query(models.MeetingMessage).options(
+        joinedload(models.MeetingMessage.user)
+    ).filter(
+        models.MeetingMessage.meeting_id == meeting_id
+    ).order_by(models.MeetingMessage.created_at.asc()).offset(offset).limit(limit).all()
+    return [format_meeting_message_payload(message) for message in messages]
+
+
+@app.post("/api/meetings/{meeting_id}/messages", response_model=schemas.MeetingMessage)
+async def create_meeting_message_endpoint(
+    meeting_id: str,
+    message: schemas.MeetingMessageCreate,
+    db: Session = Depends(get_db),
+    current_user = Depends(auth.get_current_user),
+):
+    meeting = get_meeting_by_id(db, meeting_id)
+    if not meeting:
+        raise HTTPException(status_code=404, detail="Meeting not found")
+    auth.require_org_member(db, current_user, meeting.organization_id)
+    text = message.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
+    db_message = models.MeetingMessage(
+        meeting_id=meeting_id,
+        user_id=current_user.id,
+        text=text,
+        message_type=message.message_type,
+        reply_to_id=message.reply_to_id,
+    )
+    db.add(db_message)
+    db.commit()
+    db.refresh(db_message)
+    db_message = db.query(models.MeetingMessage).options(
+        joinedload(models.MeetingMessage.user)
+    ).filter(models.MeetingMessage.id == db_message.id).first()
+    payload = format_meeting_message_payload(db_message)
+    await meeting_room_manager.broadcast(meeting_id, {"type": "chat.message", "message": payload})
+    return payload
+
+
+@app.get("/api/meetings/{meeting_id}/speaker-mappings", response_model=List[schemas.MeetingSpeakerMapping])
+def list_meeting_speaker_mappings(
+    meeting_id: str,
+    db: Session = Depends(get_db),
+    current_user = Depends(auth.get_current_user),
+):
+    meeting = get_meeting_by_id(db, meeting_id)
+    if not meeting:
+        raise HTTPException(status_code=404, detail="Meeting not found")
+    auth.require_org_member(db, current_user, meeting.organization_id)
+    mappings = db.query(models.MeetingSpeakerMapping).filter(
+        models.MeetingSpeakerMapping.meeting_id == meeting_id
+    ).order_by(models.MeetingSpeakerMapping.speaker_label.asc()).all()
+    return [speaker_mapping_payload(mapping) for mapping in mappings]
+
+
+@app.patch("/api/meetings/{meeting_id}/speaker-mappings/{speaker_label}", response_model=schemas.MeetingSpeakerMapping)
+async def update_meeting_speaker_mapping(
+    meeting_id: str,
+    speaker_label: str,
+    payload: schemas.MeetingSpeakerMappingUpdate,
+    db: Session = Depends(get_db),
+    current_user = Depends(auth.get_current_user),
+):
+    meeting = get_meeting_by_id(db, meeting_id)
+    if not meeting:
+        raise HTTPException(status_code=404, detail="Meeting not found")
+    auth.require_org_member(db, current_user, meeting.organization_id)
+    normalized_label = normalize_speaker_label(speaker_label)
+    user_id = payload.user_id
+    if user_id:
+        participant = db.query(models.MeetingParticipant).filter(
+            models.MeetingParticipant.meeting_id == meeting_id,
+            models.MeetingParticipant.user_id == user_id,
+        ).first()
+        if not participant:
+            raise HTTPException(status_code=400, detail="Selected user is not a meeting participant")
+    mapping = ensure_speaker_mapping(db, meeting_id, normalized_label)
+    mapping.display_name = payload.display_name.strip()
+    mapping.user_id = user_id
+    db.commit()
+    db.refresh(mapping)
+    response_payload = speaker_mapping_payload(mapping)
+    await meeting_room_manager.broadcast(
+        meeting_id,
+        {"type": "speaker.mapping_updated", "mapping": response_payload},
+    )
+    return response_payload
+
+
+@app.websocket("/api/meetings/{meeting_id}/stream")
+async def meeting_room_stream(
+    websocket: WebSocket,
+    meeting_id: str,
+    token: Optional[str] = Query(None),
+):
+    db = SessionLocal()
+    current_user: Optional[models.User] = None
+    meeting: Optional[models.Meeting] = None
+    connected = False
+    try:
+        header_token = websocket.headers.get("authorization")
+        current_user = get_ws_user(db, token or header_token)
+        meeting = get_meeting_by_id(db, meeting_id)
+        if not meeting:
+            await websocket.close(code=1008, reason="Meeting not found")
+            return
+        auth.require_org_member(db, current_user, meeting.organization_id)
+        user_payload = format_user_payload(current_user)
+        await meeting_room_manager.connect(meeting_id, websocket, user_payload)
+        connected = True
+        # Send current participant list to the newly connected user
+        current_participants = meeting_room_manager.get_participants(meeting_id)
+        await websocket.send_json({
+            "type": "participant.list",
+            "participants": current_participants,
+            "timestamp": datetime.utcnow().isoformat(),
+        })
+        # Broadcast join to all (including sender)
+        await meeting_room_manager.broadcast(
+            meeting_id,
+            {
+                "type": "participant.joined",
+                "meeting_id": meeting_id,
+                "user": user_payload,
+                "timestamp": datetime.utcnow().isoformat(),
+            },
+        )
+
+        while True:
+            data = await websocket.receive_json()
+            event_type = data.get("type")
+            if event_type == "ping":
+                await websocket.send_json({"type": "pong", "timestamp": datetime.utcnow().isoformat()})
+            elif event_type == "chat.send":
+                text = str(data.get("text") or "").strip()
+                if not text:
+                    continue
+                db_message = models.MeetingMessage(
+                    meeting_id=meeting_id,
+                    user_id=current_user.id,
+                    text=text[:4000],
+                    message_type="chat",
+                    reply_to_id=data.get("reply_to_id"),
+                )
+                db.add(db_message)
+                db.commit()
+                db.refresh(db_message)
+                db_message = db.query(models.MeetingMessage).options(
+                    joinedload(models.MeetingMessage.user)
+                ).filter(models.MeetingMessage.id == db_message.id).first()
+                await meeting_room_manager.broadcast(
+                    meeting_id,
+                    {"type": "chat.message", "message": format_meeting_message_payload(db_message)},
+                )
+            elif event_type == "participant.state":
+                await meeting_room_manager.broadcast(
+                    meeting_id,
+                    {
+                        "type": "participant.state",
+                        "meeting_id": meeting_id,
+                        "user_id": current_user.id,
+                        "micOn": bool(data.get("micOn", True)),
+                        "cameraOn": bool(data.get("cameraOn", True)),
+                        "timestamp": datetime.utcnow().isoformat(),
+                    },
+                )
+    except WebSocketDisconnect:
+        pass
+    except HTTPException as exc:
+        if not connected:
+            await websocket.close(code=1008, reason=str(exc.detail))
+    except Exception as exc:
+        logger.error("Meeting websocket error: %s", exc, exc_info=True)
+        if not connected:
+            await websocket.close(code=1011, reason="WebSocket error")
+    finally:
+        if connected:
+            await meeting_room_manager.disconnect(meeting_id, websocket)
+            if current_user:
+                await meeting_room_manager.broadcast(
+                    meeting_id,
+                    {
+                        "type": "participant.left",
+                        "meeting_id": meeting_id,
+                        "user": format_user_payload(current_user),
+                        "timestamp": datetime.utcnow().isoformat(),
+                    },
+                )
+        db.close()
+
 
 @app.post("/api/meetings", response_model=schemas.Meeting)
 def create_meeting_endpoint(
@@ -2344,18 +2934,26 @@ def create_meeting_endpoint(
     scheduled_start = normalize_meeting_datetime(meeting_data.scheduled_start)
     scheduled_end = normalize_meeting_datetime(meeting_data.scheduled_end)
 
-    # Block meetings in the past
-    if scheduled_start:
+    is_instant = meeting_data.status == "live"
+
+    # For instant meetings: set actual_start if no scheduled_start provided
+    if is_instant and not scheduled_start:
+        scheduled_start = datetime.utcnow()
+        if not scheduled_end:
+            scheduled_end = scheduled_start  # duration tracked via actual_start/actual_end
+
+    # Block meetings in the past (skip for instant live meetings)
+    if not is_instant and scheduled_start:
         if scheduled_start < datetime.utcnow():
             raise HTTPException(status_code=400, detail="Không thể tạo cuộc họp trong quá khứ")
 
-    # scheduled_end must be after scheduled_start
-    if scheduled_start and scheduled_end:
+    # scheduled_end must be after scheduled_start (skip for instant)
+    if not is_instant and scheduled_start and scheduled_end:
         if scheduled_end <= scheduled_start:
             raise HTTPException(status_code=400, detail="Thời gian kết thúc phải sau thời gian bắt đầu")
 
-    # Block if any participant has an overlapping meeting (check BEFORE creating)
-    if scheduled_start and scheduled_end:
+    # Block if any participant has an overlapping meeting (skip for instant)
+    if not is_instant and scheduled_start and scheduled_end:
         all_participant_ids = list(set([current_user.id] + (meeting_data.participant_ids or [])))
         conflicts = check_meeting_overlap(
             db,
@@ -2373,21 +2971,42 @@ def create_meeting_endpoint(
     meeting_payload = meeting_data.model_dump()
     meeting_payload["scheduled_start"] = scheduled_start
     meeting_payload["scheduled_end"] = scheduled_end
+    if is_instant and not meeting_payload.get("actual_start"):
+        meeting_payload["actual_start"] = datetime.utcnow()
     meeting = create_meeting(db, meeting_payload, created_by=current_user.id)
 
+    # Determine invite_status based on meeting type
+    participant_invite_status = "accepted" if is_instant else "pending"
+
     # Add creator as host participant
-    add_meeting_participant(db, meeting.id, user_id=current_user.id, role="HOST")
+    add_meeting_participant(db, meeting.id, user_id=current_user.id, role="HOST", invite_status="accepted")
 
     # Add invited participants by user ID
     if meeting_data.participant_ids:
         for uid in meeting_data.participant_ids:
             if uid != current_user.id:
-                add_meeting_participant(db, meeting.id, user_id=uid, role="PARTICIPANT")
+                add_meeting_participant(db, meeting.id, user_id=uid, role="PARTICIPANT", invite_status=participant_invite_status)
 
     # Add invited participants by email
     if meeting_data.participant_emails:
         for email in meeting_data.participant_emails:
-            add_meeting_participant(db, meeting.id, email=email, role="PARTICIPANT")
+            add_meeting_participant(db, meeting.id, email=email, role="PARTICIPANT", invite_status=participant_invite_status)
+
+    # Notify invited participants (in-app)
+    if not is_instant and meeting_data.participant_ids:
+        for uid in meeting_data.participant_ids:
+            if uid != current_user.id:
+                push_runtime_notification({
+                    "id": f"runtime-invite-{meeting.id}-{uid}-{int(datetime.utcnow().timestamp())}",
+                    "recipient_user_id": uid,
+                    "type": "meeting_invite",
+                    "priority": "today",
+                    "title": "Lời mời tham gia cuộc họp",
+                    "message": f"Bạn được mời tham gia \"{meeting.title}\".",
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "isRead": False,
+                    "metadata": {"meeting_id": meeting.id},
+                })
 
     append_admin_audit_log(
         actor=current_user.username,
@@ -2415,6 +3034,100 @@ def create_meeting_endpoint(
             )
 
     return meeting
+
+
+@app.post("/api/meetings/{meeting_id}/start", response_model=schemas.Meeting)
+async def start_meeting_endpoint(
+    meeting_id: str,
+    db: Session = Depends(get_db),
+    current_user = Depends(auth.get_current_user)
+):
+    meeting = get_meeting_by_id(db, meeting_id)
+    if not meeting:
+        raise HTTPException(status_code=404, detail="Meeting not found")
+    auth.require_org_member(db, current_user, meeting.organization_id)
+    require_meeting_manager(db, current_user, meeting)
+
+    if meeting.status in {"completed", "failed", "canceled", "processing"}:
+        raise HTTPException(status_code=400, detail=f"Cannot start meeting with status '{meeting.status}'")
+
+    now = datetime.utcnow()
+    updates = {
+        "actual_start": meeting.actual_start or now,
+        "scheduled_start": meeting.scheduled_start or now,
+        "scheduled_end": meeting.scheduled_end or (now + timedelta(hours=1)),
+    }
+    if meeting.status == "upcoming":
+        updates["status"] = "live"
+
+    try:
+        updated = update_meeting(db, meeting_id, updates)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    await meeting_room_manager.broadcast(
+        meeting_id,
+        {"type": "meeting.status", "meeting_id": meeting_id, "status": updated.status, "timestamp": datetime.utcnow().isoformat()},
+    )
+    return updated
+
+
+@app.post("/api/meetings/{meeting_id}/end", response_model=schemas.Meeting)
+async def end_meeting_endpoint(
+    meeting_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user = Depends(auth.get_current_user)
+):
+    meeting = get_meeting_by_id(db, meeting_id)
+    if not meeting:
+        raise HTTPException(status_code=404, detail="Meeting not found")
+    auth.require_org_member(db, current_user, meeting.organization_id)
+    require_meeting_manager(db, current_user, meeting)
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    target_status = body.get("status") or "processing"
+    if target_status not in {"processing", "completed", "failed"}:
+        raise HTTPException(status_code=400, detail="Invalid meeting end status")
+
+    if meeting.status in {"completed", "failed", "canceled"}:
+        return meeting
+
+    now = datetime.utcnow()
+    if meeting.status == "upcoming":
+        try:
+            meeting = update_meeting(
+                db,
+                meeting_id,
+                {
+                    "actual_start": meeting.actual_start or now,
+                    "scheduled_start": meeting.scheduled_start or now,
+                    "scheduled_end": meeting.scheduled_end or (now + timedelta(hours=1)),
+                    "status": "live",
+                },
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    start = meeting.actual_start or meeting.scheduled_start or meeting.created_at or now
+    duration = max(0, int((now - start).total_seconds() / 60))
+    updates = {
+        "actual_end": now,
+        "duration": duration,
+        "status": target_status,
+    }
+    try:
+        updated = update_meeting(db, meeting_id, updates)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    await meeting_room_manager.broadcast(
+        meeting_id,
+        {"type": "meeting.status", "meeting_id": meeting_id, "status": updated.status, "timestamp": datetime.utcnow().isoformat()},
+    )
+    return updated
+
 
 @app.put("/api/meetings/{meeting_id}", response_model=schemas.Meeting)
 def update_meeting_endpoint(
@@ -2468,7 +3181,10 @@ def update_meeting_endpoint(
         for pid in new_participant_ids - existing_participant_ids:
             add_meeting_participant(db, meeting_id, user_id=pid, role="PARTICIPANT")
 
-    meeting = update_meeting(db, meeting_id, updates)
+    try:
+        meeting = update_meeting(db, meeting_id, updates)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     append_admin_audit_log(
         actor=current_user.username,
         action="UPDATE_MEETING",
@@ -2476,6 +3192,35 @@ def update_meeting_endpoint(
         role=current_user.role or "member",
     )
     return meeting
+
+
+@app.put("/api/participants/{participant_id}/rsvp")
+def rsvp_participant(
+    participant_id: str,
+    body: dict,
+    db: Session = Depends(get_db),
+    current_user = Depends(auth.get_current_user),
+):
+    """Allow a participant to accept or decline a meeting invitation."""
+    participant = db.query(models.MeetingParticipant).filter(
+        models.MeetingParticipant.id == participant_id
+    ).first()
+    if not participant:
+        raise HTTPException(status_code=404, detail="Participant not found")
+
+    # Only the participant themselves can RSVP
+    if participant.user_id and participant.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="You can only RSVP for yourself")
+
+    new_status = body.get("invite_status")
+    if new_status not in ("accepted", "declined"):
+        raise HTTPException(status_code=400, detail="invite_status must be 'accepted' or 'declined'")
+
+    participant.invite_status = new_status
+    db.commit()
+    db.refresh(participant)
+    return {"id": participant.id, "invite_status": participant.invite_status}
+
 
 @app.delete("/api/meetings/{meeting_id}")
 def delete_meeting_endpoint(
@@ -2727,27 +3472,48 @@ async def transcribe_chunk(
             logger.info(f"Chunk transcription success: meeting={meeting_id}, text_len={len(result.get('text', ''))}, segments={len(result.get('segments', []))}")
             
             detected_language = result.get("language") or result.get("detected_language") or language or "auto"
-            normalized_segments = [
-                {
-                    "speaker": segment.get("speaker") or segment.get("speaker_label") or "Speaker_01",
+            # Use authenticated user's name as speaker label (overrides Deepgram diarization)
+            user_display_name = " ".join(part for part in [current_user.first_name, current_user.last_name] if part).strip() or current_user.username
+            normalized_segments = []
+            for segment in result.get("segments", []):
+                raw_label = normalize_speaker_label(user_display_name)
+                mapping = ensure_speaker_mapping(db, meeting_id, raw_label, display_name=user_display_name)
+                normalized_segments.append({
+                    "speaker": user_display_name,
+                    "speaker_label": raw_label,
+                    "speaker_display_name": user_display_name,
                     "start": segment.get("start", segment.get("start_time", 0)),
                     "end": segment.get("end", segment.get("end_time", 0)),
                     "text": segment.get("text", ""),
                     "language": segment.get("language") or segment.get("detected_language") or detected_language,
                     "confidence": segment.get("confidence") or segment.get("confidence_score"),
-                }
-                for segment in result.get("segments", [])
-            ]
+                })
             text = result.get("text", "")
             if text.strip() and not normalized_segments:
+                mapping = ensure_speaker_mapping(db, meeting_id, user_display_name, display_name=user_display_name)
                 normalized_segments = [{
-                    "speaker": "Speaker_01",
+                    "speaker": user_display_name,
+                    "speaker_label": normalize_speaker_label(user_display_name),
+                    "speaker_display_name": user_display_name,
                     "start": 0,
                     "end": estimate_segment_end(0, text),
                     "text": text.strip(),
                     "language": detected_language,
                     "confidence": result.get("confidence") or result.get("confidence_score"),
                 }]
+
+            nlp_metadata = None
+            if phobert_enabled_for(detected_language):
+                try:
+                    processor = get_phobert_processor()
+                    glossary = build_glossary_dict(db, meeting.organization_id)
+                    processed = processor.process_chunk(text, normalized_segments, glossary)
+                    text = str(processed.get("text") or text)
+                    normalized_segments = processed.get("segments") or normalized_segments
+                    nlp_metadata = processed.get("nlp_metadata")
+                except Exception as nlp_error:
+                    logger.warning("PhoBERT chunk post-processing skipped: %s", nlp_error)
+
             if text.strip() and chunk_index is not None:
                 upsert_transcript_draft(
                     db,
@@ -2761,14 +3527,35 @@ async def transcribe_chunk(
                     model=os.getenv("DEEPGRAM_MODEL", "nova-3"),
                     start_ms=start_ms,
                 )
+                await meeting_room_manager.broadcast(
+                    meeting_id,
+                    {
+                        "type": "transcript.chunk",
+                        "meeting_id": meeting_id,
+                        "chunkIndex": chunk_index,
+                        "text": text.strip(),
+                        "segments": [
+                            {
+                                **segment,
+                                "start": float(segment.get("start", 0) or 0) + (start_ms or 0) / 1000,
+                                "end": float(segment.get("end", 0) or 0) + (start_ms or 0) / 1000,
+                            }
+                            for segment in normalized_segments
+                        ],
+                        "language": detected_language,
+                        "nlp_metadata": nlp_metadata,
+                        "timestamp": datetime.utcnow().isoformat(),
+                    },
+                )
 
             return {
-                "text": result.get("text", ""),
+                "text": text,
                 "segments": normalized_segments,
                 "language": detected_language,
                 "detected_language": detected_language,
                 "provider": stt_provider_name,
                 "model": os.getenv("DEEPGRAM_MODEL", "nova-3"),
+                "nlp_metadata": nlp_metadata,
             }
         except Exception as transcribe_error:
             logger.error(f"Transcription error: {str(transcribe_error)}", exc_info=True)
@@ -2884,6 +3671,7 @@ async def finalize_meeting(
 
     # Validate user has access to this meeting's organization
     auth.require_org_member(db, current_user, meeting.organization_id)
+    original_meeting_status = meeting.status
 
     draft_payload = build_transcript_from_drafts(db, meeting_id)
     if not isinstance(full_text, str) or not full_text.strip():
@@ -2898,7 +3686,39 @@ async def finalize_meeting(
     if not isinstance(full_text, str) or not full_text.strip():
         raise HTTPException(status_code=400, detail="Transcript is required for finalize")
 
-    update_meeting(db, meeting_id, {"status": "processing"})
+    nlp_metadata = None
+    post_processed = False
+    if phobert_enabled_for(language):
+        try:
+            processor = get_phobert_processor()
+            glossary = build_glossary_dict(db, meeting.organization_id)
+            processed = processor.process_finalize(full_text, segments if isinstance(segments, list) else [], glossary)
+            full_text = str(processed.get("text") or full_text)
+            segments = processed.get("segments") or segments
+            nlp_metadata = processed.get("nlp_metadata")
+            post_processed = bool(processed.get("post_processed"))
+        except Exception as nlp_error:
+            logger.warning("PhoBERT finalize post-processing skipped: %s", nlp_error, exc_info=True)
+            errors.append(f"PhoBERT post-processing skipped: {nlp_error}")
+
+    try:
+        if meeting.status == "upcoming":
+            meeting = update_meeting(
+                db,
+                meeting_id,
+                {
+                    "status": "live",
+                    "actual_start": meeting.actual_start or datetime.utcnow(),
+                    "scheduled_start": meeting.scheduled_start or datetime.utcnow(),
+                    "scheduled_end": meeting.scheduled_end or (datetime.utcnow() + timedelta(hours=1)),
+                },
+            )
+        if meeting.status in {"live", "queued", "failed"}:
+            meeting = update_meeting(db, meeting_id, {"status": "processing"})
+        elif meeting.status == "canceled":
+            raise HTTPException(status_code=400, detail="Cannot finalize a canceled meeting")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
     # Upsert transcript so finalize can be safely retried.
     db_transcript = db.query(models.Transcript).filter(
@@ -2924,6 +3744,8 @@ async def finalize_meeting(
         db_transcript.word_count = len(full_text.split())
         db_transcript.processing_status = "COMPLETED"
         db_transcript.stt_provider = os.getenv("STT_PROVIDER", "deepgram")
+        db_transcript.post_processed = post_processed
+        db_transcript.nlp_metadata = nlp_metadata
         if segments_to_save:
             db.query(models.TranscriptSegment).filter(
                 models.TranscriptSegment.transcript_id == db_transcript.id,
@@ -2937,6 +3759,8 @@ async def finalize_meeting(
             "word_count": len(full_text.split()),
             "processing_status": "COMPLETED",
             "stt_provider": os.getenv("STT_PROVIDER", "deepgram"),
+            "post_processed": post_processed,
+            "nlp_metadata": nlp_metadata,
         })
 
     # Save segments
@@ -3032,10 +3856,18 @@ async def finalize_meeting(
     prompt_key = f"summary_{language}"
     custom_instruction = ADMIN_PROMPTS.get(prompt_key, ADMIN_PROMPTS.get("summary_vi", {})).get(
         "content",
-        "Summarize the meeting transcript below in detail.",
+        "Create a concise executive meeting brief. Focus on outcomes, explicit decisions, and next steps only.",
     )
     glossary_context = build_glossary_context(db, meeting.organization_id)
-    system_prompt, user_prompt = build_structured_summary_prompts(full_text, custom_instruction, language, glossary_context)
+    speaker_map = get_speaker_mapping_dict(db, meeting_id)
+    speaker_aware_transcript = build_speaker_aware_transcript(full_text, segments_to_save, speaker_map)
+    system_prompt, user_prompt = build_structured_summary_prompts(
+        speaker_aware_transcript,
+        custom_instruction,
+        language,
+        glossary_context,
+        nlp_metadata,
+    )
 
     raw_response = None
 
@@ -3095,6 +3927,10 @@ async def finalize_meeting(
         "key_points": summary_payload.key_points,
         "decisions": summary_payload.decisions,
         "action_items": [item.model_dump() for item in summary_payload.action_items],
+        "risks": summary_payload.risks,
+        "open_questions": summary_payload.open_questions,
+        "timeline_highlights": summary_payload.timeline_highlights,
+        "speaker_summaries": summary_payload.speaker_summaries,
         "meeting_summary": summary_payload.meeting_summary if summary_status == "COMPLETED" else summary_error_message,
         "ai_provider": ai_provider_name,
         "model_name": router.model if ai_provider_name == "router" else ai_provider_name,
@@ -3110,26 +3946,97 @@ async def finalize_meeting(
 
     if summary_status == "COMPLETED":
         for ai in summary_payload.action_items:
-            assigned_email = None if ai.owner in {"Unassigned", "N/A", ""} else ai.owner
+            owner = (ai.owner or "").strip() or None
+            deadline = (ai.deadline or "").strip() or None
+
+            # Try to match owner to meeting participant
+            assigned_email = None
+            if owner:
+                participant = db.query(models.MeetingParticipant).filter(
+                    models.MeetingParticipant.meeting_id == meeting_id,
+                    or_(
+                        models.MeetingParticipant.name.ilike(f"%{owner}%"),
+                        models.MeetingParticipant.email.ilike(f"%{owner}%"),
+                    )
+                ).first()
+                if participant and participant.email:
+                    assigned_email = participant.email
+                elif participant and participant.user:
+                    assigned_email = participant.user.email
+
+            # Build Vietnamese description
+            desc_parts = []
+            if owner:
+                desc_parts.append(f"Phụ trách: {owner}")
+            else:
+                desc_parts.append("Chưa phân công")
+            if deadline:
+                desc_parts.append(f"Hạn: {deadline}")
+            else:
+                desc_parts.append("Chưa đặt hạn")
+
             create_action_item(db, {
                 "meeting_id": meeting_id,
                 "summary_id": summary_db.id,
                 "title": ai.task,
-                "description": f"Owner: {ai.owner}. Deadline: {ai.deadline}",
-                "assigned_email": assigned_email if "@" in (assigned_email or "") else None,
+                "description": " | ".join(desc_parts),
+                "assigned_email": assigned_email,
+                "due_date": _try_parse_date(deadline),
                 "status": "PENDING",
                 "priority": "MEDIUM",
             }, created_by=current_user.id)
 
-    update_meeting(db, meeting_id, {"status": "completed" if summary_status == "COMPLETED" else "failed" if regenerate else "completed"})
+    final_meeting_status = "completed" if summary_status == "COMPLETED" else "failed" if regenerate else "completed"
+    if regenerate and original_meeting_status == "completed" and summary_status != "COMPLETED":
+        final_meeting_status = "completed"
+    try:
+        update_meeting(db, meeting_id, {"status": final_meeting_status})
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     db.commit()
+    await meeting_room_manager.broadcast(
+        meeting_id,
+        {
+            "type": "ai.notes",
+            "meeting_id": meeting_id,
+            "summary_status": summary_status,
+            "summary": summary_payload.model_dump(),
+            "timestamp": datetime.utcnow().isoformat(),
+        },
+    )
 
     return {
         "meeting_id": meeting_id,
         "transcript_status": "COMPLETED",
         "summary_status": summary_status,
         "summary": summary_payload,
+        "nlp_metadata": nlp_metadata,
         "errors": errors,
+    }
+
+
+@app.get("/api/meetings/{meeting_id}/dialect")
+def get_meeting_dialect(
+    meeting_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(auth.get_current_user),
+):
+    meeting = db.query(models.Meeting).filter(models.Meeting.id == meeting_id).first()
+    if not meeting:
+        raise HTTPException(status_code=404, detail="Meeting not found")
+    auth.require_org_member(db, current_user, meeting.organization_id)
+
+    transcript = db.query(models.Transcript).filter(
+        models.Transcript.meeting_id == meeting_id,
+    ).order_by(models.Transcript.created_at.desc()).first()
+    metadata = transcript.nlp_metadata if transcript and transcript.nlp_metadata else {}
+    return {
+        "meeting_id": meeting_id,
+        "dialect_hint": metadata.get("dialect_hint", "unknown"),
+        "confidence": metadata.get("dialect_confidence", 0.0),
+        "post_processed": bool(transcript.post_processed) if transcript else False,
+        "correction_count": metadata.get("correction_count", 0),
+        "nlp_metadata": metadata,
     }
 
 

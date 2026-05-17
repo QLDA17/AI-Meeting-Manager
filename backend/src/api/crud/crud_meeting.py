@@ -1,8 +1,23 @@
 from sqlalchemy.orm import Session, joinedload
 from typing import List, Optional
 from datetime import datetime
+import random
+import string
 import uuid
 from .. import models
+
+
+def generate_meeting_code(db: Session) -> str:
+    """Generate a unique 3x3 meeting code (e.g. ABC-DEF-GHI)."""
+    chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    while True:
+        parts = []
+        for _ in range(3):
+            parts.append("".join(random.choice(chars) for _ in range(3)))
+        code = "-".join(parts)
+        existing = db.query(models.Meeting).filter(models.Meeting.code == code).first()
+        if not existing:
+            return code
 
 
 def check_meeting_overlap(
@@ -58,7 +73,8 @@ def get_meeting_by_id(db: Session, meeting_id: str) -> Optional[models.Meeting]:
         joinedload(models.Meeting.audio_files),
         joinedload(models.Meeting.transcripts),
         joinedload(models.Meeting.summaries),
-        joinedload(models.Meeting.action_items)
+        joinedload(models.Meeting.action_items),
+        joinedload(models.Meeting.speaker_mappings),
     ).filter(models.Meeting.id == meeting_id).first()
 
 
@@ -89,6 +105,7 @@ def get_meetings(
 
 
 def create_meeting(db: Session, meeting_data: dict, created_by: str) -> models.Meeting:
+    code = meeting_data.get("code") or generate_meeting_code(db)
     db_meeting = models.Meeting(
         id=meeting_data.get("id", str(uuid.uuid4())),
         organization_id=meeting_data.get("organization_id"),
@@ -97,32 +114,54 @@ def create_meeting(db: Session, meeting_data: dict, created_by: str) -> models.M
         description=meeting_data.get("description"),
         scheduled_start=meeting_data.get("scheduled_start"),
         scheduled_end=meeting_data.get("scheduled_end"),
+        actual_start=meeting_data.get("actual_start"),
+        actual_end=meeting_data.get("actual_end"),
         duration=meeting_data.get("duration", 0),
         location=meeting_data.get("location"),
         meeting_type=meeting_data.get("meeting_type", "MEETING"),
         status=meeting_data.get("status", "upcoming"),
-        code=meeting_data.get("code"),
+        code=code,
         recording_url=meeting_data.get("recording_url"),
         transcript_url=meeting_data.get("transcript_url"),
         audio_url=meeting_data.get("audio_url"),
         is_pinned=meeting_data.get("is_pinned", False),
         created_by=created_by,
     )
+    # Auto-compute duration from scheduled times if not set
+    if db_meeting.duration == 0 and db_meeting.scheduled_start and db_meeting.scheduled_end:
+        db_meeting.duration = max(0, int((db_meeting.scheduled_end - db_meeting.scheduled_start).total_seconds() / 60))
     db.add(db_meeting)
     db.commit()
     db.refresh(db_meeting)
     return db_meeting
 
 
-def update_meeting(db: Session, meeting_id: str, updates: dict) -> Optional[models.Meeting]:
+VALID_STATUS_TRANSITIONS = {
+    "upcoming": ["live", "canceled"],
+    "live": ["processing", "completed", "canceled"],
+    "processing": ["completed", "failed"],
+    "completed": [],
+    "failed": ["processing"],  # retry
+    "canceled": [],
+    "queued": ["processing", "canceled"],
+}
+
+
+def update_meeting(db: Session, meeting_id: str, updates: dict) -> models.Meeting:
     db_meeting = get_meeting_by_id(db, meeting_id)
     if not db_meeting:
         return None
-    
+
+    new_status = updates.get("status")
+    if new_status and new_status != db_meeting.status:
+        allowed = VALID_STATUS_TRANSITIONS.get(db_meeting.status, [])
+        if new_status not in allowed:
+            raise ValueError(f"Cannot transition from '{db_meeting.status}' to '{new_status}'")
+
     for key, value in updates.items():
         if hasattr(db_meeting, key):
             setattr(db_meeting, key, value)
-    
+
     db.commit()
     db.refresh(db_meeting)
     return db_meeting
@@ -139,13 +178,14 @@ def delete_meeting(db: Session, meeting_id: str) -> bool:
 
 
 def add_meeting_participant(
-    db: Session, 
-    meeting_id: str, 
+    db: Session,
+    meeting_id: str,
     user_id: Optional[str] = None,
     email: Optional[str] = None,
     name: Optional[str] = None,
     speaker_label: Optional[str] = None,
-    role: str = "PARTICIPANT"
+    role: str = "PARTICIPANT",
+    invite_status: str = "accepted",
 ) -> Optional[models.MeetingParticipant]:
     # Check if participant already exists
     if user_id:
@@ -171,6 +211,7 @@ def add_meeting_participant(
         name=name,
         speaker_label=speaker_label,
         role=role,
+        invite_status=invite_status,
     )
     db.add(db_participant)
     db.commit()

@@ -346,6 +346,12 @@ class Meeting(MeetingBase, TimestampMixin):
     organization_id: str
     group_id: Optional[str] = None
     created_by: str
+    group_name: Optional[str] = None
+    organization_name: Optional[str] = None
+    summary_text: Optional[str] = None
+    key_points_list: Optional[List[str]] = None
+    decisions_list: Optional[List[str]] = None
+    action_items_count: int = 0
 
 
 # ==================== Meeting Participant Schemas ====================
@@ -356,6 +362,7 @@ class MeetingParticipantBase(BaseSchema):
     email: Optional[EmailStr] = None
     name: Optional[str] = Field(None, max_length=255)
     role: str = Field(default="PARTICIPANT", max_length=50)
+    invite_status: str = Field(default="accepted", max_length=20)  # pending, accepted, declined, attended
     is_required: bool = False
     attended: bool = False
     joined_at: Optional[datetime] = None
@@ -369,6 +376,7 @@ class MeetingParticipantCreate(MeetingParticipantBase):
 class MeetingParticipantUpdate(BaseSchema):
     speaker_label: Optional[str] = Field(None, max_length=50)
     role: Optional[str] = Field(None, max_length=50)
+    invite_status: Optional[str] = Field(None, max_length=20)
     is_required: Optional[bool] = None
     attended: Optional[bool] = None
     joined_at: Optional[datetime] = None
@@ -379,6 +387,39 @@ class MeetingParticipant(MeetingParticipantBase, TimestampMixin):
     id: str
     meeting_id: str
     user: Optional[User] = None
+
+
+class MeetingMessageCreate(BaseSchema):
+    text: str = Field(..., min_length=1, max_length=4000)
+    message_type: str = Field(default="chat", pattern="^(chat|system)$")
+    reply_to_id: Optional[str] = None
+
+
+class MeetingMessage(BaseSchema):
+    id: str
+    meeting_id: str
+    user_id: str
+    text: str
+    message_type: str = "chat"
+    reply_to_id: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    user: Optional[Dict[str, Any]] = None
+
+
+class MeetingSpeakerMappingUpdate(BaseSchema):
+    display_name: str = Field(..., min_length=1, max_length=255)
+    user_id: Optional[str] = None
+
+
+class MeetingSpeakerMapping(BaseSchema):
+    id: str
+    meeting_id: str
+    speaker_label: str
+    display_name: str
+    user_id: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
 
 # ==================== Audio File Schemas ====================
@@ -418,6 +459,8 @@ class TranscriptBase(BaseSchema):
     processing_status: str = Field(default="PENDING", pattern="^(PENDING|PROCESSING|COMPLETED|FAILED)$")
     stt_provider: str = Field(default="whisper", max_length=50)
     confidence_score: Optional[float] = None
+    post_processed: bool = False
+    nlp_metadata: Optional[Dict[str, Any]] = None
 
 
 class TranscriptCreate(TranscriptBase):
@@ -431,6 +474,8 @@ class TranscriptUpdate(BaseSchema):
     word_count: Optional[int] = None
     processing_status: Optional[str] = Field(None, pattern="^(PENDING|PROCESSING|COMPLETED|FAILED)$")
     confidence_score: Optional[float] = None
+    post_processed: Optional[bool] = None
+    nlp_metadata: Optional[Dict[str, Any]] = None
 
 
 class Transcript(TranscriptBase, TimestampMixin):
@@ -446,8 +491,10 @@ class TranscriptSegmentBase(BaseSchema):
     start_time: float
     end_time: float
     text: str
+    original_text: Optional[str] = None
     language: str = Field(default="auto", max_length=10)
     confidence_score: Optional[float] = None
+    nlp_metadata: Optional[Dict[str, Any]] = None
     word_count: int = 0
 
 
@@ -467,6 +514,10 @@ class MeetingSummaryBase(BaseSchema):
     key_points: Optional[List[Any]] = None
     decisions: Optional[List[Any]] = None
     action_items: Optional[List[Dict[str, Any]]] = None
+    risks: Optional[List[Any]] = None
+    open_questions: Optional[List[Any]] = None
+    timeline_highlights: Optional[List[Any]] = None
+    speaker_summaries: Optional[List[Any]] = None
     meeting_summary: Optional[str] = None
     ai_provider: str = Field(default="openai", max_length=50)
     model_name: Optional[str] = Field(None, max_length=100)
@@ -481,6 +532,10 @@ class MeetingSummaryUpdate(BaseSchema):
     key_points: Optional[List[Any]] = None
     decisions: Optional[List[Any]] = None
     action_items: Optional[List[Dict[str, Any]]] = None
+    risks: Optional[List[Any]] = None
+    open_questions: Optional[List[Any]] = None
+    timeline_highlights: Optional[List[Any]] = None
+    speaker_summaries: Optional[List[Any]] = None
     meeting_summary: Optional[str] = None
     processing_status: Optional[str] = Field(None, pattern="^(PENDING|PROCESSING|COMPLETED|FAILED)$")
 
@@ -637,6 +692,7 @@ class MeetingDetailResponse(Meeting):
     audio_files: List[AudioFile] = Field(default_factory=list)
     transcripts: List[Transcript] = Field(default_factory=list)
     transcript_segments: List[Dict[str, Any]] = Field(default_factory=list)
+    speaker_mappings: List[MeetingSpeakerMapping] = Field(default_factory=list)
     summaries: List[MeetingSummary] = Field(default_factory=list)
     action_items: List[ActionItem] = Field(default_factory=list)
     transcript_content: Optional[str] = None
@@ -644,6 +700,10 @@ class MeetingDetailResponse(Meeting):
     meeting_summary_text: Optional[str] = None
     key_points_text: List[str] = Field(default_factory=list)
     decisions_text: List[str] = Field(default_factory=list)
+    risks_text: List[str] = Field(default_factory=list)
+    open_questions_text: List[str] = Field(default_factory=list)
+    timeline_highlights_text: List[str] = Field(default_factory=list)
+    speaker_summaries_text: List[str] = Field(default_factory=list)
     summary_status: Optional[str] = None
     summary_error_text: Optional[str] = None
     summary_provider: Optional[str] = None
@@ -661,6 +721,10 @@ class MeetingAnalysisOutput(BaseSchema):
     key_points: List[str] = Field(default_factory=list)
     decisions: List[str] = Field(default_factory=list)
     action_items: List[MeetingAnalysisActionItem] = Field(default_factory=list)
+    risks: List[str] = Field(default_factory=list)
+    open_questions: List[str] = Field(default_factory=list)
+    timeline_highlights: List[str] = Field(default_factory=list)
+    speaker_summaries: List[str] = Field(default_factory=list)
 
 
 class MeetingFinalizeResponse(BaseSchema):
@@ -668,4 +732,5 @@ class MeetingFinalizeResponse(BaseSchema):
     transcript_status: str
     summary_status: str
     summary: MeetingAnalysisOutput
+    nlp_metadata: Optional[Dict[str, Any]] = None
     errors: List[str] = Field(default_factory=list)
