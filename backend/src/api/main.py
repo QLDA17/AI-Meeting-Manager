@@ -7,6 +7,8 @@ import re
 import hashlib
 import glob
 import subprocess
+import threading
+import queue
 from typing import List, Optional, Dict, Any
 from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, BackgroundTasks, status, Request, Form, WebSocket, WebSocketDisconnect, Query
 from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
@@ -223,11 +225,12 @@ ADMIN_PROMPTS: Dict[str, Dict[str, Any]] = {
         "name": "Tóm tắt cuộc họp (VI)",
         "description": "Prompt tạo tóm tắt cuộc họp bằng tiếng Việt",
         "content": (
-            "Tạo executive meeting brief bằng tiếng Việt. Tóm tắt phải ngắn, đúng trọng tâm, "
-            "chỉ nêu mục tiêu, kết quả chính, quyết định rõ ràng và bước tiếp theo. "
-            "Không kể lại transcript, không bịa quyết định hoặc việc cần làm."
+            "Tạo biên bản tóm tắt cuộc họp bằng tiếng Việt ở mức vừa đủ: không quá ngắn, không lan man. "
+            "Phải nêu rõ mục tiêu/bối cảnh cuộc họp, các chủ đề chính đã bàn, kết luận hoặc quyết định, "
+            "việc cần làm tiếp theo, người phụ trách nếu transcript có nói rõ, và các vấn đề còn mở. "
+            "Giữ đúng nội dung transcript, không bịa thêm quyết định hoặc deadline."
         ),
-        "version": "2.1.0",
+        "version": "2.2.0",
         "last_updated": datetime.utcnow().isoformat(),
     },
     "summary_en": {
@@ -235,11 +238,12 @@ ADMIN_PROMPTS: Dict[str, Dict[str, Any]] = {
         "name": "Meeting Summary (EN)",
         "description": "Meeting summary prompt in English",
         "content": (
-            "Create a concise executive meeting brief in English. Focus only on the meeting goal, "
-            "main outcomes, explicit decisions, and next steps. Do not retell the transcript or invent "
-            "decisions/action items."
+            "Create a balanced meeting brief in English: complete enough to preserve the main content, "
+            "but not a transcript recap. Cover the meeting goal/context, main discussion themes, outcomes "
+            "or explicit decisions, next steps, owners when clearly stated, and open issues. Do not invent "
+            "decisions, deadlines, owners, or tasks."
         ),
-        "version": "2.1.0",
+        "version": "2.2.0",
         "last_updated": datetime.utcnow().isoformat(),
     },
     "summary_zh": {
@@ -247,10 +251,11 @@ ADMIN_PROMPTS: Dict[str, Dict[str, Any]] = {
         "name": "会议摘要 (ZH)",
         "description": "Meeting summary prompt in Chinese",
         "content": (
-            "请用中文生成简洁的会议高管摘要，只关注会议目标、主要结果、明确决定和下一步。"
-            "不要复述全文，不要编造决定或待办事项。"
+            "请用中文生成详略适中的会议摘要：内容要覆盖主要信息，但不要逐字复述。"
+            "请说明会议目标/背景、主要讨论主题、结果或明确决定、下一步行动、明确提到的负责人以及未解决问题。"
+            "不要编造决定、截止日期、负责人或任务。"
         ),
-        "version": "2.1.0",
+        "version": "2.2.0",
         "last_updated": datetime.utcnow().isoformat(),
     },
     "summary_ja": {
@@ -258,11 +263,11 @@ ADMIN_PROMPTS: Dict[str, Dict[str, Any]] = {
         "name": "会議サマリー (JA)",
         "description": "Meeting summary prompt in Japanese",
         "content": (
-            "日本語で簡潔なエグゼクティブ向け会議ブリーフを作成してください。"
-            "会議の目的、主要な結果、明確な決定事項、次のアクションだけに集中してください。"
-            "全文の再説明や決定・タスクの推測はしないでください。"
+            "日本語で、短すぎず長すぎない会議要約を作成してください。逐語的な議事録ではなく、"
+            "会議の目的/背景、主要な議論、結果または明確な決定事項、次のアクション、"
+            "明示された担当者、未解決事項を十分に含めてください。決定、期限、担当者、タスクを推測で追加しないでください。"
         ),
-        "version": "2.1.0",
+        "version": "2.2.0",
         "last_updated": datetime.utcnow().isoformat(),
     },
     "summary_ko": {
@@ -270,10 +275,11 @@ ADMIN_PROMPTS: Dict[str, Dict[str, Any]] = {
         "name": "회의 요약 (KO)",
         "description": "Meeting summary prompt in Korean",
         "content": (
-            "한국어로 간결한 임원용 회의 브리프를 작성해 주세요. 회의 목적, 핵심 결과, "
-            "명확한 결정, 다음 단계에만 집중하세요. 회의록을 장황하게 반복하거나 결정/할 일을 추측하지 마세요."
+            "한국어로 너무 짧지도 길지도 않은 균형 잡힌 회의 요약을 작성해 주세요. "
+            "회의 목적/배경, 주요 논의 주제, 결과 또는 명확한 결정, 다음 단계, 명시된 담당자, "
+            "남은 이슈를 포함하되, 회의록을 그대로 반복하지 마세요. 결정, 기한, 담당자, 할 일을 추측해 추가하지 마세요."
         ),
-        "version": "2.1.0",
+        "version": "2.2.0",
         "last_updated": datetime.utcnow().isoformat(),
     },
 }
@@ -730,10 +736,10 @@ def _extract_json_object(raw_text: str) -> Dict[str, Any]:
     return parsed
 
 
-AI_SUMMARY_MAX_CHARS = 900
+AI_SUMMARY_MAX_CHARS = 1400
 AI_ITEM_MAX_CHARS = 220
-AI_KEY_POINTS_LIMIT = 5
-AI_DECISIONS_LIMIT = 5
+AI_KEY_POINTS_LIMIT = 8
+AI_DECISIONS_LIMIT = 6
 AI_ACTION_ITEMS_LIMIT = 7
 AI_RISKS_LIMIT = 4
 AI_OPEN_QUESTIONS_LIMIT = 4
@@ -911,18 +917,19 @@ def build_structured_summary_prompts(
         f"Respond ONLY in {lang_name}. "
         f"Return ONLY a valid JSON object, no markdown, no explanation, no extra text. "
         f"JSON must have exactly 8 keys: meeting_summary, key_points, decisions, action_items, risks, open_questions, timeline_highlights, speaker_summaries. "
-        f"Be concise and decision-focused. Do not retell the transcript. "
+        f"Create a balanced, useful meeting brief: complete enough to preserve the important content, but not a verbatim transcript. "
         f"Use only facts explicitly supported by the transcript. Do not invent decisions, owners, deadlines, or tasks. "
-        f"meeting_summary must be 3-5 short sentences and under {AI_SUMMARY_MAX_CHARS} characters. "
-        f"key_points has at most {AI_KEY_POINTS_LIMIT} high-impact items. "
-        f"decisions has at most {AI_DECISIONS_LIMIT} explicit decisions, or an empty array. "
-        f"action_items has at most {AI_ACTION_ITEMS_LIMIT} explicit tasks with keys: task, owner, deadline. "
+        f"meeting_summary must be 4-7 clear sentences and under {AI_SUMMARY_MAX_CHARS} characters. It must mention the meeting objective/context, main discussion themes, outcomes, and next direction when present. "
+        f"key_points has at most {AI_KEY_POINTS_LIMIT} important points and should cover distinct discussion topics, not only final conclusions. "
+        f"decisions has at most {AI_DECISIONS_LIMIT} explicit decisions, agreements, approvals, or confirmed directions, or an empty array. "
+        f"action_items has at most {AI_ACTION_ITEMS_LIMIT} explicit tasks with keys: task, owner, deadline. Include only concrete follow-up work. "
         f"For owner: use the speaker's display name from the transcript if a person is clearly responsible. If not stated, use empty string \"\". "
         f"For deadline: use the exact date/time mentioned. If not stated, use empty string \"\". "
         f"risks has at most {AI_RISKS_LIMIT} explicit blockers or risks, or an empty array. "
         f"open_questions has at most {AI_OPEN_QUESTIONS_LIMIT} unresolved questions, or an empty array. "
-        f"timeline_highlights has at most {AI_TIMELINE_HIGHLIGHTS_LIMIT} short highlights with timestamps or order markers when available. "
-        f"speaker_summaries has at most {AI_SPEAKER_SUMMARIES_LIMIT} short strings like 'Name: contribution'."
+        f"timeline_highlights has at most {AI_TIMELINE_HIGHLIGHTS_LIMIT} short highlights with timestamps or order markers when available; use it to preserve the flow of meaningful discussion. "
+        f"speaker_summaries has at most {AI_SPEAKER_SUMMARIES_LIMIT} short strings like 'Name: contribution'. "
+        f"If the transcript is short or thin, still provide the useful facts available without padding."
     )
     glossary_block = (
         f"\nInternal glossary. Preserve these names/terms exactly when they appear, and use the translations as context:\n{glossary_context}\n"
@@ -948,16 +955,16 @@ def build_structured_summary_prompts(
         f"{nlp_block}\n"
         f"Return JSON in exactly this schema:\n"
         "{\n"
-        '  "meeting_summary": "3-5 short sentences, executive brief, not a transcript recap",\n'
-        '  "key_points": ["max 5 concise high-impact points"],\n'
-        '  "decisions": ["max 5 explicit decisions only"],\n'
+        '  "meeting_summary": "4-7 clear sentences covering objective/context, main discussion, outcomes, and next direction when present",\n'
+        '  "key_points": ["max 8 important distinct points from the discussion"],\n'
+        '  "decisions": ["max 6 explicit decisions, agreements, approvals, or confirmed directions only"],\n'
         '  "action_items": [{"task": "string", "owner": "string", "deadline": "string"}],\n'
         '  "risks": ["max 4 explicit risks or blockers"],\n'
         '  "open_questions": ["max 4 unresolved questions"],\n'
         '  "timeline_highlights": ["max 6 short timeline highlights"],\n'
         '  "speaker_summaries": ["max 6 speaker contribution summaries"]\n'
         "}\n\n"
-        f"If the transcript lacks clear action items, decisions, risks, questions, timeline events, or speaker-specific information, return empty arrays for those fields.\n\n"
+        f"Quality bar: prefer specific, content-rich bullets over generic statements. Mention project names, numbers, constraints, deadlines, blockers, or owners when they appear in the transcript. If a field lacks evidence, return an empty array for that field.\n\n"
         f"Transcript:\n{transcript}"
     )
     return system_prompt, user_prompt
@@ -1006,7 +1013,20 @@ def enrich_group_payload(group: models.Group) -> Dict[str, Any]:
     }
 
 
-def build_meeting_detail_payload(meeting: models.Meeting, user_lang: str = "vi") -> Dict[str, Any]:
+def get_meeting_access_mode(db: Session, user: models.User, meeting: models.Meeting) -> str:
+    if auth.get_user_org_role(db, user, meeting.organization_id):
+        return "org_member"
+    participant = get_meeting_participant_for_user(db, meeting.id, user)
+    if participant and participant.invite_status != "declined":
+        return "meeting_guest"
+    return "none"
+
+
+def build_meeting_detail_payload(
+    meeting: models.Meeting,
+    user_lang: str = "vi",
+    access_mode: Optional[str] = None,
+) -> Dict[str, Any]:
     latest_transcript = _latest_processed_record(meeting.transcripts or [])
     speaker_mappings = sorted(meeting.speaker_mappings or [], key=lambda item: item.speaker_label)
     speaker_map = {item.speaker_label: item.display_name for item in speaker_mappings if item.display_name}
@@ -1068,6 +1088,7 @@ def build_meeting_detail_payload(meeting: models.Meeting, user_lang: str = "vi")
         "summary_error_text": summary_error_text,
         "summary_provider": latest_summary_any.ai_provider if latest_summary_any else None,
         "summary_model_name": latest_summary_any.model_name if latest_summary_any else None,
+        "access_mode": access_mode,
     }
 
 
@@ -1226,17 +1247,37 @@ class MeetingRoomConnectionManager:
     async def connect(self, meeting_id: str, websocket: WebSocket, user_info: Dict[str, Any]) -> None:
         await websocket.accept()
         async with self._lock:
-            self.active_connections.setdefault(meeting_id, []).append((websocket, user_info))
+            connections = self.active_connections.setdefault(meeting_id, [])
+            connections[:] = [(ws, u) for ws, u in connections if ws != websocket]
+            connections.append((websocket, {**user_info, "connected_at": datetime.utcnow().isoformat()}))
 
-    async def disconnect(self, meeting_id: str, websocket: WebSocket) -> None:
+    async def disconnect(self, meeting_id: str, websocket: WebSocket) -> Optional[Dict[str, Any]]:
+        disconnected_user: Optional[Dict[str, Any]] = None
+        should_emit_left = False
         async with self._lock:
             connections = self.active_connections.get(meeting_id, [])
+            for ws, user_info in connections:
+                if ws == websocket:
+                    disconnected_user = user_info
+                    break
             self.active_connections[meeting_id] = [(ws, u) for ws, u in connections if ws != websocket]
             if not self.active_connections.get(meeting_id):
                 self.active_connections.pop(meeting_id, None)
+                should_emit_left = bool(disconnected_user)
+            elif disconnected_user:
+                user_id = disconnected_user.get("id")
+                should_emit_left = not any(
+                    user_info.get("id") == user_id
+                    for _, user_info in self.active_connections.get(meeting_id, [])
+                )
+        return disconnected_user if should_emit_left else None
 
     def get_participants(self, meeting_id: str) -> List[Dict[str, Any]]:
-        return [u for _, u in self.active_connections.get(meeting_id, [])]
+        deduped: Dict[str, Dict[str, Any]] = {}
+        for _, user_info in self.active_connections.get(meeting_id, []):
+            key = str(user_info.get("id") or user_info.get("email") or len(deduped))
+            deduped[key] = user_info
+        return list(deduped.values())
 
     async def broadcast(self, meeting_id: str, payload: Dict[str, Any]) -> None:
         connections = list(self.active_connections.get(meeting_id, []))
@@ -1253,6 +1294,180 @@ class MeetingRoomConnectionManager:
 
 
 meeting_room_manager = MeetingRoomConnectionManager()
+
+
+def get_meeting_participant_for_user(db: Session, meeting_id: str, user: models.User) -> Optional[models.MeetingParticipant]:
+    participant = db.query(models.MeetingParticipant).filter(
+        models.MeetingParticipant.meeting_id == meeting_id,
+        models.MeetingParticipant.user_id == user.id,
+    ).first()
+    if participant:
+        return participant
+
+    email = (user.email or "").lower()
+    if not email:
+        return None
+    participant = db.query(models.MeetingParticipant).filter(
+        models.MeetingParticipant.meeting_id == meeting_id,
+        func.lower(models.MeetingParticipant.email) == email,
+    ).first()
+    if participant and not participant.user_id:
+        existing_user_participant = db.query(models.MeetingParticipant).filter(
+            models.MeetingParticipant.meeting_id == meeting_id,
+            models.MeetingParticipant.user_id == user.id,
+        ).first()
+        if not existing_user_participant:
+            participant.user_id = user.id
+            participant.name = participant.name or " ".join(
+                part for part in [user.first_name, user.last_name] if part
+            ).strip() or user.username
+            db.flush()
+    return participant
+
+
+def require_meeting_room_access(db: Session, user: models.User, meeting: models.Meeting) -> Optional[models.MeetingParticipant]:
+    try:
+        auth.require_org_member(db, user, meeting.organization_id)
+        return get_meeting_participant_for_user(db, meeting.id, user)
+    except HTTPException as org_error:
+        participant = get_meeting_participant_for_user(db, meeting.id, user)
+        if participant and participant.invite_status != "declined":
+            return participant
+        raise org_error
+
+
+def mark_participant_attended(db: Session, participant: Optional[models.MeetingParticipant]) -> None:
+    if not participant:
+        return
+    if participant.invite_status == "pending":
+        participant.invite_status = "accepted"
+    participant.attended = True
+    participant.joined_at = participant.joined_at or datetime.utcnow()
+    db.flush()
+
+
+def format_meeting_participant_payload(participant: models.MeetingParticipant) -> Dict[str, Any]:
+    user = participant.user
+    display_name = (
+        participant.name
+        or (" ".join(part for part in [getattr(user, "first_name", None), getattr(user, "last_name", None)] if part).strip() if user else "")
+        or getattr(user, "username", None)
+        or participant.email
+        or "Thành viên"
+    )
+    return {
+        "id": participant.user_id or participant.id,
+        "participant_id": participant.id,
+        "user_id": participant.user_id,
+        "email": participant.email or (user.email if user else None),
+        "displayName": display_name,
+        "name": display_name,
+        "role": participant.role,
+        "invite_status": participant.invite_status,
+        "attended": participant.attended,
+        "joined_at": participant.joined_at.isoformat() if participant.joined_at else None,
+        "left_at": participant.left_at.isoformat() if participant.left_at else None,
+    }
+
+
+def format_summary_payload(summary: Optional[models.MeetingSummary]) -> Optional[Dict[str, Any]]:
+    if not summary:
+        return None
+    return {
+        "id": summary.id,
+        "meeting_summary": summary.meeting_summary or "",
+        "key_points": summary.key_points or [],
+        "decisions": summary.decisions or [],
+        "action_items": summary.action_items or [],
+        "risks": summary.risks or [],
+        "open_questions": summary.open_questions or [],
+        "timeline_highlights": summary.timeline_highlights or [],
+        "speaker_summaries": summary.speaker_summaries or [],
+        "processing_status": summary.processing_status,
+        "language": summary.language,
+        "ai_provider": summary.ai_provider,
+        "model_name": summary.model_name,
+        "created_at": summary.created_at.isoformat() if summary.created_at else None,
+    }
+
+
+def serialize_transcript_draft_chunks(chunks: List[models.MeetingTranscriptDraft]) -> List[Dict[str, Any]]:
+    serialized: List[Dict[str, Any]] = []
+    for item in chunks:
+        offset_seconds = (item.start_ms or 0) / 1000
+        raw_segments = item.segments or []
+        segments = [
+            {
+                **segment,
+                "start": float(segment.get("start", segment.get("start_time", 0)) or 0) + offset_seconds,
+                "end": float(segment.get("end", segment.get("end_time", 0)) or 0) + offset_seconds,
+            }
+            for segment in raw_segments
+        ] or [{
+            "speaker": "Speaker_01",
+            "start": offset_seconds,
+            "end": estimate_segment_end(offset_seconds, item.text),
+            "text": item.text,
+            "language": item.language or "auto",
+        }]
+        serialized.append({
+            "id": item.id,
+            "userId": item.user_id,
+            "user_id": item.user_id,
+            "chunkIndex": item.chunk_index,
+            "chunk_index": item.chunk_index,
+            "text": item.text,
+            "segments": segments,
+            "language": item.language,
+            "startMs": item.start_ms,
+            "start_ms": item.start_ms,
+            "timestamp": (item.updated_at or item.created_at or datetime.utcnow()).isoformat(),
+        })
+    return serialized
+
+
+def build_room_snapshot(db: Session, meeting_id: str, current_user: models.User) -> Dict[str, Any]:
+    meeting = get_meeting_by_id(db, meeting_id)
+    if not meeting:
+        raise HTTPException(status_code=404, detail="Meeting not found")
+    participant = require_meeting_room_access(db, current_user, meeting)
+    mark_participant_attended(db, participant)
+
+    messages = db.query(models.MeetingMessage).options(
+        joinedload(models.MeetingMessage.user)
+    ).filter(
+        models.MeetingMessage.meeting_id == meeting_id
+    ).order_by(models.MeetingMessage.created_at.asc()).limit(100).all()
+    draft = build_transcript_from_drafts(db, meeting_id)
+    draft_payload = {
+        "transcript": draft["transcript"],
+        "segments": draft["segments"],
+        "language": draft["language"],
+        "chunks": serialize_transcript_draft_chunks(draft["chunks"]),
+    }
+    latest_summary = _latest_processed_record(meeting.summaries or [], fallback_to_any=True)
+    participant_records = db.query(models.MeetingParticipant).options(
+        joinedload(models.MeetingParticipant.user)
+    ).filter(models.MeetingParticipant.meeting_id == meeting_id).all()
+
+    return {
+        "type": "room.snapshot",
+        "meeting_id": meeting_id,
+        "meeting": {
+            "id": meeting.id,
+            "status": meeting.status,
+            "title": meeting.title,
+            "code": meeting.code,
+            "access_mode": get_meeting_access_mode(db, current_user, meeting),
+        },
+        "participants": [format_meeting_participant_payload(item) for item in participant_records],
+        "online_participants": meeting_room_manager.get_participants(meeting_id),
+        "messages": [format_meeting_message_payload(message) for message in messages],
+        "transcript": draft_payload,
+        "ai_notes": format_summary_payload(latest_summary),
+        "summary_status": latest_summary.processing_status if latest_summary else None,
+        "timestamp": datetime.utcnow().isoformat(),
+    }
 
 
 def get_ws_user(db: Session, token: Optional[str]) -> models.User:
@@ -2668,9 +2883,17 @@ def get_meeting_by_code(
     ).filter(models.Meeting.code == meeting_code).first()
     if not meeting:
         raise HTTPException(status_code=404, detail="Meeting not found")
-    auth.require_org_member(db, current_user, meeting.organization_id)
+    participant = require_meeting_room_access(db, current_user, meeting)
+    mark_participant_attended(db, participant)
+    db.commit()
     user_lang = getattr(current_user, "language", None) or "vi"
-    return schemas.MeetingDetailResponse.model_validate(build_meeting_detail_payload(meeting, user_lang))
+    return schemas.MeetingDetailResponse.model_validate(
+        build_meeting_detail_payload(
+            meeting,
+            user_lang,
+            access_mode=get_meeting_access_mode(db, current_user, meeting),
+        )
+    )
 
 
 @app.get("/api/meetings/{meeting_id}", response_model=schemas.MeetingDetailResponse)
@@ -2682,9 +2905,17 @@ def get_meeting(
     meeting = get_meeting_by_id(db, meeting_id)
     if not meeting:
         raise HTTPException(status_code=404, detail="Meeting not found")
-    auth.require_org_member(db, current_user, meeting.organization_id)
+    participant = require_meeting_room_access(db, current_user, meeting)
+    mark_participant_attended(db, participant)
+    db.commit()
     user_lang = getattr(current_user, "language", None) or "vi"
-    return schemas.MeetingDetailResponse.model_validate(build_meeting_detail_payload(meeting, user_lang))
+    return schemas.MeetingDetailResponse.model_validate(
+        build_meeting_detail_payload(
+            meeting,
+            user_lang,
+            access_mode=get_meeting_access_mode(db, current_user, meeting),
+        )
+    )
 
 
 @app.get("/api/meetings/{meeting_id}/my-status")
@@ -2697,7 +2928,7 @@ def get_my_meeting_status(
     meeting = get_meeting_by_id(db, meeting_id)
     if not meeting:
         raise HTTPException(status_code=404, detail="Meeting not found")
-    auth.require_org_member(db, current_user, meeting.organization_id)
+    require_meeting_room_access(db, current_user, meeting)
 
     participant = db.query(models.MeetingParticipant).filter(
         models.MeetingParticipant.meeting_id == meeting_id,
@@ -2726,7 +2957,7 @@ def list_meeting_messages(
     meeting = get_meeting_by_id(db, meeting_id)
     if not meeting:
         raise HTTPException(status_code=404, detail="Meeting not found")
-    auth.require_org_member(db, current_user, meeting.organization_id)
+    require_meeting_room_access(db, current_user, meeting)
     messages = db.query(models.MeetingMessage).options(
         joinedload(models.MeetingMessage.user)
     ).filter(
@@ -2745,7 +2976,7 @@ async def create_meeting_message_endpoint(
     meeting = get_meeting_by_id(db, meeting_id)
     if not meeting:
         raise HTTPException(status_code=404, detail="Meeting not found")
-    auth.require_org_member(db, current_user, meeting.organization_id)
+    require_meeting_room_access(db, current_user, meeting)
     text = message.text.strip()
     if not text:
         raise HTTPException(status_code=400, detail="Message cannot be empty")
@@ -2834,17 +3065,42 @@ async def meeting_room_stream(
         if not meeting:
             await websocket.close(code=1008, reason="Meeting not found")
             return
-        auth.require_org_member(db, current_user, meeting.organization_id)
+        participant = require_meeting_room_access(db, current_user, meeting)
+        mark_participant_attended(db, participant)
+        db.commit()
         user_payload = format_user_payload(current_user)
         await meeting_room_manager.connect(meeting_id, websocket, user_payload)
         connected = True
-        # Send current participant list to the newly connected user
-        current_participants = meeting_room_manager.get_participants(meeting_id)
-        await websocket.send_json({
-            "type": "participant.list",
-            "participants": current_participants,
-            "timestamp": datetime.utcnow().isoformat(),
-        })
+        try:
+            snapshot = build_room_snapshot(db, meeting_id, current_user)
+        except Exception as snapshot_exc:
+            logger.error(
+                "Failed to build meeting room snapshot for meeting %s: %s",
+                meeting_id,
+                snapshot_exc,
+                exc_info=True,
+            )
+            db.rollback()
+            snapshot = {
+                "type": "room.snapshot",
+                "meeting_id": meeting_id,
+                "meeting": {
+                    "id": meeting.id,
+                    "status": meeting.status,
+                    "title": meeting.title,
+                    "code": meeting.code,
+                    "access_mode": get_meeting_access_mode(db, current_user, meeting),
+                },
+                "participants": [],
+                "online_participants": meeting_room_manager.get_participants(meeting_id),
+                "messages": [],
+                "transcript": {"text": "", "segments": [], "chunks": []},
+                "ai_notes": None,
+                "summary_status": None,
+                "snapshot_warning": "partial_snapshot",
+                "timestamp": datetime.utcnow().isoformat(),
+            }
+        await websocket.send_json(snapshot)
         # Broadcast join to all (including sender)
         await meeting_room_manager.broadcast(
             meeting_id,
@@ -2905,8 +3161,8 @@ async def meeting_room_stream(
             await websocket.close(code=1011, reason="WebSocket error")
     finally:
         if connected:
-            await meeting_room_manager.disconnect(meeting_id, websocket)
-            if current_user:
+            left_user = await meeting_room_manager.disconnect(meeting_id, websocket)
+            if left_user and current_user:
                 await meeting_room_manager.broadcast(
                     meeting_id,
                     {
@@ -3374,6 +3630,814 @@ def get_stt_provider():
         _stt_service = STTService()
     return _stt_service.provider
 
+
+def audio_upload_suffix(filename: Optional[str]) -> str:
+    lowered = (filename or "").lower()
+    if lowered.endswith(".wav"):
+        return ".wav"
+    if lowered.endswith(".mp3"):
+        return ".mp3"
+    if lowered.endswith(".mp4"):
+        return ".mp4"
+    if lowered.endswith(".webm"):
+        return ".webm"
+    if lowered.endswith(".m4a"):
+        return ".m4a"
+    return ".webm"
+
+
+async def save_upload_to_temp_wav(audio: UploadFile) -> str:
+    import tempfile
+
+    suffix = audio_upload_suffix(audio.filename)
+    tmp_path = ""
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        content = await audio.read()
+        if not content:
+            raise HTTPException(status_code=400, detail="Empty audio file")
+        tmp.write(content)
+        tmp_path = tmp.name
+
+    audio_path = tmp_path
+    if suffix != ".wav":
+        wav_path = tmp_path.rsplit(".", 1)[0] + ".wav"
+        try:
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", tmp_path, "-ar", "16000", "-ac", "1", "-acodec", "pcm_s16le", "-f", "wav", wav_path],
+                capture_output=True,
+                timeout=30,
+                check=True,
+            )
+            os.unlink(tmp_path)
+            audio_path = wav_path
+        except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+            logger.warning("ffmpeg conversion failed for temp STT upload, using original: %s", exc)
+    return audio_path
+
+
+def normalize_test_stt_result(result: Dict[str, Any], language: str = "auto") -> Dict[str, Any]:
+    detected_language = result.get("language") or result.get("detected_language") or language or "auto"
+    text = str(result.get("text") or "")
+    segments = []
+    for segment in result.get("segments", []) or []:
+        segments.append({
+            "speaker": segment.get("speaker") or segment.get("speaker_label") or "Test Speaker",
+            "speaker_label": normalize_speaker_label(segment.get("speaker_label") or segment.get("speaker") or "Test Speaker"),
+            "speaker_display_name": segment.get("speaker_display_name") or segment.get("speaker") or "Test Speaker",
+            "start": segment.get("start", segment.get("start_time", 0)),
+            "end": segment.get("end", segment.get("end_time", 0)),
+            "text": segment.get("text", ""),
+            "language": segment.get("language") or segment.get("detected_language") or detected_language,
+            "confidence": segment.get("confidence") or segment.get("confidence_score"),
+        })
+    if text.strip() and not segments:
+        segments = [{
+            "speaker": "Test Speaker",
+            "speaker_label": "Test Speaker",
+            "speaker_display_name": "Test Speaker",
+            "start": 0,
+            "end": estimate_segment_end(0, text),
+            "text": text.strip(),
+            "language": detected_language,
+            "confidence": result.get("confidence") or result.get("confidence_score"),
+        }]
+    return {"text": text, "segments": segments, "language": detected_language}
+
+
+def realtime_stt_enabled() -> bool:
+    mode = os.getenv("REALTIME_STT_MODE", "deepgram_streaming").lower()
+    return mode == "deepgram_streaming" and bool(os.getenv("DEEPGRAM_API_KEY"))
+
+
+def deepgram_message_to_payload(message: Any) -> Optional[Dict[str, Any]]:
+    if isinstance(message, bytes):
+        return None
+    data = message.model_dump() if hasattr(message, "model_dump") else message
+    if not isinstance(data, dict):
+        data = getattr(message, "__dict__", {})
+    event_type = data.get("type") or getattr(message, "type", None)
+    if event_type == "Results":
+        channel = data.get("channel") or {}
+        alternatives = channel.get("alternatives") or []
+        alternative = alternatives[0] if alternatives else {}
+        transcript = str(alternative.get("transcript") or "").strip()
+        if not transcript:
+            return None
+        return {
+            "kind": "result",
+            "text": transcript,
+            "is_final": bool(data.get("is_final")),
+            "speech_final": bool(data.get("speech_final")),
+            "from_finalize": bool(data.get("from_finalize")),
+            "start": float(data.get("start") or 0),
+            "duration": float(data.get("duration") or 0),
+            "confidence": alternative.get("confidence"),
+        }
+    if event_type == "UtteranceEnd":
+        return {"kind": "utterance_end"}
+    if event_type == "SpeechStarted":
+        return {"kind": "speech_started"}
+    return None
+
+
+class DeepgramLiveBridge:
+    def __init__(
+        self,
+        *,
+        loop: asyncio.AbstractEventLoop,
+        sample_rate: int = 16000,
+        language: str = "vi",
+    ) -> None:
+        self.loop = loop
+        self.sample_rate = int(sample_rate or 16000)
+        self.language = language or "vi"
+        self.result_queue: asyncio.Queue = asyncio.Queue()
+        self.media_queue: "queue.Queue[Any]" = queue.Queue()
+        self.stop_event = threading.Event()
+        self.thread: Optional[threading.Thread] = None
+
+    def _emit(self, payload: Dict[str, Any]) -> None:
+        self.loop.call_soon_threadsafe(self.result_queue.put_nowait, payload)
+
+    def start(self) -> None:
+        self.thread = threading.Thread(target=self._run, name="deepgram-live-stt", daemon=True)
+        self.thread.start()
+
+    def send_media(self, data: bytes) -> None:
+        if data:
+            self.media_queue.put(data)
+
+    def finalize(self) -> None:
+        self.media_queue.put({"type": "finalize"})
+
+    def close(self) -> None:
+        self.stop_event.set()
+        self.media_queue.put({"type": "close"})
+
+    def _run(self) -> None:
+        try:
+            from deepgram import DeepgramClient
+
+            api_key = os.environ.get("DEEPGRAM_API_KEY", "")
+            if not api_key:
+                self._emit({"kind": "error", "error": "DEEPGRAM_API_KEY not set"})
+                return
+
+            client = DeepgramClient(api_key=api_key)
+            model = os.getenv("DEEPGRAM_MODEL", "nova-3")
+            logger.info(f"DeepgramLiveBridge: connecting to Deepgram streaming (model={model}, lang={self.language}, sr={self.sample_rate})")
+
+            with client.listen.v1.connect(
+                model=model,
+                language=self.language,
+                encoding="linear16",
+                sample_rate=self.sample_rate,
+                channels=1,
+                interim_results="true",
+                endpointing=350,
+                smart_format="true",
+                punctuate="true",
+                diarize="false",
+                vad_events="true",
+            ) as dg_socket:
+                logger.info("DeepgramLiveBridge: connected successfully")
+                self._emit({"kind": "status", "status": "streaming"})
+
+                def recv_loop() -> None:
+                    while not self.stop_event.is_set():
+                        try:
+                            payload = deepgram_message_to_payload(dg_socket.recv())
+                            if payload:
+                                self._emit(payload)
+                        except Exception as exc:
+                            if not self.stop_event.is_set():
+                                logger.error(f"DeepgramLiveBridge recv error: {exc}")
+                                self._emit({"kind": "error", "error": f"Deepgram recv error: {exc}"})
+                            break
+
+                recv_thread = threading.Thread(target=recv_loop, name="deepgram-live-recv", daemon=True)
+                recv_thread.start()
+
+                while not self.stop_event.is_set():
+                    item = self.media_queue.get()
+                    if isinstance(item, (bytes, bytearray)):
+                        dg_socket.send_media(bytes(item))
+                    elif isinstance(item, dict) and item.get("type") == "finalize":
+                        dg_socket.send_finalize()
+                    elif isinstance(item, dict) and item.get("type") == "close":
+                        try:
+                            dg_socket.send_finalize()
+                            dg_socket.send_close_stream()
+                        except Exception:
+                            pass
+                        break
+        except ImportError as exc:
+            logger.error(f"DeepgramLiveBridge: deepgram SDK not installed: {exc}")
+            self._emit({"kind": "error", "error": f"Deepgram SDK not installed: {exc}"})
+        except Exception as exc:
+            logger.error(f"DeepgramLiveBridge: connection failed: {type(exc).__name__}: {exc}")
+            self._emit({"kind": "error", "error": f"Deepgram connection failed: {exc}"})
+        finally:
+            self._emit({"kind": "status", "status": "closed"})
+
+
+def websocket_token_from_headers(websocket: WebSocket, token: Optional[str]) -> Optional[str]:
+    return token or websocket.headers.get("authorization")
+
+
+async def receive_initial_stt_config(websocket: WebSocket) -> tuple[Dict[str, Any], Optional[bytes]]:
+    message = await websocket.receive()
+    if message.get("bytes") is not None:
+        return {}, message["bytes"]
+    raw_text = message.get("text")
+    if not raw_text:
+        return {}, None
+    try:
+        payload = json.loads(raw_text)
+    except json.JSONDecodeError:
+        return {}, None
+    if payload.get("type") == "stt.config":
+        return payload, None
+    return payload, None
+
+
+def build_stream_segment(
+    *,
+    text: str,
+    user_display_name: str,
+    language: str,
+    confidence: Optional[float],
+) -> Dict[str, Any]:
+    speaker_label = normalize_speaker_label(user_display_name)
+    return {
+        "speaker": user_display_name,
+        "speaker_label": speaker_label,
+        "speaker_display_name": user_display_name,
+        "start": 0,
+        "end": estimate_segment_end(0, text),
+        "text": text,
+        "language": language,
+        "confidence": confidence,
+    }
+
+
+def next_transcript_chunk_index(db: Session, meeting_id: str, user_id: str) -> int:
+    current = db.query(func.max(models.MeetingTranscriptDraft.chunk_index)).filter(
+        models.MeetingTranscriptDraft.meeting_id == meeting_id,
+        models.MeetingTranscriptDraft.user_id == user_id,
+    ).scalar()
+    return int(current if current is not None else -1) + 1
+
+
+@app.websocket("/api/test-stt/stream")
+async def test_stt_stream(websocket: WebSocket, token: Optional[str] = Query(None)):
+    db = SessionLocal()
+    bridge: Optional[DeepgramLiveBridge] = None
+    try:
+        await websocket.accept()
+        current_user = get_ws_user(db, websocket_token_from_headers(websocket, token))
+        if not realtime_stt_enabled():
+            await websocket.send_json({
+                "type": "stt.status",
+                "status": "fallback",
+                "reason": "realtime_stt_disabled",
+            })
+            await websocket.close(code=1013, reason="Realtime STT fallback")
+            return
+
+        config_payload, first_bytes = await receive_initial_stt_config(websocket)
+        sample_rate = int(config_payload.get("sampleRate") or config_payload.get("sample_rate") or 16000)
+        language = str(config_payload.get("language") or "vi")
+        bridge = DeepgramLiveBridge(loop=asyncio.get_running_loop(), sample_rate=sample_rate, language=language)
+        bridge.start()
+        if first_bytes:
+            bridge.send_media(first_bytes)
+
+        chunk_index = 0
+        final_parts: List[str] = []
+        final_confidence: Optional[float] = None
+        user_display_name = " ".join(part for part in [current_user.first_name, current_user.last_name] if part).strip() or current_user.username
+
+        async def receive_loop() -> None:
+            while True:
+                message = await websocket.receive()
+                if message.get("bytes") is not None:
+                    bridge.send_media(message["bytes"])
+                    continue
+                raw_text = message.get("text")
+                if not raw_text:
+                    continue
+                try:
+                    payload = json.loads(raw_text)
+                except json.JSONDecodeError:
+                    continue
+                if payload.get("type") == "stt.finalize":
+                    bridge.finalize()
+                elif payload.get("type") == "stt.close":
+                    bridge.close()
+                    break
+
+        async def emit_final(text: str, confidence: Optional[float]) -> None:
+            nonlocal chunk_index
+            normalized_text = text.strip()
+            if not normalized_text:
+                return
+            segments = [build_stream_segment(
+                text=normalized_text,
+                user_display_name=user_display_name,
+                language=language,
+                confidence=confidence,
+            )]
+            nlp_metadata = None
+            if phobert_enabled_for(language):
+                try:
+                    processor = get_phobert_processor()
+                    processed = processor.process_chunk(normalized_text, segments, {})
+                    normalized_text = str(processed.get("text") or normalized_text)
+                    segments = processed.get("segments") or segments
+                    nlp_metadata = processed.get("nlp_metadata")
+                except Exception as nlp_error:
+                    logger.warning("PhoBERT test stream post-processing skipped: %s", nlp_error)
+
+            await websocket.send_json({
+                "type": "test_stt.final",
+                "id": f"test:{current_user.id}:{chunk_index}",
+                "chunkIndex": chunk_index,
+                "text": normalized_text,
+                "segments": segments,
+                "language": language,
+                "provider": "deepgram",
+                "model": os.getenv("DEEPGRAM_MODEL", "nova-3"),
+                "nlp_metadata": nlp_metadata,
+                "created_at": datetime.utcnow().isoformat(),
+            })
+            chunk_index += 1
+
+        async def result_loop() -> None:
+            nonlocal final_parts, final_confidence
+            while True:
+                payload = await bridge.result_queue.get()
+                kind = payload.get("kind")
+                if kind == "status":
+                    if payload.get("status") == "closed" and final_parts:
+                        await emit_final(" ".join(final_parts), final_confidence)
+                        final_parts = []
+                        final_confidence = None
+                    await websocket.send_json({"type": "stt.status", "status": payload.get("status")})
+                    if payload.get("status") == "closed":
+                        break
+                elif kind == "error":
+                    await websocket.send_json({
+                        "type": "stt.status",
+                        "status": "error",
+                        "error": payload.get("error"),
+                    })
+                    break
+                elif kind == "result":
+                    text = str(payload.get("text") or "").strip()
+                    if not text:
+                        continue
+                    if payload.get("is_final"):
+                        final_parts.append(text)
+                        final_confidence = payload.get("confidence") or final_confidence
+                        if payload.get("speech_final") or payload.get("from_finalize"):
+                            await emit_final(" ".join(final_parts), final_confidence)
+                            final_parts = []
+                            final_confidence = None
+                    else:
+                        interim_text = " ".join([*final_parts, text]).strip()
+                        await websocket.send_json({
+                            "type": "test_stt.interim",
+                            "text": interim_text,
+                            "language": language,
+                            "provider": "deepgram",
+                            "timestamp": datetime.utcnow().isoformat(),
+                        })
+                elif kind == "utterance_end" and final_parts:
+                    await emit_final(" ".join(final_parts), final_confidence)
+                    final_parts = []
+                    final_confidence = None
+
+        receive_task = asyncio.create_task(receive_loop())
+        result_task = asyncio.create_task(result_loop())
+        done, pending = await asyncio.wait({receive_task, result_task}, return_when=asyncio.FIRST_COMPLETED)
+        for task in pending:
+            task.cancel()
+        for task in done:
+            if task.exception():
+                raise task.exception()
+    except WebSocketDisconnect:
+        pass
+    except HTTPException as exc:
+        try:
+            await websocket.send_json({"type": "stt.status", "status": "error", "error": str(exc.detail)})
+            await websocket.close(code=1008, reason=str(exc.detail))
+        except Exception:
+            pass
+    except Exception as exc:
+        logger.error("Test STT stream error: %s", exc, exc_info=True)
+        try:
+            await websocket.send_json({"type": "stt.status", "status": "error", "error": str(exc)})
+            await websocket.close(code=1011, reason="STT stream error")
+        except Exception:
+            pass
+    finally:
+        if bridge:
+            bridge.close()
+        db.close()
+
+
+@app.websocket("/api/meetings/{meeting_id}/stt-stream")
+async def meeting_stt_stream(
+    websocket: WebSocket,
+    meeting_id: str,
+    token: Optional[str] = Query(None),
+):
+    db = SessionLocal()
+    bridge: Optional[DeepgramLiveBridge] = None
+    raw_audio_file = None
+    raw_audio_path = ""
+    sample_rate = 16000
+    try:
+        await websocket.accept()
+        logger.info(f"STT WebSocket accepted: meeting={meeting_id}")
+
+        # Authenticate user
+        try:
+            auth_token = websocket_token_from_headers(websocket, token)
+            logger.info(f"STT WebSocket auth: token={'present' if auth_token else 'missing'}")
+            current_user = get_ws_user(db, auth_token)
+            logger.info(f"STT WebSocket auth success: user={current_user.username}")
+        except HTTPException as auth_err:
+            logger.warning(f"STT WebSocket auth failed: {auth_err.detail}")
+            await websocket.send_json({"type": "stt.status", "status": "error", "error": f"Auth failed: {auth_err.detail}"})
+            await websocket.close(code=1008, reason="Authentication failed")
+            return
+
+        meeting = get_meeting_by_id(db, meeting_id)
+        if not meeting:
+            await websocket.send_json({"type": "stt.status", "status": "error", "error": "Meeting not found"})
+            await websocket.close(code=1008, reason="Meeting not found")
+            return
+
+        try:
+            require_meeting_room_access(db, current_user, meeting)
+        except HTTPException as access_err:
+            logger.warning(f"STT WebSocket access denied: {access_err.detail}")
+            await websocket.send_json({"type": "stt.status", "status": "error", "error": f"Access denied: {access_err.detail}"})
+            await websocket.close(code=1008, reason="Access denied")
+            return
+
+        if not realtime_stt_enabled():
+            await websocket.send_json({
+                "type": "stt.status",
+                "status": "fallback",
+                "reason": "realtime_stt_disabled",
+            })
+            await websocket.close(code=1013, reason="Realtime STT fallback")
+            return
+
+        config_payload, first_bytes = await receive_initial_stt_config(websocket)
+        sample_rate = int(config_payload.get("sampleRate") or config_payload.get("sample_rate") or 16000)
+        language = str(config_payload.get("language") or "vi")
+        bridge = DeepgramLiveBridge(loop=asyncio.get_running_loop(), sample_rate=sample_rate, language=language)
+        bridge.start()
+        if first_bytes:
+            bridge.send_media(first_bytes)
+
+        # Save raw audio for recording persistence
+        audio_dir = os.path.join("uploads", "audio", meeting_id)
+        os.makedirs(audio_dir, exist_ok=True)
+        raw_audio_path = os.path.join(audio_dir, f"stream_{current_user.id}_{int(time.time())}.pcm")
+        raw_audio_file = open(raw_audio_path, "ab")
+        if first_bytes:
+            raw_audio_file.write(first_bytes)
+
+        chunk_index = next_transcript_chunk_index(db, meeting_id, current_user.id)
+        stream_started_at = time.time()
+        final_parts: List[str] = []
+        final_confidence: Optional[float] = None
+        user_display_name = " ".join(part for part in [current_user.first_name, current_user.last_name] if part).strip() or current_user.username
+
+        async def receive_loop() -> None:
+            while True:
+                message = await websocket.receive()
+                if message.get("bytes") is not None:
+                    bridge.send_media(message["bytes"])
+                    raw_audio_file.write(message["bytes"])
+                    continue
+                raw_text = message.get("text")
+                if not raw_text:
+                    continue
+                try:
+                    payload = json.loads(raw_text)
+                except json.JSONDecodeError:
+                    continue
+                if payload.get("type") == "stt.finalize":
+                    bridge.finalize()
+                elif payload.get("type") == "stt.close":
+                    bridge.close()
+                    break
+
+        async def emit_final(text: str, confidence: Optional[float]) -> None:
+            nonlocal chunk_index
+            normalized_text = text.strip()
+            if not normalized_text:
+                return
+            segments = [build_stream_segment(
+                text=normalized_text,
+                user_display_name=user_display_name,
+                language=language,
+                confidence=confidence,
+            )]
+            nlp_metadata = None
+            if phobert_enabled_for(language):
+                try:
+                    processor = get_phobert_processor()
+                    glossary = build_glossary_dict(db, meeting.organization_id)
+                    processed = processor.process_chunk(normalized_text, segments, glossary)
+                    normalized_text = str(processed.get("text") or normalized_text)
+                    segments = processed.get("segments") or segments
+                    nlp_metadata = processed.get("nlp_metadata")
+                except Exception as nlp_error:
+                    logger.warning("PhoBERT meeting stream post-processing skipped: %s", nlp_error)
+
+            start_ms = int(max(0, time.time() - stream_started_at) * 1000)
+            upsert_transcript_draft(
+                db,
+                meeting_id=meeting_id,
+                user_id=current_user.id,
+                chunk_index=chunk_index,
+                text=normalized_text,
+                segments=segments,
+                language=language,
+                provider="deepgram_streaming",
+                model=os.getenv("DEEPGRAM_MODEL", "nova-3"),
+                start_ms=start_ms,
+            )
+            event_payload = {
+                "type": "transcript.chunk",
+                "meeting_id": meeting_id,
+                "id": f"{meeting_id}:{current_user.id}:{chunk_index}",
+                "user_id": current_user.id,
+                "chunkIndex": chunk_index,
+                "text": normalized_text,
+                "segments": segments,
+                "speaker": user_display_name,
+                "language": language,
+                "nlp_metadata": nlp_metadata,
+                "created_at": datetime.utcnow().isoformat(),
+                "timestamp": datetime.utcnow().isoformat(),
+            }
+            await websocket.send_json(event_payload)
+            await meeting_room_manager.broadcast(meeting_id, event_payload)
+            chunk_index += 1
+
+        async def result_loop() -> None:
+            nonlocal final_parts, final_confidence
+            while True:
+                payload = await bridge.result_queue.get()
+                kind = payload.get("kind")
+                if kind == "status":
+                    if payload.get("status") == "closed" and final_parts:
+                        await emit_final(" ".join(final_parts), final_confidence)
+                        final_parts = []
+                        final_confidence = None
+                    await websocket.send_json({"type": "stt.status", "status": payload.get("status")})
+                    if payload.get("status") == "closed":
+                        break
+                elif kind == "error":
+                    await websocket.send_json({
+                        "type": "stt.status",
+                        "status": "error",
+                        "error": payload.get("error"),
+                    })
+                    break
+                elif kind == "result":
+                    text = str(payload.get("text") or "").strip()
+                    if not text:
+                        continue
+                    if payload.get("is_final"):
+                        final_parts.append(text)
+                        final_confidence = payload.get("confidence") or final_confidence
+                        if payload.get("speech_final") or payload.get("from_finalize"):
+                            await emit_final(" ".join(final_parts), final_confidence)
+                            final_parts = []
+                            final_confidence = None
+                    else:
+                        interim_text = " ".join([*final_parts, text]).strip()
+                        interim_payload = {
+                            "type": "transcript.interim",
+                            "meeting_id": meeting_id,
+                            "user_id": current_user.id,
+                            "speaker": user_display_name,
+                            "text": interim_text,
+                            "language": language,
+                            "timestamp": datetime.utcnow().isoformat(),
+                        }
+                        await websocket.send_json(interim_payload)
+                        await meeting_room_manager.broadcast(meeting_id, interim_payload)
+                elif kind == "utterance_end" and final_parts:
+                    await emit_final(" ".join(final_parts), final_confidence)
+                    final_parts = []
+                    final_confidence = None
+
+        receive_task = asyncio.create_task(receive_loop())
+        result_task = asyncio.create_task(result_loop())
+        done, pending = await asyncio.wait({receive_task, result_task}, return_when=asyncio.FIRST_COMPLETED)
+        for task in pending:
+            task.cancel()
+        for task in done:
+            if task.exception():
+                raise task.exception()
+    except WebSocketDisconnect:
+        pass
+    except Exception as exc:
+        logger.error("Meeting STT stream error: %s", exc, exc_info=True)
+        try:
+            await websocket.send_json({"type": "stt.status", "status": "error", "error": str(exc)})
+            await websocket.close(code=1011, reason="STT stream error")
+        except Exception:
+            pass
+    finally:
+        if bridge:
+            bridge.close()
+        # Close raw audio file and convert PCM → WAV
+        try:
+            if raw_audio_file and not raw_audio_file.closed:
+                raw_audio_file.close()
+            if os.path.exists(raw_audio_path) and os.path.getsize(raw_audio_path) > 0:
+                import wave
+                wav_path = raw_audio_path.replace(".pcm", ".wav")
+                with wave.open(wav_path, "wb") as wf:
+                    wf.setnchannels(1)
+                    wf.setsampwidth(2)
+                    wf.setframerate(sample_rate)
+                    with open(raw_audio_path, "rb") as pf:
+                        wf.writeframes(pf.read())
+                os.remove(raw_audio_path)
+                logger.info(f"Saved streaming audio: {wav_path} ({os.path.getsize(wav_path)} bytes)")
+        except Exception as audio_err:
+            logger.error(f"Failed to save streaming audio: {audio_err}")
+        db.close()
+
+
+@app.post("/api/test-stt/transcribe-chunk")
+async def test_stt_transcribe_chunk(
+    audio: UploadFile = File(...),
+    chunk_index: Optional[int] = Form(None),
+    language: str = Form("auto"),
+    current_user=Depends(auth.get_current_user),
+):
+    """No-DB microphone test endpoint: temp audio -> STT -> optional PhoBERT -> JSON."""
+    audio_path = ""
+    try:
+        audio_path = await save_upload_to_temp_wav(audio)
+        provider = get_stt_provider()
+        result = provider.transcribe(audio_path)
+        if not result or "text" not in result:
+            raise ValueError("Invalid transcription result")
+        if result.get("error"):
+            raise ValueError(f"STT provider error: {result['error']}")
+
+        normalized = normalize_test_stt_result(result, language)
+        text = normalized["text"]
+        segments = normalized["segments"]
+        detected_language = normalized["language"]
+        nlp_metadata = None
+        if phobert_enabled_for(detected_language):
+            try:
+                processor = get_phobert_processor()
+                processed = processor.process_chunk(text, segments, {})
+                text = str(processed.get("text") or text)
+                segments = processed.get("segments") or segments
+                nlp_metadata = processed.get("nlp_metadata")
+            except Exception as nlp_error:
+                logger.warning("PhoBERT test chunk post-processing skipped: %s", nlp_error)
+
+        return {
+            "id": f"test:{current_user.id}:{chunk_index}" if chunk_index is not None else None,
+            "chunkIndex": chunk_index,
+            "text": text,
+            "segments": segments,
+            "language": detected_language,
+            "detected_language": detected_language,
+            "provider": os.getenv("STT_PROVIDER", "deepgram").lower(),
+            "model": os.getenv("DEEPGRAM_MODEL", "nova-3"),
+            "nlp_metadata": nlp_metadata,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("No-DB test STT failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Test STT failed: {exc}")
+    finally:
+        if audio_path and os.path.exists(audio_path):
+            try:
+                os.unlink(audio_path)
+            except OSError:
+                pass
+
+
+@app.post("/api/test-stt/analyze", response_model=schemas.TestSTTAnalyzeResponse)
+async def test_stt_analyze(
+    payload: schemas.TestSTTAnalyzeRequest,
+    current_user=Depends(auth.get_current_user),
+):
+    """No-DB AI Notes endpoint for upload-page microphone tests."""
+    from src.providers.router_llm import RouterLLMAdapter
+
+    full_text = (payload.transcript or "").strip()
+    if not full_text:
+        raise HTTPException(status_code=400, detail="Transcript is required")
+
+    language = (payload.language or getattr(current_user, "language", None) or "vi").lower().strip()
+    if language not in ("vi", "en", "zh", "ja", "ko"):
+        language = "vi"
+
+    errors: List[str] = []
+    segments = payload.segments or []
+    nlp_metadata = None
+    if phobert_enabled_for(language):
+        try:
+            processor = get_phobert_processor()
+            processed = processor.process_finalize(full_text, segments, {})
+            full_text = str(processed.get("text") or full_text)
+            segments = processed.get("segments") or segments
+            nlp_metadata = processed.get("nlp_metadata")
+        except Exception as nlp_error:
+            logger.warning("PhoBERT test finalize post-processing skipped: %s", nlp_error, exc_info=True)
+            errors.append(f"PhoBERT post-processing skipped: {nlp_error}")
+
+    summary_status = "FAILED"
+    summary_payload = schemas.MeetingAnalysisOutput(
+        meeting_summary="",
+        key_points=[],
+        decisions=[],
+        action_items=[],
+    )
+    summary_error_message = ""
+    prompt_key = f"summary_{language}"
+    custom_instruction = ADMIN_PROMPTS.get(prompt_key, ADMIN_PROMPTS.get("summary_vi", {})).get(
+        "content",
+        "Create a concise meeting brief. Focus on outcomes, explicit decisions, and next steps only.",
+    )
+    speaker_aware_transcript = build_speaker_aware_transcript(full_text, segments, {})
+    system_prompt, user_prompt = build_structured_summary_prompts(
+        speaker_aware_transcript,
+        custom_instruction,
+        language,
+        "",
+        nlp_metadata,
+    )
+
+    raw_response = None
+    router = RouterLLMAdapter()
+    if router.enabled:
+        try:
+            raw_response = router.structured_completion(system_prompt, user_prompt)
+            if not raw_response:
+                raise ValueError(router.last_error or "Router LLM returned empty response")
+        except Exception as exc:
+            summary_error_message = f"Router LLM summarization failed: {exc}"
+            errors.append(summary_error_message)
+            raw_response = None
+    else:
+        summary_error_message = router.last_error or "Router LLM is not configured"
+        errors.append(summary_error_message)
+
+    if not raw_response:
+        google_key = os.getenv("GOOGLE_API_KEY")
+        if google_key:
+            try:
+                from src.providers.google_llm import GoogleLLMAdapter
+                google = GoogleLLMAdapter(api_key=google_key)
+                if google.client:
+                    raw_response = google.chat_completion(system_prompt, user_prompt)
+                    if raw_response and errors:
+                        errors.pop()
+            except Exception as exc:
+                errors.append(f"Google Gemini fallback failed: {exc}")
+
+    if raw_response:
+        try:
+            structured_payload = _extract_json_object(raw_response)
+            summary_payload = _normalize_analysis_payload(structured_payload)
+            summary_status = "COMPLETED"
+        except Exception as parse_error:
+            summary_error_message = f"Failed to parse LLM response: {parse_error}"
+            errors.append(summary_error_message)
+
+    if summary_status != "COMPLETED" and summary_error_message:
+        summary_payload.meeting_summary = summary_error_message
+
+    return {
+        "summary_status": summary_status,
+        "summary": summary_payload,
+        "nlp_metadata": nlp_metadata,
+        "errors": errors,
+    }
+
 @app.post("/api/meetings/{meeting_id}/transcribe-chunk")
 async def transcribe_chunk(
     meeting_id: str,
@@ -3394,8 +4458,8 @@ async def transcribe_chunk(
         if not meeting:
             raise HTTPException(status_code=404, detail="Meeting not found")
 
-        # Validate user has access to this meeting's organization
-        auth.require_org_member(db, current_user, meeting.organization_id)
+        # Validate user has meeting room access.
+        require_meeting_room_access(db, current_user, meeting)
 
         # Validate audio file
         if not audio.filename:
@@ -3532,6 +4596,8 @@ async def transcribe_chunk(
                     {
                         "type": "transcript.chunk",
                         "meeting_id": meeting_id,
+                        "id": f"{meeting_id}:{current_user.id}:{chunk_index}",
+                        "user_id": current_user.id,
                         "chunkIndex": chunk_index,
                         "text": text.strip(),
                         "segments": [
@@ -3542,13 +4608,18 @@ async def transcribe_chunk(
                             }
                             for segment in normalized_segments
                         ],
+                        "speaker": normalized_segments[0].get("speaker") if normalized_segments else user_display_name,
                         "language": detected_language,
                         "nlp_metadata": nlp_metadata,
+                        "created_at": datetime.utcnow().isoformat(),
                         "timestamp": datetime.utcnow().isoformat(),
                     },
                 )
 
             return {
+                "id": f"{meeting_id}:{current_user.id}:{chunk_index}" if chunk_index is not None else None,
+                "user_id": current_user.id,
+                "chunkIndex": chunk_index,
                 "text": text,
                 "segments": normalized_segments,
                 "language": detected_language,
@@ -3588,38 +4659,14 @@ def get_transcript_draft(
     meeting = db.query(models.Meeting).filter(models.Meeting.id == meeting_id).first()
     if not meeting:
         raise HTTPException(status_code=404, detail="Meeting not found")
-    auth.require_org_member(db, current_user, meeting.organization_id)
+    require_meeting_room_access(db, current_user, meeting)
     draft = build_transcript_from_drafts(db, meeting_id)
     return {
         "meeting_id": meeting_id,
         "transcript": draft["transcript"],
         "segments": draft["segments"],
         "language": draft["language"],
-        "chunks": [
-            {
-                "id": item.id,
-                "chunkIndex": item.chunk_index,
-                "text": item.text,
-                "segments": [
-                    {
-                        **segment,
-                        "start": float(segment.get("start", segment.get("start_time", 0)) or 0) + (item.start_ms or 0) / 1000,
-                        "end": float(segment.get("end", segment.get("end_time", 0)) or 0) + (item.start_ms or 0) / 1000,
-                    }
-                    for segment in (item.segments or [])
-                ] or [{
-                    "speaker": "Speaker_01",
-                    "start": (item.start_ms or 0) / 1000,
-                    "end": estimate_segment_end((item.start_ms or 0) / 1000, item.text),
-                    "text": item.text,
-                    "language": item.language or "auto",
-                }],
-                "language": item.language,
-                "startMs": item.start_ms,
-                "timestamp": (item.updated_at or item.created_at or datetime.utcnow()).isoformat(),
-            }
-            for item in draft["chunks"]
-        ],
+        "chunks": serialize_transcript_draft_chunks(draft["chunks"]),
     }
 
 
@@ -3669,8 +4716,8 @@ async def finalize_meeting(
     if language not in ("vi", "en", "zh", "ja", "ko"):
         language = "vi"
 
-    # Validate user has access to this meeting's organization
-    auth.require_org_member(db, current_user, meeting.organization_id)
+    # Validate user has meeting room access.
+    require_meeting_room_access(db, current_user, meeting)
     original_meeting_status = meeting.status
 
     draft_payload = build_transcript_from_drafts(db, meeting_id)
@@ -3784,7 +4831,7 @@ async def finalize_meeting(
     try:
         perm_dir = os.path.join(AUDIO_UPLOAD_DIR, meeting_id)
         if os.path.isdir(perm_dir):
-            chunk_files = sorted(glob.glob(os.path.join(perm_dir, "chunk_*")))
+            chunk_files = sorted(glob.glob(os.path.join(perm_dir, "chunk_*")) + glob.glob(os.path.join(perm_dir, "stream_*.wav")))
             if chunk_files:
                 logger.info(f"Concatenating {len(chunk_files)} audio chunks for meeting {meeting_id}")
                 concat_list_path = os.path.join(perm_dir, "concat.txt")
@@ -3870,6 +4917,15 @@ async def finalize_meeting(
     )
 
     raw_response = None
+    await meeting_room_manager.broadcast(
+        meeting_id,
+        {
+            "type": "ai.notes.started",
+            "meeting_id": meeting_id,
+            "summary_status": "PROCESSING",
+            "timestamp": datetime.utcnow().isoformat(),
+        },
+    )
 
     # Try Router LLM first (with built-in model fallback for content-blocked)
     if router.enabled:
@@ -3994,13 +5050,37 @@ async def finalize_meeting(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     db.commit()
+    summary_broadcast_payload = format_summary_payload(summary_db) or {
+        "meeting_summary": summary_payload.meeting_summary,
+        "key_points": summary_payload.key_points,
+        "decisions": summary_payload.decisions,
+        "action_items": [item.model_dump() for item in summary_payload.action_items],
+        "risks": summary_payload.risks,
+        "open_questions": summary_payload.open_questions,
+        "timeline_highlights": summary_payload.timeline_highlights,
+        "speaker_summaries": summary_payload.speaker_summaries,
+        "processing_status": summary_status,
+        "language": language,
+    }
+    ai_event_type = "ai.notes.completed" if summary_status == "COMPLETED" else "ai.notes.failed"
+    await meeting_room_manager.broadcast(
+        meeting_id,
+        {
+            "type": ai_event_type,
+            "meeting_id": meeting_id,
+            "summary_status": summary_status,
+            "summary": summary_broadcast_payload,
+            "error": summary_error_message if summary_status != "COMPLETED" else "",
+            "timestamp": datetime.utcnow().isoformat(),
+        },
+    )
     await meeting_room_manager.broadcast(
         meeting_id,
         {
             "type": "ai.notes",
             "meeting_id": meeting_id,
             "summary_status": summary_status,
-            "summary": summary_payload.model_dump(),
+            "summary": summary_broadcast_payload,
             "timestamp": datetime.utcnow().isoformat(),
         },
     )

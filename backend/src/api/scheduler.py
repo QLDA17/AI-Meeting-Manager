@@ -11,7 +11,7 @@ logger = logging.getLogger("scheduler")
 
 def _get_db():
     """Create a new database session for the scheduler."""
-    from ..database import SessionLocal
+    from .database import SessionLocal
     return SessionLocal()
 
 

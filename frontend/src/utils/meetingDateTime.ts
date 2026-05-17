@@ -12,8 +12,8 @@ export const buildLocalDateTime = (date: string, time: string) => {
 
 export const toMeetingApiDateTime = (date: Date) => date.toISOString();
 
-export const getMeetingStart = (meeting: { scheduled_start?: string; startTime?: string }) =>
-  meeting.scheduled_start || meeting.startTime;
+export const getMeetingStart = (meeting: { actual_start?: string; scheduled_start?: string; startTime?: string }) =>
+  meeting.actual_start || meeting.scheduled_start || meeting.startTime;
 
-export const getMeetingEnd = (meeting: { scheduled_end?: string; endTime?: string }) =>
-  meeting.scheduled_end || meeting.endTime;
+export const getMeetingEnd = (meeting: { actual_end?: string; scheduled_end?: string; endTime?: string }) =>
+  meeting.actual_end || meeting.scheduled_end || meeting.endTime;

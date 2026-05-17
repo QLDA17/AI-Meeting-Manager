@@ -708,6 +708,7 @@ class MeetingDetailResponse(Meeting):
     summary_error_text: Optional[str] = None
     summary_provider: Optional[str] = None
     summary_model_name: Optional[str] = None
+    access_mode: Optional[str] = None
 
 
 class MeetingAnalysisActionItem(BaseSchema):
@@ -730,6 +731,19 @@ class MeetingAnalysisOutput(BaseSchema):
 class MeetingFinalizeResponse(BaseSchema):
     meeting_id: str
     transcript_status: str
+    summary_status: str
+    summary: MeetingAnalysisOutput
+    nlp_metadata: Optional[Dict[str, Any]] = None
+    errors: List[str] = Field(default_factory=list)
+
+
+class TestSTTAnalyzeRequest(BaseSchema):
+    transcript: str
+    segments: List[Dict[str, Any]] = Field(default_factory=list)
+    language: str = "vi"
+
+
+class TestSTTAnalyzeResponse(BaseSchema):
     summary_status: str
     summary: MeetingAnalysisOutput
     nlp_metadata: Optional[Dict[str, Any]] = None

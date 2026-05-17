@@ -12,6 +12,7 @@ interface TranscriptSegment {
 
 interface LiveTranscript {
   id: string;
+  userId?: string;
   chunkIndex: number;
   text: string;
   segments: TranscriptSegment[];
@@ -26,11 +27,19 @@ interface WorkletChunkMessage {
   reason: string;
 }
 
+interface WorkletPCMMessage {
+  type: "pcm";
+  buffer: ArrayBuffer;
+  sampleRate: number;
+}
+
 interface UseAudioRecorderReturn {
   isRecording: boolean;
   liveTranscripts: LiveTranscript[];
   fullTranscript: string;
   allSegments: TranscriptSegment[];
+  interimTranscript: string;
+  sttStatus: "idle" | "connecting" | "streaming" | "fallback" | "error" | "closed";
   startRecording: () => void;
   stopRecording: () => Promise<void>;
   finalize: (meetingId: string, language?: string) => Promise<any>;
@@ -39,10 +48,28 @@ interface UseAudioRecorderReturn {
 }
 
 const MAX_CHUNK_SECONDS = 8;
-const SILENCE_THRESHOLD = 0.008;
-const MIN_SPEECH_SECONDS = 0.3;
+const SILENCE_THRESHOLD = 0.012;
+const MIN_SPEECH_SECONDS = 0.4;
 const PRE_ROLL_MS = 300;
-const HANGOVER_MS = 1500;
+const HANGOVER_MS = 1200;
+
+const transcriptChunkKey = (userId: string | undefined, chunkIndex: number, fallback: string) =>
+  `${userId || fallback}:${chunkIndex}`;
+
+function resolveWebSocketBaseUrl(): string {
+  const configured = import.meta.env.VITE_API_BASE_URL;
+  const baseURL = configured || window.location.origin;
+  return baseURL.replace(/\/+$/, "").replace(/\/api$/i, "").replace(/^http/, "ws");
+}
+
+function getAuthToken(): string {
+  const sessionStr = localStorage.getItem("session");
+  try {
+    return sessionStr ? JSON.parse(sessionStr)?.token || "" : "";
+  } catch {
+    return "";
+  }
+}
 
 function writeString(view: DataView, offset: number, str: string) {
   for (let i = 0; i < str.length; i++) {
@@ -97,6 +124,8 @@ export function useAudioRecorder(
   const [liveTranscripts, setLiveTranscripts] = useState<LiveTranscript[]>([]);
   const [fullTranscript, setFullTranscript] = useState("");
   const [allSegments, setAllSegments] = useState<TranscriptSegment[]>([]);
+  const [interimTranscript, setInterimTranscript] = useState("");
+  const [sttStatus, setSttStatus] = useState<UseAudioRecorderReturn["sttStatus"]>("idle");
   const [error, setError] = useState<string | null>(null);
 
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -108,13 +137,17 @@ export function useAudioRecorder(
   const flushResolverRef = useRef<(() => void) | null>(null);
   const fullTranscriptRef = useRef("");
   const allSegmentsRef = useRef<TranscriptSegment[]>([]);
-  const chunksByIndexRef = useRef<Map<number, LiveTranscript>>(new Map());
-  const segmentsByIndexRef = useRef<Map<number, TranscriptSegment[]>>(new Map());
+  const chunksByIndexRef = useRef<Map<string, LiveTranscript>>(new Map());
+  const segmentsByIndexRef = useRef<Map<string, TranscriptSegment[]>>(new Map());
   const sampleRateRef = useRef(16000);
+  const sttSocketRef = useRef<WebSocket | null>(null);
+  const fallbackModeRef = useRef(false);
+  const intentionalCloseRef = useRef(false);
 
   // Cleanup on unmount
   useEffect(() => {
     return () => {
+      sttSocketRef.current?.close();
       if (audioContextRef.current && audioContextRef.current.state !== "closed") {
         audioContextRef.current.close();
       }
@@ -123,11 +156,9 @@ export function useAudioRecorder(
 
   const rebuildTranscriptState = useCallback(() => {
     const orderedTranscripts = Array.from(chunksByIndexRef.current.values()).sort(
-      (a, b) => a.chunkIndex - b.chunkIndex
+      (a, b) => a.timestamp - b.timestamp || a.chunkIndex - b.chunkIndex
     );
-    const orderedSegments = Array.from(segmentsByIndexRef.current.entries())
-      .sort(([a], [b]) => a - b)
-      .flatMap(([, segments]) => segments);
+    const orderedSegments = orderedTranscripts.flatMap((item) => item.segments);
     const nextFullTranscript = orderedTranscripts.map((item) => item.text).join("\n");
 
     fullTranscriptRef.current = nextFullTranscript;
@@ -136,6 +167,36 @@ export function useAudioRecorder(
     setFullTranscript(nextFullTranscript);
     setAllSegments(orderedSegments);
   }, []);
+
+  const mergeTranscriptChunk = useCallback((rawChunk: any, fallbackSource = "local") => {
+    const chunkIndex = Number(rawChunk.chunkIndex ?? rawChunk.chunk_index ?? chunkCounterRef.current++);
+    const segments = Array.isArray(rawChunk.segments) ? rawChunk.segments : [];
+    const normalizedSegments = segments.map((segment: TranscriptSegment) => ({
+      ...segment,
+      language: segment.language || rawChunk.language || "auto",
+    }));
+    const text = String(rawChunk.text || normalizedSegments.map((segment) => segment.text).filter(Boolean).join(" ")).trim();
+    if (!text) return;
+    const transcript: LiveTranscript = {
+      id: rawChunk.id || `${fallbackSource}_${chunkIndex}_${Date.now()}`,
+      userId: rawChunk.user_id || rawChunk.userId,
+      chunkIndex,
+      text,
+      segments: normalizedSegments.length > 0 ? normalizedSegments : [{
+        start: 0,
+        end: 0,
+        text,
+        speaker: rawChunk.speaker,
+        language: rawChunk.language || "auto",
+      }],
+      timestamp: rawChunk.timestamp ? new Date(rawChunk.timestamp).getTime() : Date.now(),
+    };
+    const key = transcriptChunkKey(transcript.userId, chunkIndex, fallbackSource);
+    chunksByIndexRef.current.set(key, transcript);
+    segmentsByIndexRef.current.set(key, transcript.segments);
+    setInterimTranscript("");
+    rebuildTranscriptState();
+  }, [rebuildTranscriptState]);
 
   const sendChunkToBackend = useCallback(
     async (blob: Blob, chunkIndex: number, startMs: number) => {
@@ -169,17 +230,14 @@ export function useAudioRecorder(
                 end: segment.end + startMs / 1000,
                 language: segment.language || language || "auto",
               }));
-              const transcript: LiveTranscript = {
-                id: `chunk_${chunkIndex}_${Date.now()}`,
+              mergeTranscriptChunk({
+                id: response.data?.id || `chunk_${chunkIndex}_${Date.now()}`,
+                user_id: response.data?.user_id || response.data?.userId,
                 chunkIndex,
                 text: text.trim(),
                 segments: normalizedSegments,
                 timestamp: Date.now(),
-              };
-
-              chunksByIndexRef.current.set(chunkIndex, transcript);
-              segmentsByIndexRef.current.set(chunkIndex, normalizedSegments);
-              rebuildTranscriptState();
+              }, "local");
             }
             break;
           } catch (err: any) {
@@ -201,10 +259,10 @@ export function useAudioRecorder(
         pendingChunksRef.current--;
       }
     },
-    [meetingId, rebuildTranscriptState]
+    [meetingId, mergeTranscriptChunk]
   );
 
-  const startRecording = useCallback(async () => {
+  const startChunkRecording = useCallback(async () => {
     if (!localStream) {
       setError("No audio stream available");
       return;
@@ -219,6 +277,7 @@ export function useAudioRecorder(
     setLiveTranscripts([]);
     setFullTranscript("");
     setAllSegments([]);
+    setInterimTranscript("");
 
     try {
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
@@ -276,14 +335,183 @@ export function useAudioRecorder(
       workletNodeRef.current = workletNode;
 
       setIsRecording(true);
+      setSttStatus("fallback");
       console.log(
-        `AudioWorklet recording started, VAD max chunk ${MAX_CHUNK_SECONDS}s at ${audioContext.sampleRate}Hz`
+        `AudioWorklet fallback recording started, silence-only chunks at ${audioContext.sampleRate}Hz`
       );
     } catch (err: any) {
       console.error("Failed to start AudioWorklet recording:", err);
       setError(`Failed to start recording: ${err.message}`);
+      setSttStatus("error");
     }
   }, [localStream, sendChunkToBackend]);
+
+  const setupStreamingAudio = useCallback(async (ws: WebSocket) => {
+    if (!localStream) {
+      throw new Error("No audio stream available");
+    }
+
+    const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+    const audioContext = new AudioContextClass({ sampleRate: 16000 });
+    sampleRateRef.current = audioContext.sampleRate;
+    if (audioContext.state === "suspended") {
+      await audioContext.resume();
+    }
+    await audioContext.audioWorklet.addModule("/pcm-stream-processor.js");
+
+    ws.send(JSON.stringify({
+      type: "stt.config",
+      sampleRate: sampleRateRef.current,
+      language: "vi",
+    }));
+
+    const source = audioContext.createMediaStreamSource(localStream);
+    const highpass = audioContext.createBiquadFilter();
+    highpass.type = "highpass";
+    highpass.frequency.value = 80;
+    highpass.Q.value = 0.7;
+    const workletNode = new AudioWorkletNode(audioContext, "pcm-stream-processor");
+    workletNode.port.postMessage({ type: "config", frameMs: 200 });
+    workletNode.port.onmessage = (event) => {
+      const data = event.data as WorkletPCMMessage;
+      if (!data || data.type !== "pcm") return;
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(data.buffer);
+      }
+    };
+
+    source.connect(highpass);
+    highpass.connect(workletNode);
+
+    audioContextRef.current = audioContext;
+    sourceNodeRef.current = source;
+    filterNodeRef.current = highpass;
+    workletNodeRef.current = workletNode;
+  }, [localStream]);
+
+  const startRecording = useCallback(async () => {
+    if (!localStream || !meetingId) {
+      setError("No audio stream available");
+      return;
+    }
+
+    setError(null);
+    setSttStatus("connecting");
+    setInterimTranscript("");
+    fallbackModeRef.current = false;
+    intentionalCloseRef.current = false;
+    chunkCounterRef.current = 0;
+    fullTranscriptRef.current = "";
+    allSegmentsRef.current = [];
+    chunksByIndexRef.current.clear();
+    segmentsByIndexRef.current.clear();
+    setLiveTranscripts([]);
+    setFullTranscript("");
+    setAllSegments([]);
+
+    const wsUrl = `${resolveWebSocketBaseUrl()}/api/meetings/${meetingId}/stt-stream?token=${encodeURIComponent(getAuthToken())}`;
+    let ws = new WebSocket(wsUrl);
+    sttSocketRef.current = ws;
+    let resolveStart: (() => void) | null = null;
+    let currentWs = ws;
+
+    const startFallback = async (message?: string) => {
+      if (fallbackModeRef.current) return;
+      fallbackModeRef.current = true;
+      try {
+        currentWs.close();
+      } catch {}
+      setSttStatus("fallback");
+      if (message) setError(message);
+      await startChunkRecording();
+    };
+
+    const bindWsHandlers = (socket: WebSocket) => {
+      socket.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === "stt.status") {
+            setSttStatus(data.status || "streaming");
+            if (data.status === "fallback") {
+              startFallback(data.reason || "Realtime streaming chưa khả dụng, đang dùng fallback silence-only.");
+            } else if (data.status === "error") {
+              const errorMsg = data.error || "Realtime STT lỗi";
+              console.warn("STT stream error from backend:", errorMsg);
+              startFallback(`STT streaming lỗi: ${errorMsg}. Đang dùng fallback.`);
+            }
+          } else if (data.type === "transcript.interim") {
+            setInterimTranscript(String(data.text || ""));
+          } else if (data.type === "transcript.chunk") {
+            mergeTranscriptChunk(data, "stream");
+          }
+        } catch (err) {
+          console.error("Failed to parse STT stream event:", err);
+        }
+      };
+
+      socket.onclose = (event) => {
+        if (intentionalCloseRef.current) return; // stopRecording initiated this close
+        if (!fallbackModeRef.current) {
+          // Unexpected close while recording → auto-fallback
+          console.warn(`WebSocket closed unexpectedly (code=${event.code}), falling back to chunk recording`);
+          startFallback("Kết nối realtime STT bị gián đoạn, chuyển sang fallback.");
+        }
+      };
+    };
+
+    let retriedOnce = false;
+    const handleError = (event: Event) => {
+      console.error("WebSocket error:", event);
+      if (!retriedOnce) {
+        retriedOnce = true;
+        console.log("Retrying WebSocket connection once...");
+        try { currentWs.close(); } catch {}
+        // Actually retry: create a new WebSocket
+        const retryWs = new WebSocket(wsUrl);
+        currentWs = retryWs;
+        sttSocketRef.current = retryWs;
+        bindWsHandlers(retryWs);
+        retryWs.onerror = handleError;
+        retryWs.onopen = async () => {
+          ws = retryWs;
+          window.clearTimeout(timer);
+          try {
+            await setupStreamingAudio(retryWs);
+            setIsRecording(true);
+            setSttStatus("streaming");
+          } catch (err: any) {
+            await startFallback(err.message || "Không khởi tạo được realtime STT.");
+          }
+          resolveStart?.();
+        };
+      } else {
+        startFallback("Không nối được realtime STT, đang dùng fallback silence-only.").finally(() => {
+          resolveStart?.();
+        });
+      }
+    };
+    ws.onerror = handleError;
+    bindWsHandlers(ws);
+
+    let timer: number;
+    await new Promise<void>((resolve) => {
+      resolveStart = resolve;
+      timer = window.setTimeout(() => {
+        startFallback("Realtime STT timeout, đang dùng fallback silence-only.").finally(resolve);
+      }, 3000);
+      ws.onopen = async () => {
+        window.clearTimeout(timer);
+        try {
+          await setupStreamingAudio(ws);
+          setIsRecording(true);
+          setSttStatus("streaming");
+        } catch (err: any) {
+          await startFallback(err.message || "Không khởi tạo được realtime STT.");
+        }
+        resolve();
+      };
+    });
+  }, [isRecording, localStream, meetingId, mergeTranscriptChunk, setupStreamingAudio, startChunkRecording]);
 
   const flushRecording = useCallback(async () => {
     if (!workletNodeRef.current) return;
@@ -304,7 +532,40 @@ export function useAudioRecorder(
   }, []);
 
   const stopRecording = useCallback(async () => {
-    await flushRecording();
+    intentionalCloseRef.current = true;
+
+    if (fallbackModeRef.current) {
+      await flushRecording();
+    } else if (sttSocketRef.current?.readyState === WebSocket.OPEN) {
+      const ws = sttSocketRef.current;
+
+      // Send finalize and wait for backend to confirm all chunks saved
+      ws.send(JSON.stringify({ type: "stt.finalize" }));
+      await new Promise<void>((resolve) => {
+        const timeout = setTimeout(resolve, 3000); // 3s safety timeout
+        const onMsg = (event: MessageEvent) => {
+          try {
+            const data = JSON.parse(event.data);
+            if (data.type === "stt.status" && data.status === "closed") {
+              clearTimeout(timeout);
+              ws.removeEventListener("message", onMsg);
+              resolve();
+            }
+          } catch {}
+        };
+        ws.addEventListener("message", onMsg);
+      });
+
+      // Send close signal
+      try {
+        ws.send(JSON.stringify({ type: "stt.close" }));
+        await new Promise((r) => setTimeout(r, 200));
+      } catch {}
+    }
+
+    // Now safely close WebSocket - onclose handler will see intentionalCloseRef=true
+    try { sttSocketRef.current?.close(); } catch {}
+    sttSocketRef.current = null;
 
     // Disconnect worklet node
     if (workletNodeRef.current) {
@@ -330,6 +591,8 @@ export function useAudioRecorder(
     }
 
     setIsRecording(false);
+    setInterimTranscript("");
+    setSttStatus(fallbackModeRef.current ? "fallback" : "closed");
     console.log("Recording stopped");
   }, [flushRecording]);
 
@@ -387,14 +650,17 @@ export function useAudioRecorder(
           language: segment.language || chunk.language || "auto",
           confidence: segment.confidence ?? segment.confidence_score,
         }));
-        chunksByIndexRef.current.set(chunkIndex, {
+        const userId = chunk.userId || chunk.user_id;
+        const key = transcriptChunkKey(userId, chunkIndex, chunk.id || "draft");
+        chunksByIndexRef.current.set(key, {
           id: chunk.id || `draft_${chunkIndex}`,
+          userId,
           chunkIndex,
           text: chunk.text || "",
           segments: normalizedSegments,
           timestamp: chunk.timestamp ? new Date(chunk.timestamp).getTime() : Date.now(),
         });
-        segmentsByIndexRef.current.set(chunkIndex, normalizedSegments);
+        segmentsByIndexRef.current.set(key, normalizedSegments);
       });
 
       rebuildTranscriptState();
@@ -408,6 +674,8 @@ export function useAudioRecorder(
     liveTranscripts,
     fullTranscript,
     allSegments,
+    interimTranscript,
+    sttStatus,
     startRecording,
     stopRecording,
     finalize,

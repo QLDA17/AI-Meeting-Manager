@@ -139,6 +139,8 @@ export interface Meeting {
   group_id?: string;
   scheduled_start?: string;
   scheduled_end?: string;
+  actual_start?: string;
+  actual_end?: string;
   title: string;
   description?: string;
   startTime: string;
@@ -160,6 +162,7 @@ export interface Meeting {
   groupName?: string;
   organizationName?: string;
   actionItemsCount?: number;
+  accessMode?: 'org_member' | 'meeting_guest' | 'none';
 }
 
 export interface MeetingTranscript {

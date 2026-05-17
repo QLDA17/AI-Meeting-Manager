@@ -2,11 +2,11 @@ class AudioProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
     this.config = {
-      silenceThreshold: 0.008,
-      minSpeechSeconds: 0.3,
+      silenceThreshold: 0.012,
+      minSpeechSeconds: 0.4,
       maxChunkSeconds: 8,
       preRollMs: 300,
-      hangoverMs: 1500,
+      hangoverMs: 1200,
     };
     this.overlapMs = 300;
 
@@ -147,7 +147,7 @@ class AudioProcessor extends AudioWorkletProcessor {
       this.startSpeech(frame);
     } else if (this.isSpeechActive) {
       this.appendSpeech(frame, hasSpeech);
-      if (this.chunk.length >= this.maxChunkSize) {
+      if (this.maxChunkSize > 0 && this.chunk.length >= this.maxChunkSize) {
         this.flush("max-duration");
       } else if (!hasSpeech && this.silentSamples >= this.hangoverSize) {
         this.flush("silence");

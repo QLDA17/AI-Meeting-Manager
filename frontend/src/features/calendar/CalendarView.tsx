@@ -30,20 +30,21 @@ const toCalendarEvent = (meeting: Meeting) => {
     ? new Date(endStr)
     : new Date(startDate.getTime() + 3600000);
   const now = Date.now();
+  const terminalStatus = ['completed', 'processing', 'queued', 'failed', 'canceled'].includes(meeting.status);
   const isPast = endDate.getTime() < now;
-  const isLive = startDate.getTime() <= now && endDate.getTime() >= now;
+  const isLive = meeting.status === 'live' || (!terminalStatus && startDate.getTime() <= now && endDate.getTime() >= now);
 
   let bgColor = '#3b82f6';
   if (meeting.status === 'canceled') {
     bgColor = '#64748b';
-  } else if (meeting.status === 'live' || isLive) {
-    bgColor = '#ef4444';
   } else if (meeting.status === 'processing' || meeting.status === 'queued') {
     bgColor = '#f59e0b';
   } else if (meeting.status === 'failed') {
     bgColor = '#e11d48';
   } else if (meeting.status === 'completed' || isPast) {
     bgColor = '#10b981';
+  } else if (isLive) {
+    bgColor = '#ef4444';
   }
 
   return {
@@ -52,14 +53,14 @@ const toCalendarEvent = (meeting: Meeting) => {
     start: startDate.toISOString(),
     end: endDate.toISOString(),
     editable: isEditableMeeting(meeting),
-    className: isPast ? 'fc-event-past' : isLive ? 'fc-event-live' : 'fc-event-upcoming',
+    className: meeting.status === 'completed' || isPast ? 'fc-event-past' : isLive ? 'fc-event-live' : 'fc-event-upcoming',
     backgroundColor: bgColor,
     borderColor: bgColor,
     extendedProps: {
       status: meeting.status,
       groupName: meeting.groupName,
       bgColor,
-      isPast,
+      isPast: meeting.status === 'completed' || isPast,
       isLive,
     },
   };
@@ -94,6 +95,11 @@ const CalendarView: React.FC = () => {
   // Load meetings on mount and when org changes
   React.useEffect(() => {
     refreshMeetings();
+  }, [refreshMeetings]);
+
+  React.useEffect(() => {
+    window.addEventListener('focus', refreshMeetings);
+    return () => window.removeEventListener('focus', refreshMeetings);
   }, [refreshMeetings]);
 
   // Sync FullCalendar instance with viewType from store

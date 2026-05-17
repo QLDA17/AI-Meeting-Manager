@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback, useRef } from "react";
 
 interface TranscriptChunk {
   id: string;
+  userId?: string;
+  chunkIndex?: number;
   speaker: string;
   text: string;
   timestamp: number;
@@ -20,6 +22,12 @@ interface UseWebSocketReturn {
   onReconnect: (callback: () => void) => void;
 }
 
+function resolveWebSocketBaseUrl(): string {
+  const configured = import.meta.env.VITE_API_BASE_URL;
+  const baseURL = configured || window.location.origin;
+  return baseURL.replace(/\/+$/, "").replace(/\/api$/i, "").replace(/^http/, "ws");
+}
+
 export function useWebSocket(): UseWebSocketReturn {
   const [transcript, setTranscript] = useState<TranscriptChunk[]>([]);
   const [lastEvent, setLastEvent] = useState<any | null>(null);
@@ -29,6 +37,7 @@ export function useWebSocket(): UseWebSocketReturn {
   const connectRef = useRef<(meetingId: string) => void>(() => {});
   const meetingIdRef = useRef<string | null>(null);
   const retryCountRef = useRef(0);
+  const connectionSeqRef = useRef(0);
   const onReconnectRef = useRef<(() => void) | null>(null);
 
   const MAX_RETRIES = 10;
@@ -36,16 +45,32 @@ export function useWebSocket(): UseWebSocketReturn {
   const MAX_DELAY = 15000;
 
   const connect = useCallback((meetingId: string) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.close();
+    const connectionSeq = connectionSeqRef.current + 1;
+    connectionSeqRef.current = connectionSeq;
+    const isCurrentConnection = () => (
+      connectionSeqRef.current === connectionSeq && meetingIdRef.current === meetingId
+    );
+
+    if (reconnectTimerRef.current) {
+      window.clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
     }
 
+    if (
+      wsRef.current &&
+      (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)
+    ) {
+      wsRef.current.close(1000, "Replaced by newer connection");
+    }
+
+    const isNewMeeting = meetingIdRef.current !== meetingId;
     meetingIdRef.current = meetingId;
     setStatus("connecting");
-    setTranscript([]);
+    if (isNewMeeting) {
+      setTranscript([]);
+    }
 
-    const baseURL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
-    const wsUrl = baseURL.replace(/\/+$/, "").replace(/\/api$/i, "").replace(/^http/, "ws");
+    const wsUrl = resolveWebSocketBaseUrl();
     const sessionStr = localStorage.getItem("session");
     let token = "";
     try {
@@ -56,6 +81,7 @@ export function useWebSocket(): UseWebSocketReturn {
     const ws = new WebSocket(`${wsUrl}/api/meetings/${meetingId}/stream?token=${encodeURIComponent(token)}`);
 
     ws.onopen = () => {
+      if (!isCurrentConnection()) return;
       const wasReconnect = retryCountRef.current > 0;
       retryCountRef.current = 0;
       setStatus("streaming");
@@ -65,23 +91,28 @@ export function useWebSocket(): UseWebSocketReturn {
     };
 
     ws.onmessage = (event) => {
+      if (!isCurrentConnection()) return;
       try {
         const data = JSON.parse(event.data);
         setLastEvent(data);
 
         if (data.type === "transcript.chunk" || data.type === "transcript_chunk") {
           const text = data.text || data.segments?.map((segment: any) => segment.text).filter(Boolean).join(" ") || "";
-          setTranscript((prev) => [
-            ...prev,
-            {
-              id: data.id || `${Date.now()}-${Math.random()}`,
+          const chunk = {
+              id: data.id || `${data.user_id || data.userId || "unknown"}-${data.chunkIndex ?? data.chunk_index ?? Date.now()}`,
+              userId: data.user_id || data.userId,
+              chunkIndex: data.chunkIndex ?? data.chunk_index,
               speaker: data.speaker || data.segments?.[0]?.speaker_display_name || data.segments?.[0]?.speaker || "Speaker_01",
               text,
               segments: data.segments || [],
               timestamp: data.timestamp ? new Date(data.timestamp).getTime() : Date.now(),
               isNew: true,
-            },
-          ]);
+            };
+          const key = `${chunk.userId || chunk.speaker}:${chunk.chunkIndex ?? chunk.id}`;
+          setTranscript((prev) => {
+            const next = prev.filter((item) => `${item.userId || item.speaker}:${item.chunkIndex ?? item.id}` !== key);
+            return [...next, chunk].sort((a, b) => a.timestamp - b.timestamp);
+          });
         } else if (data.type === "status_update") {
           setStatus(data.status);
         }
@@ -90,15 +121,30 @@ export function useWebSocket(): UseWebSocketReturn {
       }
     };
 
-    ws.onerror = () => {
-      setStatus("error");
+    ws.onerror = (event) => {
+      if (!isCurrentConnection()) return;
+      console.error("Meeting WebSocket error", { meetingId, wsUrl, event });
     };
 
-    ws.onclose = () => {
-      setStatus((prev) => (prev === "error" ? "error" : "done"));
-      if (meetingIdRef.current === meetingId && retryCountRef.current < MAX_RETRIES) {
+    ws.onclose = (event) => {
+      if (!isCurrentConnection()) return;
+      if (event.code !== 1000) {
+        console.warn("Meeting WebSocket closed", {
+          meetingId,
+          code: event.code,
+          reason: event.reason,
+          wasClean: event.wasClean,
+          wsUrl,
+        });
+      }
+      if (event.code === 1000) {
+        setStatus((prev) => (prev === "idle" ? "idle" : "done"));
+        return;
+      }
+      if (retryCountRef.current < MAX_RETRIES) {
         const delay = Math.min(BASE_DELAY * Math.pow(2, retryCountRef.current), MAX_DELAY);
         retryCountRef.current++;
+        setStatus("connecting");
         reconnectTimerRef.current = window.setTimeout(() => connectRef.current(meetingId), delay);
       } else if (retryCountRef.current >= MAX_RETRIES) {
         setStatus("error");
@@ -121,6 +167,7 @@ export function useWebSocket(): UseWebSocketReturn {
   }, []);
 
   const disconnect = useCallback(() => {
+    connectionSeqRef.current += 1;
     if (reconnectTimerRef.current) {
       window.clearTimeout(reconnectTimerRef.current);
       reconnectTimerRef.current = null;
@@ -132,7 +179,6 @@ export function useWebSocket(): UseWebSocketReturn {
       wsRef.current = null;
     }
     setStatus("idle");
-    setTranscript([]);
   }, []);
 
   const onReconnect = useCallback((callback: () => void) => {
@@ -141,6 +187,7 @@ export function useWebSocket(): UseWebSocketReturn {
 
   useEffect(() => {
     return () => {
+      connectionSeqRef.current += 1;
       if (reconnectTimerRef.current) {
         window.clearTimeout(reconnectTimerRef.current);
       }

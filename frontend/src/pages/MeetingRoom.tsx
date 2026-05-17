@@ -54,6 +54,53 @@ interface Participant {
 
 type SidePanel = "chat" | "participants" | "ai-notes" | null;
 
+interface RoomTranscriptChunk {
+  id: string;
+  userId?: string;
+  chunkIndex: number;
+  speaker?: string;
+  text: string;
+  segments: any[];
+  timestamp: number;
+  source?: string;
+}
+
+const normalizeRoomTranscriptChunk = (
+  chunk: any,
+  fallbackIndex: number,
+  source: string,
+): RoomTranscriptChunk => {
+  const chunkIndex = Number(chunk?.chunkIndex ?? chunk?.chunk_index ?? fallbackIndex);
+  const userId = chunk?.userId ?? chunk?.user_id;
+  const timestamp = chunk?.timestamp ? new Date(chunk.timestamp).getTime() : Date.now();
+  const segments = Array.isArray(chunk?.segments) ? chunk.segments : [];
+  const text = chunk?.text || segments.map((segment: any) => segment.text).filter(Boolean).join(" ");
+  return {
+    id: chunk?.id || `${source}:${userId || chunk?.speaker || "unknown"}:${chunkIndex}`,
+    userId,
+    chunkIndex,
+    speaker: chunk?.speaker || segments[0]?.speaker_display_name || segments[0]?.speaker,
+    text,
+    segments,
+    timestamp,
+    source,
+  };
+};
+
+const aiNotesFromMeeting = (meeting: MeetingDetail | null) => {
+  if (!meeting || (!meeting.meetingSummaryText && !meeting.keyPointsText?.length)) return null;
+  return {
+    meeting_summary: meeting.meetingSummaryText || "",
+    key_points: meeting.keyPointsText || [],
+    decisions: meeting.decisionsText || [],
+    risks: meeting.risksText || [],
+    open_questions: meeting.openQuestionsText || [],
+    timeline_highlights: meeting.timelineHighlightsText || [],
+    speaker_summaries: meeting.speakerSummariesText || [],
+    processing_status: meeting.summaryStatus,
+  };
+};
+
 // ─── Mock Data ───────────────────────────────────────────────────────────────
 
 const WAVEFORM_HEIGHTS = [0, 1, 2, 3, 4, 5, 4, 3, 2, 1, 0].map(() => Math.random() * 40 + 10);
@@ -184,10 +231,11 @@ const MeetingRoomInner: React.FC = () => {
   
   const meeting = useMemo(() => {
     if (!code) return null;
-    return (meetings as any[]).find(m => m.code === code || m.id === code) || remoteMeeting;
+    return remoteMeeting || (meetings as any[]).find(m => m.code === code || m.id === code) || null;
   }, [code, meetings, remoteMeeting]);
 
   const isOrganizer = meeting?.createdBy === user?.id;
+  const isMeetingGuest = meeting?.accessMode === "meeting_guest";
 
   const [isRecording] = useState(roomState.enableRecord !== false);
   const [micOn, setMicOn] = useState(roomState.enableMic !== false);
@@ -198,6 +246,10 @@ const MeetingRoomInner: React.FC = () => {
   const [chatMessages, setChatMessages] = useState<MeetingMessage[]>([]);
   const [chatInput, setChatInput] = useState("");
   const [unreadChatCount, setUnreadChatCount] = useState(0);
+  const [snapshotTranscripts, setSnapshotTranscripts] = useState<RoomTranscriptChunk[]>([]);
+  const [remoteInterims, setRemoteInterims] = useState<Record<string, any>>({});
+  const [aiNotes, setAiNotes] = useState<any | null>(null);
+  const [aiNotesStatus, setAiNotesStatus] = useState<string | null>(remoteMeeting?.summaryStatus || null);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [mainView, setMainView] = useState<"camera" | "screen">("camera");
   
@@ -216,6 +268,8 @@ const MeetingRoomInner: React.FC = () => {
     liveTranscripts,
     fullTranscript,
     allSegments,
+    interimTranscript,
+    sttStatus,
     startRecording,
     stopRecording,
     finalize,
@@ -223,9 +277,25 @@ const MeetingRoomInner: React.FC = () => {
     error: recorderError,
   } = useAudioRecorder(localStream, meetingId);
 
+  const selfParticipant = useMemo<Participant>(() => ({
+    id: user?.id || "me",
+    name: user?.displayName || user?.email?.split('@')[0] || "Bạn",
+    role: isOrganizer ? "organizer" : "attendee",
+    stream: localStream,
+    micOn,
+    cameraOn,
+    handRaised: false,
+  }), [cameraOn, isOrganizer, localStream, micOn, user?.displayName, user?.email, user?.id]);
+
   const spotlightParticipant = useMemo(() =>
-    participants.find(p => p.id === spotlightId) || participants[0]
-  , [participants, spotlightId]);
+    participants.find(p => p.id === spotlightId)
+      || (spotlightId === "me" ? selfParticipant : undefined)
+      || participants[0]
+      || selfParticipant
+  , [participants, selfParticipant, spotlightId]);
+
+  const spotlightName = spotlightParticipant.name || "Người tham gia";
+  const spotlightInitial = (spotlightName.trim()[0] || "?").toUpperCase();
 
   const galleryParticipants = useMemo(() => 
     participants.filter(p => p.id !== spotlightId)
@@ -234,14 +304,10 @@ const MeetingRoomInner: React.FC = () => {
   useEffect(() => {
     if (!code) return;
     const localMeeting = (meetings as any[]).find(m => m.code === code || m.id === code);
-    if (localMeeting) {
-      setIsMeetingLoading(false);
-      return;
-    }
-
     let cancelled = false;
-    setIsMeetingLoading(true);
+    setIsMeetingLoading(!localMeeting);
     setMeetingLoadError(null);
+    setRemoteMeeting(null);
     const looksLikeUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(code);
     api.get(looksLikeUuid ? `/api/meetings/${code}` : `/api/meetings/by-code/${code}`)
       .then((response) => {
@@ -261,9 +327,21 @@ const MeetingRoomInner: React.FC = () => {
 
   useEffect(() => {
     if (meetingId) {
+      setSnapshotTranscripts([]);
       hydrateDraft(meetingId);
     }
   }, [hydrateDraft, meetingId]);
+
+  useEffect(() => {
+    if (!remoteMeeting) return;
+    const remoteAiNotes = aiNotesFromMeeting(remoteMeeting);
+    if (remoteAiNotes) {
+      setAiNotes(remoteAiNotes);
+      setAiNotesStatus(remoteMeeting.summaryStatus || "COMPLETED");
+    } else if (remoteMeeting.summaryStatus) {
+      setAiNotesStatus(remoteMeeting.summaryStatus);
+    }
+  }, [remoteMeeting]);
 
   useEffect(() => {
     if (!meetingId) return;
@@ -298,7 +376,57 @@ const MeetingRoomInner: React.FC = () => {
 
   useEffect(() => {
     if (!wsEvent) return;
-    if (wsEvent.type === "chat.message" && wsEvent.message) {
+    if (wsEvent.type === "room.snapshot") {
+      if (wsEvent.snapshot_warning) {
+        console.warn("Meeting room snapshot warning", wsEvent.snapshot_warning);
+      }
+      if (Array.isArray(wsEvent.messages)) {
+        setChatMessages(wsEvent.messages.map(normalizeMeetingMessage));
+      }
+      const participantRows = Array.isArray(wsEvent.participants) ? wsEvent.participants : [];
+      const onlineRows = Array.isArray(wsEvent.online_participants) ? wsEvent.online_participants : [];
+      const byId = new Map<string, Participant>();
+      [...participantRows, ...onlineRows].forEach((p: any) => {
+        const id = p.user_id || p.id || p.participant_id;
+        if (!id || id === user?.id) return;
+        const existing = byId.get(id);
+        byId.set(id, {
+          id,
+          name: p.displayName || p.name || p.email || existing?.name || "Thành viên",
+          role: (p.role || "attendee").toString().toLowerCase().includes("host") ? "organizer" : "attendee",
+          micOn: existing?.micOn ?? true,
+          cameraOn: existing?.cameraOn ?? true,
+          handRaised: existing?.handRaised ?? false,
+        });
+      });
+      setParticipants((prev) => {
+        const local = prev.find(p => p.id === user?.id || p.id === "me") || selfParticipant;
+        return [local, ...Array.from(byId.values())];
+      });
+      const transcriptPayload = wsEvent.transcript || {};
+      const snapshotChunks = Array.isArray(transcriptPayload.chunks)
+        ? transcriptPayload.chunks.map((chunk: any, index: number) => normalizeRoomTranscriptChunk(chunk, index, "snapshot"))
+        : [];
+      if (snapshotChunks.length) {
+        setSnapshotTranscripts(snapshotChunks);
+      } else if (transcriptPayload.transcript) {
+        setSnapshotTranscripts([normalizeRoomTranscriptChunk({
+          id: "snapshot-transcript",
+          chunkIndex: -1,
+          text: transcriptPayload.transcript,
+          segments: transcriptPayload.segments || [],
+          timestamp: wsEvent.timestamp,
+        }, -1, "snapshot")]);
+      } else {
+        setSnapshotTranscripts([]);
+      }
+      if (wsEvent.ai_notes) {
+        setAiNotes(wsEvent.ai_notes);
+        setAiNotesStatus(wsEvent.ai_notes.processing_status || wsEvent.summary_status || null);
+      } else {
+        setAiNotesStatus(wsEvent.summary_status || null);
+      }
+    } else if (wsEvent.type === "chat.message" && wsEvent.message) {
       const message = normalizeMeetingMessage(wsEvent.message);
       setChatMessages((current) =>
         current.some((item) => item.id === message.id) ? current : [...current, message],
@@ -306,10 +434,36 @@ const MeetingRoomInner: React.FC = () => {
       if (sidePanel !== 'chat') {
         setUnreadChatCount((prev) => prev + 1);
       }
-    } else if (wsEvent.type === "ai.notes" && wsEvent.summary_status === "COMPLETED") {
+    } else if (wsEvent.type === "ai.notes.started") {
+      setAiNotesStatus("PROCESSING");
+      showToast.info("AI Notes đang được tạo...");
+    } else if ((wsEvent.type === "ai.notes.completed" || wsEvent.type === "ai.notes") && wsEvent.summary_status === "COMPLETED") {
+      setAiNotes(wsEvent.summary || null);
+      setAiNotesStatus("COMPLETED");
       showToast.success("AI Notes đã sẵn sàng");
+    } else if (wsEvent.type === "ai.notes.failed") {
+      setAiNotes(wsEvent.summary || null);
+      setAiNotesStatus("FAILED");
+      showToast.error("AI Notes tạo thất bại");
     } else if (wsEvent.type === "meeting.status" && wsEvent.status) {
       showToast.info(`Trạng thái cuộc họp: ${wsEvent.status}`);
+    } else if (wsEvent.type === "transcript.interim" && wsEvent.text) {
+      const key = wsEvent.user_id || wsEvent.speaker || "remote";
+      if (wsEvent.user_id === user?.id) return;
+      setRemoteInterims((current) => ({
+        ...current,
+        [key]: {
+          text: wsEvent.text,
+          speaker: wsEvent.speaker || "Speaker",
+          timestamp: Date.now(),
+        },
+      }));
+    } else if (wsEvent.type === "transcript.chunk" && wsEvent.user_id) {
+      setRemoteInterims((current) => {
+        const next = { ...current };
+        delete next[wsEvent.user_id];
+        return next;
+      });
     } else if (wsEvent.type === "participant.list" && wsEvent.participants) {
       const remoteParticipants: Participant[] = wsEvent.participants
         .filter((p: any) => p.id !== user?.id)
@@ -352,7 +506,7 @@ const MeetingRoomInner: React.FC = () => {
           : p
       ));
     }
-  }, [user?.id, wsEvent, sidePanel]);
+  }, [selfParticipant, user?.id, wsEvent, sidePanel]);
 
   // Transition meeting status: upcoming → live when entering room (organizer only)
   const statusUpdatedRef = useRef(false);
@@ -372,7 +526,7 @@ const MeetingRoomInner: React.FC = () => {
   useEffect(() => {
     if (!meetingId || !isOrganizer) return;
     const handleBeforeUnload = () => {
-      const baseURL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+      const baseURL = import.meta.env.VITE_API_BASE_URL || window.location.origin;
       const sessionStr = localStorage.getItem("session");
       let token = "";
       try { token = sessionStr ? JSON.parse(sessionStr)?.token || "" : ""; } catch {}
@@ -452,7 +606,8 @@ const MeetingRoomInner: React.FC = () => {
         localStream.getVideoTracks()[0].enabled = true;
       }
     } else {
-      // Completely STOP the track to turn off the hardware light
+      // Completely STOP the track t
+      // o turn off the hardware light
       if (localStream) {
         localStream.getVideoTracks().forEach(track => {
           track.enabled = false;
@@ -532,8 +687,11 @@ const MeetingRoomInner: React.FC = () => {
             if (result?.transcript_status === "EMPTY") {
               showToast.info("Không có giọng nói rõ để lưu transcript.");
             } else if (result?.summary_status === "FAILED") {
+              setAiNotesStatus("FAILED");
               showToast.error("Đã lưu transcript, nhưng AI Notes chưa tạo được.");
             } else {
+              setAiNotes(result?.summary || null);
+              setAiNotesStatus(result?.summary_status || "COMPLETED");
               showToast.success("Đã lưu transcript và AI Notes thành công!");
             }
           } catch (err: any) {
@@ -569,15 +727,49 @@ const MeetingRoomInner: React.FC = () => {
     }
   };
 
-  const displayTranscripts = liveTranscripts.length > 0
-    ? liveTranscripts
-    : wsTranscripts.map((item, index) => ({
-        id: item.id,
-        chunkIndex: index,
-        text: item.text,
-        segments: item.segments || [],
-        timestamp: item.timestamp,
-      }));
+  const displayTranscripts = useMemo(() => {
+    const merged = new Map<string, any>();
+    const add = (item: any, fallbackIndex: number, source: string) => {
+      const speakerKey = item.userId || item.speaker || source;
+      const chunkKey = item.chunkIndex ?? fallbackIndex;
+      const key = `${speakerKey}:${chunkKey}`;
+      const normalized = normalizeRoomTranscriptChunk(item, fallbackIndex, source);
+      merged.set(key, {
+        id: normalized.id || key,
+        userId: normalized.userId,
+        chunkIndex: normalized.chunkIndex,
+        text: normalized.text,
+        segments: normalized.segments,
+        timestamp: normalized.timestamp,
+      });
+    };
+    snapshotTranscripts.forEach((item, index) => add(item, index, "snapshot"));
+    wsTranscripts.forEach((item, index) => add(item, index, "ws"));
+    liveTranscripts.forEach((item, index) => add(item, index, "local"));
+    return Array.from(merged.values()).sort((a, b) => a.timestamp - b.timestamp);
+  }, [liveTranscripts, snapshotTranscripts, wsTranscripts]);
+
+  const displayInterims = useMemo(() => {
+    const rows = Object.entries(remoteInterims)
+      .filter(([, value]) => value?.text && Date.now() - Number(value.timestamp || 0) < 15000)
+      .map(([id, value]) => ({ id, ...value }));
+    if (interimTranscript.trim()) {
+      rows.push({
+        id: user?.id || "me",
+        speaker: "Bạn",
+        text: interimTranscript.trim(),
+        timestamp: Date.now(),
+      });
+    }
+    return rows;
+  }, [interimTranscript, remoteInterims, user?.id]);
+
+  const aiNotesSummary = aiNotes?.meeting_summary || aiNotes?.meetingSummary || remoteMeeting?.meetingSummaryText || "";
+  const aiNotesKeyPoints = Array.isArray(aiNotes?.key_points)
+    ? aiNotes.key_points
+    : Array.isArray(aiNotes?.keyPoints)
+      ? aiNotes.keyPoints
+      : remoteMeeting?.keyPointsText || [];
 
   if (isMeetingLoading) {
     return (
@@ -666,6 +858,11 @@ const MeetingRoomInner: React.FC = () => {
               <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 text-[9px] font-black uppercase tracking-tighter">
                 <Users size={10} /> {participants.length} Người tham gia
               </div>
+              {isMeetingGuest && (
+                <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-300 border border-amber-500/20 text-[9px] font-black uppercase tracking-tighter">
+                  <ShieldCheck size={10} /> Guest participant
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -917,9 +1114,9 @@ const MeetingRoomInner: React.FC = () => {
               ) : (
                <div className="h-full w-full flex flex-col items-center justify-center bg-gradient-to-br from-slate-900 via-slate-800 to-indigo-950">
                   <div className="w-32 h-32 rounded-full bg-indigo-500/10 border-4 border-indigo-500/20 flex items-center justify-center mb-6 shadow-2xl">
-                     <span className="text-5xl font-black text-indigo-400">{spotlightParticipant.name[0]}</span>
+                     <span className="text-5xl font-black text-indigo-400">{spotlightInitial}</span>
                   </div>
-                  <h2 className="text-xl font-black tracking-tight text-white">{spotlightParticipant.name}</h2>
+                  <h2 className="text-xl font-black tracking-tight text-white">{spotlightName}</h2>
                   <p className="text-sm font-bold text-slate-500 mt-2">Đang là diễn giả chính</p>
                   
                   <div className="mt-8 flex items-end gap-1.5 h-12">
@@ -937,7 +1134,7 @@ const MeetingRoomInner: React.FC = () => {
 
              <div className="absolute top-6 left-6 flex items-center gap-3">
                 <div className="px-4 py-2 rounded-2xl bg-black/40 backdrop-blur-xl border border-white/10 flex items-center gap-2">
-                   <span className="text-xs font-black text-white">{spotlightParticipant.name}</span>
+                   <span className="text-xs font-black text-white">{spotlightName}</span>
                    {spotlightParticipant.role === 'organizer' && <span className="px-1.5 py-0.5 rounded-md bg-indigo-500 text-[8px] font-black uppercase">Host</span>}
                 </div>
              </div>
@@ -1039,6 +1236,36 @@ const MeetingRoomInner: React.FC = () => {
                         </div>
                       </div>
 
+                      {(aiNotesStatus || aiNotesSummary) && (
+                        <div className="rounded-2xl border border-emerald-500/15 bg-emerald-500/5 p-4">
+                          <div className="mb-3 flex items-center justify-between gap-3">
+                            <div className="flex items-center gap-2 text-emerald-400">
+                              <Sparkles size={15} />
+                              <span className="text-xs font-black uppercase tracking-widest">AI Notes chung</span>
+                            </div>
+                            <span className="rounded-full bg-slate-900 px-2 py-0.5 text-[10px] font-black uppercase text-slate-400">
+                              {aiNotesStatus || "READY"}
+                            </span>
+                          </div>
+                          {aiNotesStatus === "PROCESSING" && (
+                            <p className="text-sm text-slate-400">Đang tạo AI Notes, mọi người trong phòng sẽ thấy khi hoàn tất.</p>
+                          )}
+                          {aiNotesSummary && (
+                            <p className="text-sm leading-relaxed text-slate-300">{aiNotesSummary}</p>
+                          )}
+                          {aiNotesKeyPoints.length > 0 && (
+                            <ul className="mt-3 space-y-1 text-sm text-slate-400">
+                              {aiNotesKeyPoints.slice(0, 5).map((point: any, index: number) => (
+                                <li key={`${index}-${String(point)}`} className="flex gap-2">
+                                  <span className="text-emerald-400">•</span>
+                                  <span>{String(point)}</span>
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+                      )}
+
                       {/* Live Transcript Sections */}
                       <div className="space-y-4">
                          <div className="flex items-center gap-2 text-indigo-400">
@@ -1109,10 +1336,14 @@ const MeetingRoomInner: React.FC = () => {
                              try {
                                const result = await finalize(meetingId, "vi");
                                if (result?.summary_status === "COMPLETED") {
+                                 setAiNotes(result.summary || null);
+                                 setAiNotesStatus("COMPLETED");
                                  showToast.success("Đã tạo AI Notes thành công!");
                                } else if (result?.summary_status === "FAILED") {
+                                 setAiNotesStatus("FAILED");
                                  showToast.error("Tạo AI Notes thất bại. Thử lại sau.");
                                } else {
+                                 setAiNotesStatus(result?.summary_status || null);
                                  showToast.info("Đã lưu transcript.");
                                }
                              } catch {

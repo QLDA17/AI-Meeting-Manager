@@ -165,6 +165,8 @@ export const normalizeMeeting = (meeting: any): Meeting => ({
   description: meeting.description ?? undefined,
   scheduled_start: ensureUtc(meeting.scheduled_start),
   scheduled_end: ensureUtc(meeting.scheduled_end),
+  actual_start: ensureUtc(meeting.actual_start ?? meeting.actualStart),
+  actual_end: ensureUtc(meeting.actual_end ?? meeting.actualEnd),
   startTime: ensureUtc(meeting.startTime) || ensureUtc(meeting.scheduled_start) || asIsoString(meeting.created_at),
   endTime: ensureUtc(meeting.endTime) || ensureUtc(meeting.scheduled_end) || asIsoString(meeting.created_at),
   duration: asNumber(meeting.duration),
@@ -210,6 +212,7 @@ export const normalizeMeeting = (meeting: any): Meeting => ({
   groupName: meeting.groupName ?? meeting.group_name ?? meeting.group?.name ?? undefined,
   organizationName: meeting.organizationName ?? meeting.organization_name ?? meeting.organization?.name ?? undefined,
   actionItemsCount: meeting.actionItemsCount ?? meeting.action_items_count ?? 0,
+  accessMode: meeting.accessMode ?? meeting.access_mode ?? undefined,
 });
 
 export const normalizeMeetingDetail = (meeting: any): MeetingDetail => ({
