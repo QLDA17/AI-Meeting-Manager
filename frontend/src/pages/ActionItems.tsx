@@ -108,6 +108,13 @@ const priorityClass = (priority: ActionItem['priority']) => {
   }
 };
 
+const isGeneratedMetaDescription = (item: ActionItem) =>
+  Boolean(
+    item.summary_id &&
+      item.description &&
+      /^(?:Phụ trách:.*|Chưa phân công)(?:\s*\|\s*(?:Hạn:.*|Chưa đặt hạn))?$/i.test(item.description.trim()),
+  );
+
 const toDraft = (item: ActionItem): ActionEditDraft => ({
   title: item.title,
   assignedEmails: item.assignees.map((assignee) => assignee.email).filter(Boolean),
@@ -171,6 +178,7 @@ const TaskCard: React.FC<TaskCardProps> = ({
   const selfStatus = selfAssignee?.status || 'PENDING';
   const canToggleSelfStatus = Boolean(selfAssignee);
   const selfStatusLabel = selfAssignee ? statusLabels[selfStatus] : 'Không được giao';
+  const description = isGeneratedMetaDescription(item) ? '' : item.description?.trim() || '';
 
   const handleToggleStatus = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -210,8 +218,8 @@ const TaskCard: React.FC<TaskCardProps> = ({
               <h4 className={`text-sm font-bold text-gray-900 dark:text-white ${item.status === 'COMPLETED' ? 'line-through text-gray-400 dark:text-slate-500 font-semibold' : ''}`}>
                 {item.title}
               </h4>
-              {item.description && (
-                <p className="text-xs text-gray-500 dark:text-slate-400 truncate mt-0.5">{item.description}</p>
+              {description && (
+                <p className="text-xs text-gray-500 dark:text-slate-400 truncate mt-0.5">{description}</p>
               )}
               <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[10px] font-bold">
                 <span className="inline-flex items-center gap-1 rounded-md border border-blue-100 bg-blue-50 px-1.5 py-0.5 text-blue-700 dark:border-blue-900/30 dark:bg-blue-950/20 dark:text-blue-300">

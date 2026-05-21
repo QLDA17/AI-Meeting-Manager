@@ -2,7 +2,18 @@ from datetime import datetime
 from sqlalchemy.orm import Session, joinedload
 from typing import List, Optional
 import uuid
+import re
 from .. import models
+
+
+AI_GENERATED_META_DESCRIPTION_RE = re.compile(
+    r"^\s*(?:Phụ trách:.*|Chưa phân công)(?:\s*\|\s*(?:Hạn:.*|Chưa đặt hạn))?\s*$",
+    re.IGNORECASE,
+)
+
+
+def is_ai_generated_meta_description(value: Optional[str]) -> bool:
+    return bool(value and AI_GENERATED_META_DESCRIPTION_RE.match(value.strip()))
 
 
 # ==================== Transcript ====================
@@ -289,12 +300,15 @@ def _normalize_legacy_assignees(action_data: dict) -> List[dict]:
 def create_action_item(db: Session, action_data: dict, created_by: str) -> models.ActionItem:
     normalized_assignees = _normalize_legacy_assignees(action_data)
     first_assignee = normalized_assignees[0] if normalized_assignees else None
+    description = action_data.get("description")
+    if action_data.get("summary_id") and is_ai_generated_meta_description(description):
+        description = None
     db_action = models.ActionItem(
         id=action_data.get("id", str(uuid.uuid4())),
         meeting_id=action_data.get("meeting_id"),
         summary_id=action_data.get("summary_id"),
         title=action_data["title"],
-        description=action_data.get("description"),
+        description=description,
         assigned_to=action_data.get("assigned_to") or (first_assignee.get("user_id") if first_assignee else None),
         assigned_email=action_data.get("assigned_email") or (first_assignee.get("email") if first_assignee else None),
         status=action_data.get("status", "PENDING"),
@@ -323,6 +337,9 @@ def update_action_item(db: Session, action_id: str, updates: dict) -> Optional[m
     for key, value in updates.items():
         if hasattr(db_action, key):
             setattr(db_action, key, value)
+
+    if db_action.summary_id and is_ai_generated_meta_description(db_action.description):
+        db_action.description = None
 
     if assignees_payload is not None:
         replace_action_item_assignees(db, db_action, assignees_payload)

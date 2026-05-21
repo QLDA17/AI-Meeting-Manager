@@ -570,6 +570,9 @@ class ActionItemUpdate(BaseSchema):
     description: Optional[str] = None
     assigned_to: Optional[str] = None
     assigned_email: Optional[EmailStr] = None
+    assignee_user_ids: Optional[List[str]] = None
+    assignee_emails: Optional[List[EmailStr]] = None
+    assign_all_participants: Optional[bool] = None
     status: Optional[str] = Field(None, pattern="^(PENDING|IN_PROGRESS|COMPLETED|CANCELLED)$")
     priority: Optional[str] = Field(None, pattern="^(LOW|MEDIUM|HIGH|URGENT)$")
     due_date: Optional[date] = None

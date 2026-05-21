@@ -5532,21 +5532,11 @@ async def finalize_meeting_transcript(
                         "display_name": participant.name or owner_part,
                     })
 
-            desc_parts = []
-            if owner:
-                desc_parts.append(f"Phụ trách: {owner}")
-            else:
-                desc_parts.append("Chưa phân công")
-            if deadline:
-                desc_parts.append(f"Hạn: {deadline}")
-            else:
-                desc_parts.append("Chưa đặt hạn")
-
             create_action_item(db, {
                 "meeting_id": meeting_id,
                 "summary_id": summary_db.id,
                 "title": ai.task,
-                "description": " | ".join(desc_parts),
+                "description": None,
                 "assignees": resolved_assignees,
                 "assigned_email": resolved_assignees[0]["email"] if resolved_assignees else None,
                 "due_date": _try_parse_date(deadline),
