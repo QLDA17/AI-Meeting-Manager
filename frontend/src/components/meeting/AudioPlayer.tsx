@@ -2,7 +2,7 @@
  * AudioPlayer Component
  * Trình phát âm thanh đơn giản với progress bar và controls
  */
-import React, { useState, useRef, useEffect } from 'react';
+import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import {
   Play,
   Pause,
@@ -15,9 +15,16 @@ import {
 interface AudioPlayerProps {
   src?: string;
   onTimeUpdate?: (time: number) => void;
+  onReady?: (isReady: boolean) => void;
 }
 
-const AudioPlayer: React.FC<AudioPlayerProps> = ({ src, onTimeUpdate }) => {
+export type AudioPlayerHandle = {
+  seekTo: (time: number) => void;
+  play: () => Promise<void>;
+  pause: () => void;
+};
+
+const AudioPlayer = forwardRef<AudioPlayerHandle, AudioPlayerProps>(({ src, onTimeUpdate, onReady }, ref) => {
   const [isPlaying, setIsPlaying] = useState(false);
   const [duration, setDuration] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
@@ -34,12 +41,35 @@ const AudioPlayer: React.FC<AudioPlayerProps> = ({ src, onTimeUpdate }) => {
     }
   }, [volume, isMuted, playbackRate]);
 
+  useEffect(() => {
+    setIsPlaying(false);
+    setCurrentTime(0);
+    setDuration(0);
+    onReady?.(false);
+  }, [src, onReady]);
+
+  useImperativeHandle(ref, () => ({
+    seekTo: (time: number) => {
+      if (!audioRef.current) return;
+      const nextTime = Number.isFinite(time) ? Math.max(0, time) : 0;
+      audioRef.current.currentTime = nextTime;
+      setCurrentTime(nextTime);
+      onTimeUpdate?.(nextTime);
+    },
+    play: async () => {
+      if (!audioRef.current) return;
+      await audioRef.current.play();
+    },
+    pause: () => {
+      audioRef.current?.pause();
+    },
+  }), [onTimeUpdate]);
+
   const togglePlay = () => {
     if (audioRef.current) {
       if (isPlaying) {
         audioRef.current.pause();
       } else {
-        // Fix for sound issue: explicit play after some interaction or source check
         const playPromise = audioRef.current.play();
         if (playPromise !== undefined) {
           playPromise.catch(error => {
@@ -47,13 +77,13 @@ const AudioPlayer: React.FC<AudioPlayerProps> = ({ src, onTimeUpdate }) => {
           });
         }
       }
-      setIsPlaying(!isPlaying);
     }
   };
 
   const onLoadedMetadata = () => {
     if (audioRef.current) {
       setDuration(audioRef.current.duration);
+      onReady?.(true);
     }
   };
 
@@ -67,11 +97,15 @@ const AudioPlayer: React.FC<AudioPlayerProps> = ({ src, onTimeUpdate }) => {
   const onEnded = () => {
     setIsPlaying(false);
     setCurrentTime(0);
+    onTimeUpdate?.(0);
   };
 
   const skip = (seconds: number) => {
     if (audioRef.current) {
-      audioRef.current.currentTime += seconds;
+      const nextTime = Math.max(0, Math.min(audioRef.current.currentTime + seconds, duration || audioRef.current.duration || Infinity));
+      audioRef.current.currentTime = nextTime;
+      setCurrentTime(nextTime);
+      onTimeUpdate?.(nextTime);
     }
   };
 
@@ -86,6 +120,7 @@ const AudioPlayer: React.FC<AudioPlayerProps> = ({ src, onTimeUpdate }) => {
     if (audioRef.current) {
       audioRef.current.currentTime = time;
       setCurrentTime(time);
+      onTimeUpdate?.(time);
     }
   };
 
@@ -97,6 +132,8 @@ const AudioPlayer: React.FC<AudioPlayerProps> = ({ src, onTimeUpdate }) => {
         onLoadedMetadata={onLoadedMetadata}
         onTimeUpdate={handleTimeUpdate}
         onEnded={onEnded}
+        onPlay={() => setIsPlaying(true)}
+        onPause={() => setIsPlaying(false)}
         controls={false}
       />
 
@@ -187,6 +224,6 @@ const AudioPlayer: React.FC<AudioPlayerProps> = ({ src, onTimeUpdate }) => {
       </div>
     </div>
   );
-};
+});
 
 export default AudioPlayer;

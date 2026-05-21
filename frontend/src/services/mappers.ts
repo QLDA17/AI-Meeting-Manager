@@ -198,6 +198,7 @@ export const normalizeMeeting = (meeting: any): Meeting => ({
   recordingUrl: meeting.recordingUrl ?? meeting.recording_url ?? undefined,
   transcriptUrl: meeting.transcriptUrl ?? meeting.transcript_url ?? undefined,
   audioUrl: meeting.audioUrl ?? meeting.audio_url ?? undefined,
+  audioStatus: meeting.audioStatus ?? meeting.audio_status ?? undefined,
   attendees: Array.isArray(meeting.attendees)
     ? meeting.attendees.map(normalizeUser)
     : Array.isArray(meeting.participants)

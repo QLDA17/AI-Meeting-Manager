@@ -151,6 +151,7 @@ export interface Meeting {
   recordingUrl?: string;
   transcriptUrl?: string;
   audioUrl?: string;
+  audioStatus?: 'NONE' | 'PROCESSING' | 'READY' | 'FAILED';
   attendees: User[];
   createdBy: string;
   createdAt: string;

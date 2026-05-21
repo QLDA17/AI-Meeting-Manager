@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { AnimatePresence, motion } from 'framer-motion';
@@ -28,7 +28,7 @@ import type { AxiosError } from 'axios';
 import api from '../services/api';
 import { normalizeMeetingDetail } from '../services/mappers';
 import type { ActionItem, MeetingDetail as MeetingDetailType, MeetingTranscriptSegment } from '../types';
-import AudioPlayer from '../components/meeting/AudioPlayer';
+import AudioPlayer, { type AudioPlayerHandle } from '../components/meeting/AudioPlayer';
 import ActionItemComposer from '../components/meeting/ActionItemComposer';
 import MeetingActionItemCard from '../components/meeting/MeetingActionItemCard';
 import { useAuth } from '../context/AuthContext';
@@ -117,6 +117,10 @@ const MeetingDetail: React.FC = () => {
   const [editingActionId, setEditingActionId] = useState<string | null>(null);
   const [actionEditDraft, setActionEditDraft] = useState<ActionEditDraft | null>(null);
   const [savingActionId, setSavingActionId] = useState<string | null>(null);
+  const [isAudioReady, setIsAudioReady] = useState(false);
+  const [currentAudioTime, setCurrentAudioTime] = useState(0);
+  const [activeTranscriptGroupId, setActiveTranscriptGroupId] = useState<string | null>(null);
+  const audioPlayerRef = useRef<AudioPlayerHandle | null>(null);
 
   useEffect(() => {
     const initialTab = (location.state as { initialTab?: DetailTab } | null)?.initialTab;
@@ -242,6 +246,23 @@ const MeetingDetail: React.FC = () => {
     const secs = Math.floor(safeSeconds % 60);
     return `${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
   };
+  const hasMeetingAudio = Boolean(meeting?.audioUrl);
+  const canReplayTranscript = hasMeetingAudio && isAudioReady;
+
+  useEffect(() => {
+    if (!transcriptGroups.length) {
+      setActiveTranscriptGroupId(null);
+      return;
+    }
+    const activeGroup = transcriptGroups.find(
+      (group) => currentAudioTime >= group.startTime && currentAudioTime <= Math.max(group.endTime, group.startTime + 0.25),
+    );
+    if (activeGroup) {
+      setActiveTranscriptGroupId(activeGroup.id);
+    } else if (!currentAudioTime) {
+      setActiveTranscriptGroupId(null);
+    }
+  }, [currentAudioTime, transcriptGroups]);
 
   const nowMs = Date.now();
   const startMs = meeting ? new Date(meeting.startTime).getTime() : nowMs;
@@ -336,6 +357,24 @@ const MeetingDetail: React.FC = () => {
       showToast.success("Đã cập nhật tên người nói");
     } catch (err: any) {
       showToast.error(err?.response?.data?.detail || "Không cập nhật được tên người nói");
+    }
+  };
+
+  const handleTranscriptGroupSelect = async (group: TranscriptGroup) => {
+    if (!hasMeetingAudio) {
+      showToast.info('Chưa có audio để phát lại.');
+      return;
+    }
+    if (!isAudioReady || !audioPlayerRef.current) {
+      showToast.info('Audio đang tải, vui lòng thử lại sau một chút.');
+      return;
+    }
+    try {
+      audioPlayerRef.current.seekTo(group.startTime);
+      setActiveTranscriptGroupId(group.id);
+      await audioPlayerRef.current.play();
+    } catch {
+      showToast.error('Không thể phát lại audio ở mốc này.');
     }
   };
 
@@ -736,7 +775,12 @@ const MeetingDetail: React.FC = () => {
 
       {!isUpcomingMeeting && (
         <div className="sticky top-4 z-30">
-          <AudioPlayer src={meeting.audioUrl} />
+          <AudioPlayer
+            ref={audioPlayerRef}
+            src={meeting.audioUrl}
+            onTimeUpdate={setCurrentAudioTime}
+            onReady={setIsAudioReady}
+          />
         </div>
       )}
 
@@ -837,6 +881,9 @@ const MeetingDetail: React.FC = () => {
                           <p className="mt-2 text-[11px] font-black uppercase tracking-widest text-primary-600 dark:text-primary-300">
                             {transcriptStatusLabel}
                           </p>
+                          <p className="mt-2 text-xs font-medium text-gray-500 dark:text-slate-400">
+                            Bấm vào một đoạn để nghe lại từ mốc này.
+                          </p>
                         </div>
                         <div className="flex flex-wrap items-center gap-2">
                           {transcriptSpeakers.length > 1 && (
@@ -863,13 +910,35 @@ const MeetingDetail: React.FC = () => {
                       {visibleTranscriptGroups.length > 0 ? (
                         <div className="max-h-[68vh] space-y-4 overflow-y-auto pr-2">
                           {visibleTranscriptGroups.map((group) => (
-                            <div key={group.id} className="rounded-2xl border border-gray-100 bg-gray-50 p-5 dark:border-slate-800 dark:bg-slate-800/50">
+                            <div
+                              key={group.id}
+                              role="button"
+                              tabIndex={0}
+                              onClick={() => void handleTranscriptGroupSelect(group)}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter' || event.key === ' ') {
+                                  event.preventDefault();
+                                  void handleTranscriptGroupSelect(group);
+                                }
+                              }}
+                              className={`rounded-2xl border p-5 transition ${
+                                activeTranscriptGroupId === group.id
+                                  ? 'border-primary-200 bg-primary-50/60 shadow-sm dark:border-primary-900/30 dark:bg-primary-900/10'
+                                  : canReplayTranscript
+                                    ? 'cursor-pointer border-gray-100 bg-gray-50 hover:border-primary-200 hover:bg-primary-50/40 dark:border-slate-800 dark:bg-slate-800/50 dark:hover:border-primary-900/30 dark:hover:bg-primary-900/10'
+                                    : 'cursor-not-allowed border-gray-100 bg-gray-50/80 opacity-80 dark:border-slate-800 dark:bg-slate-800/50'
+                              }`}
+                              aria-disabled={!canReplayTranscript}
+                            >
                               <div className="mb-3 flex flex-wrap items-center gap-2 text-xs font-bold text-gray-500 dark:text-slate-400">
-                                <span className="rounded-full bg-white px-2.5 py-1 dark:bg-slate-900">{formatSegmentTime(group.startTime)}</span>
+                                <span className={`rounded-full px-2.5 py-1 dark:bg-slate-900 ${activeTranscriptGroupId === group.id ? 'bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-200' : 'bg-white'}`}>
+                                  {formatSegmentTime(group.startTime)}
+                                </span>
                                 <span className="text-gray-800 dark:text-slate-200">{group.speakerLabel}</span>
                                 <button
                                   type="button"
-                                  onClick={() => {
+                                  onClick={(event) => {
+                                    event.stopPropagation();
                                     setEditingSpeakerLabel(group.speakerRawLabel);
                                     setSpeakerNameInput(group.speakerLabel);
                                   }}

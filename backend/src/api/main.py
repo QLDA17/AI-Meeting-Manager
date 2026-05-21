@@ -1116,12 +1116,186 @@ def get_meeting_access_mode(db: Session, user: models.User, meeting: models.Meet
     return "none"
 
 
+def _valid_meeting_audio_records(meeting: models.Meeting) -> List[models.AudioFile]:
+    records = []
+    for audio_file in (meeting.audio_files or []):
+        if (
+            audio_file.file_path
+            and os.path.exists(audio_file.file_path)
+            and os.path.getsize(audio_file.file_path) > 0
+            and (audio_file.upload_status or "").upper() == "PROCESSED"
+        ):
+            records.append(audio_file)
+    return sorted(records, key=lambda item: (item.updated_at or item.created_at or datetime.min, item.id))
+
+
+def _sync_meeting_audio_urls(db: Session, meeting: models.Meeting, audio_file: models.AudioFile) -> None:
+    audio_stream_url = f"/api/audio-files/{audio_file.id}/stream"
+    meeting.audio_url = audio_stream_url
+    meeting.recording_url = audio_stream_url
+    latest_transcript = db.query(models.Transcript).filter(
+        models.Transcript.meeting_id == meeting.id,
+    ).order_by(models.Transcript.created_at.desc()).first()
+    if latest_transcript and not latest_transcript.audio_file_id:
+        latest_transcript.audio_file_id = audio_file.id
+    db.flush()
+
+
+def ensure_meeting_audio_published(db: Session, meeting: models.Meeting) -> str:
+    valid_records = _valid_meeting_audio_records(meeting)
+    if valid_records:
+        latest_record = valid_records[-1]
+        expected_url = f"/api/audio-files/{latest_record.id}/stream"
+        if meeting.audio_url != expected_url or meeting.recording_url != expected_url:
+            _sync_meeting_audio_urls(db, meeting, latest_record)
+            db.commit()
+            db.refresh(meeting)
+        return "READY"
+
+    perm_dir = os.path.join(AUDIO_UPLOAD_DIR, meeting.id)
+    if not os.path.isdir(perm_dir):
+        return "NONE"
+
+    all_dir_files = [
+        path for path in glob.glob(os.path.join(perm_dir, "*"))
+        if os.path.isfile(path)
+    ]
+    output_filename = f"recording_{meeting.id}.wav"
+    output_path = os.path.join(perm_dir, output_filename)
+
+    if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+        existing = db.query(models.AudioFile).filter(
+            models.AudioFile.meeting_id == meeting.id,
+            or_(
+                models.AudioFile.file_path == output_path,
+                models.AudioFile.filename == output_filename,
+            ),
+        ).order_by(models.AudioFile.updated_at.desc(), models.AudioFile.created_at.desc()).first()
+        if existing:
+            existing.file_path = output_path
+            existing.filename = output_filename
+            existing.original_filename = existing.original_filename or "meeting_recording.wav"
+            existing.file_size = os.path.getsize(output_path)
+            existing.format = "WAV"
+            existing.sample_rate = existing.sample_rate or 16000
+            existing.channels = existing.channels or 1
+            existing.upload_status = "PROCESSED"
+            audio_record = existing
+        else:
+            audio_record = models.AudioFile(
+                meeting_id=meeting.id,
+                filename=output_filename,
+                original_filename="meeting_recording.wav",
+                file_path=output_path,
+                file_size=os.path.getsize(output_path),
+                format="WAV",
+                sample_rate=16000,
+                channels=1,
+                upload_status="PROCESSED",
+            )
+            db.add(audio_record)
+            db.flush()
+        _sync_meeting_audio_urls(db, meeting, audio_record)
+        db.commit()
+        db.refresh(meeting)
+        return "READY"
+
+    candidate_files = sorted(
+        path for path in (glob.glob(os.path.join(perm_dir, "chunk_*")) + glob.glob(os.path.join(perm_dir, "stream_*.wav")))
+        if os.path.isfile(path) and os.path.getsize(path) > 0 and os.path.abspath(path) != os.path.abspath(output_path)
+    )
+    if not candidate_files:
+        return "PROCESSING" if all_dir_files else "NONE"
+
+    concat_list_path = os.path.join(perm_dir, "concat_publish.txt")
+    try:
+        if len(candidate_files) == 1:
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", candidate_files[0], "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", output_path],
+                capture_output=True,
+                timeout=120,
+                check=True,
+            )
+        else:
+            with open(concat_list_path, "w") as concat_file:
+                for candidate in candidate_files:
+                    concat_file.write(f"file '{candidate}'\n")
+            subprocess.run(
+                ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_list_path, "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", output_path],
+                capture_output=True,
+                timeout=120,
+                check=True,
+            )
+
+        if not os.path.exists(output_path) or os.path.getsize(output_path) <= 0:
+            logger.warning("Audio publish produced empty output for meeting %s", meeting.id)
+            return "PROCESSING"
+
+        audio_record = db.query(models.AudioFile).filter(
+            models.AudioFile.meeting_id == meeting.id,
+            or_(
+                models.AudioFile.file_path == output_path,
+                models.AudioFile.filename == output_filename,
+            ),
+        ).order_by(models.AudioFile.updated_at.desc(), models.AudioFile.created_at.desc()).first()
+        if audio_record:
+            audio_record.file_path = output_path
+            audio_record.filename = output_filename
+            audio_record.original_filename = audio_record.original_filename or "meeting_recording.wav"
+            audio_record.file_size = os.path.getsize(output_path)
+            audio_record.format = "WAV"
+            audio_record.sample_rate = audio_record.sample_rate or 16000
+            audio_record.channels = audio_record.channels or 1
+            audio_record.upload_status = "PROCESSED"
+        else:
+            audio_record = models.AudioFile(
+                meeting_id=meeting.id,
+                filename=output_filename,
+                original_filename="meeting_recording.wav",
+                file_path=output_path,
+                file_size=os.path.getsize(output_path),
+                format="WAV",
+                sample_rate=16000,
+                channels=1,
+                upload_status="PROCESSED",
+            )
+            db.add(audio_record)
+            db.flush()
+
+        _sync_meeting_audio_urls(db, meeting, audio_record)
+        db.commit()
+        db.refresh(meeting)
+
+        for candidate in candidate_files:
+            try:
+                os.unlink(candidate)
+            except OSError:
+                pass
+        return "READY"
+    except subprocess.CalledProcessError as exc:
+        logger.warning("ffmpeg publish failed for meeting %s: %s", meeting.id, exc.stderr)
+        return "PROCESSING"
+    except FileNotFoundError as exc:
+        logger.warning("ffmpeg not available while publishing audio for meeting %s: %s", meeting.id, exc)
+        return "FAILED"
+    except Exception as exc:
+        logger.error("Unexpected audio publish failure for meeting %s: %s", meeting.id, exc, exc_info=True)
+        return "FAILED"
+    finally:
+        if os.path.exists(concat_list_path):
+            try:
+                os.unlink(concat_list_path)
+            except OSError:
+                pass
+
+
 def build_meeting_detail_payload(
     db: Session,
     meeting: models.Meeting,
     user_lang: str = "vi",
     access_mode: Optional[str] = None,
 ) -> Dict[str, Any]:
+    audio_status = ensure_meeting_audio_published(db, meeting)
     latest_transcript = _latest_processed_record(meeting.transcripts or [])
     draft_payload = build_transcript_from_drafts(db, meeting.id)
     has_transcript_draft = bool(
@@ -1174,6 +1348,7 @@ def build_meeting_detail_payload(
         "recording_url": meeting.recording_url,
         "transcript_url": meeting.transcript_url,
         "audio_url": meeting.audio_url,
+        "audio_status": audio_status,
         "is_pinned": meeting.is_pinned,
         "created_by": meeting.created_by,
         "created_at": meeting.created_at,
@@ -4609,7 +4784,7 @@ async def meeting_stt_stream(
             bridge.send_media(first_bytes)
 
         # Save raw audio for recording persistence
-        audio_dir = os.path.join("uploads", "audio", meeting_id)
+        audio_dir = os.path.join(AUDIO_UPLOAD_DIR, meeting_id)
         os.makedirs(audio_dir, exist_ok=True)
         raw_audio_path = os.path.join(audio_dir, f"stream_{current_user.id}_{int(time.time())}.pcm")
         raw_audio_file = open(raw_audio_path, "ab")

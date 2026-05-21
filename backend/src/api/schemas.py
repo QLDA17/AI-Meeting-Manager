@@ -310,6 +310,7 @@ class MeetingBase(BaseSchema):
     recording_url: Optional[str] = None
     transcript_url: Optional[str] = None
     audio_url: Optional[str] = None
+    audio_status: Optional[str] = Field(default="NONE", pattern="^(NONE|PROCESSING|READY|FAILED)$")
     is_pinned: bool = False
 
 
