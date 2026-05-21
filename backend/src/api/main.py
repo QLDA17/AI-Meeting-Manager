@@ -16,7 +16,7 @@ from pydantic import BaseModel
 from datetime import date, datetime, timedelta, timezone
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import or_, func
+from sqlalchemy import and_, or_, func
 from jose import jwt
 import asyncio
 import uuid
@@ -127,6 +127,44 @@ def _ensure_meeting_runtime_columns() -> None:
     _ensure_column("meeting_summaries", "speaker_summaries", "speaker_summaries JSON")
 
 
+def _ensure_action_item_assignee_backfill() -> None:
+    try:
+        models.ActionItemAssignee.__table__.create(bind=engine, checkfirst=True)
+        session = SessionLocal()
+        try:
+            legacy_items = session.query(models.ActionItem).options(
+                joinedload(models.ActionItem.assignees),
+                joinedload(models.ActionItem.assigned_to_user),
+            ).all()
+            changed = False
+            for item in legacy_items:
+                if item.assignees:
+                    continue
+                if not item.assigned_email and not item.assigned_to:
+                    continue
+                display_name = None
+                if item.assigned_to_user:
+                    display_name = " ".join(
+                        part for part in [item.assigned_to_user.first_name, item.assigned_to_user.last_name] if part
+                    ).strip() or item.assigned_to_user.username or item.assigned_to_user.email
+                session.add(models.ActionItemAssignee(
+                    id=str(uuid.uuid4()),
+                    action_item_id=item.id,
+                    user_id=item.assigned_to,
+                    email=item.assigned_email or (item.assigned_to_user.email if item.assigned_to_user else ""),
+                    display_name=display_name or item.assigned_email,
+                    status=item.status or "PENDING",
+                    completed_at=item.completed_at,
+                ))
+                changed = True
+            if changed:
+                session.commit()
+        finally:
+            session.close()
+    except Exception as exc:
+        logger.warning("Failed to ensure action item assignee backfill: %s", exc)
+
+
 # ============= MIDDLEWARE =============
 
 # 1. Request logging middleware
@@ -173,7 +211,9 @@ async def startup_event():
         models.MeetingTranscriptDraft.__table__.create(bind=engine, checkfirst=True)
         models.MeetingMessage.__table__.create(bind=engine, checkfirst=True)
         models.MeetingSpeakerMapping.__table__.create(bind=engine, checkfirst=True)
+        models.ActionItemAssignee.__table__.create(bind=engine, checkfirst=True)
         _ensure_meeting_runtime_columns()
+        _ensure_action_item_assignee_backfill()
 
         # 1. Validate database connection
         db_status = db_health_check()
@@ -715,6 +755,41 @@ def transcript_segment_response_payloads(
     return payloads
 
 
+def draft_transcript_segment_response_payloads(
+    segments: List[Dict[str, Any]],
+    speaker_map: Optional[Dict[str, str]] = None,
+) -> List[Dict[str, Any]]:
+    speaker_map = speaker_map or {}
+    payloads: List[Dict[str, Any]] = []
+    for index, segment in enumerate(segments or []):
+        text = str(segment.get("text") or "").strip()
+        if not text:
+            continue
+        raw_label = normalize_speaker_label(segment.get("speaker_label") or segment.get("speaker") or "Speaker_01")
+        display_name = speaker_map.get(raw_label, raw_label)
+        payloads.append({
+            "id": f"draft-segment-{index:03d}",
+            "transcript_id": "draft",
+            "speaker_label": display_name,
+            "speaker_raw_label": raw_label,
+            "speaker_display_name": display_name,
+            "start_time": float(segment.get("start_time") or segment.get("start") or 0),
+            "end_time": float(segment.get("end_time") or segment.get("end") or 0),
+            "text": text,
+            "language": str(segment.get("language") or "auto"),
+            "confidence_score": (
+                float(segment.get("confidence_score"))
+                if segment.get("confidence_score") is not None
+                else float(segment.get("confidence"))
+                if segment.get("confidence") is not None
+                else None
+            ),
+            "word_count": len(text.split()),
+            "created_at": datetime.utcnow(),
+        })
+    return payloads
+
+
 def _extract_json_object(raw_text: str) -> Dict[str, Any]:
     if not raw_text or not raw_text.strip():
         raise ValueError("Router returned empty response")
@@ -773,6 +848,25 @@ def _clip_ai_text(text: str, max_chars: int) -> str:
     if word_end >= max_chars - 80:
         clipped = clipped[:word_end].rstrip()
     return f"{clipped}..."
+
+
+def _split_ai_owner_text(owner_text: str) -> List[str]:
+    normalized = (owner_text or "").strip()
+    if not normalized:
+        return []
+    parts = re.split(r",|;|/|&|\band\b|\bvà\b", normalized, flags=re.IGNORECASE)
+    unique: List[str] = []
+    seen = set()
+    for part in parts:
+        cleaned = _clip_ai_text(_compact_ai_text(part), 80)
+        if not cleaned:
+            continue
+        key = cleaned.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(cleaned)
+    return unique
 
 
 def _normalize_ai_string_list(value: Any, limit: int, max_chars: int = AI_ITEM_MAX_CHARS) -> List[str]:
@@ -1023,11 +1117,17 @@ def get_meeting_access_mode(db: Session, user: models.User, meeting: models.Meet
 
 
 def build_meeting_detail_payload(
+    db: Session,
     meeting: models.Meeting,
     user_lang: str = "vi",
     access_mode: Optional[str] = None,
 ) -> Dict[str, Any]:
     latest_transcript = _latest_processed_record(meeting.transcripts or [])
+    draft_payload = build_transcript_from_drafts(db, meeting.id)
+    has_transcript_draft = bool(
+        str(draft_payload.get("transcript") or "").strip()
+        or bool(draft_payload.get("segments"))
+    )
     speaker_mappings = sorted(meeting.speaker_mappings or [], key=lambda item: item.speaker_label)
     speaker_map = {item.speaker_label: item.display_name for item in speaker_mappings if item.display_name}
     # Filter summaries by user's preferred language first
@@ -1042,6 +1142,19 @@ def build_meeting_detail_payload(
         if latest_summary_any and latest_summary_any.processing_status == "FAILED"
         else None
     )
+    serialized_action_items = [serialize_action_item_payload(item) for item in (meeting.action_items or [])]
+    transcript_segments = (
+        transcript_segment_response_payloads(latest_transcript, speaker_map)
+        if latest_transcript
+        else draft_transcript_segment_response_payloads(draft_payload.get("segments") or [], speaker_map)
+    )
+    transcript_content = latest_transcript.content if latest_transcript else (draft_payload.get("transcript") or None)
+    transcript_language = (
+        latest_transcript.language
+        if latest_transcript
+        else draft_payload.get("language") if draft_payload.get("language") not in {None, "", "auto"} else None
+    )
+    transcript_status = "COMPLETED" if latest_transcript else "DRAFT" if has_transcript_draft else "EMPTY"
 
     return {
         "id": meeting.id,
@@ -1071,12 +1184,14 @@ def build_meeting_detail_payload(
         "participants": meeting.participants or [],
         "audio_files": meeting.audio_files or [],
         "transcripts": meeting.transcripts or [],
-        "transcript_segments": transcript_segment_response_payloads(latest_transcript, speaker_map),
+        "transcript_segments": transcript_segments,
         "speaker_mappings": [speaker_mapping_payload(item) for item in speaker_mappings],
         "summaries": meeting.summaries or [],
-        "action_items": meeting.action_items or [],
-        "transcript_content": latest_transcript.content if latest_transcript else None,
-        "transcript_language": latest_transcript.language if latest_transcript else None,
+        "action_items": serialized_action_items,
+        "transcript_content": transcript_content,
+        "transcript_language": transcript_language,
+        "transcript_status": transcript_status,
+        "has_transcript_draft": has_transcript_draft,
         "meeting_summary_text": latest_summary.meeting_summary if latest_summary else None,
         "key_points_text": summarize_json_items(latest_summary.key_points if latest_summary else None),
         "decisions_text": summarize_json_items(latest_summary.decisions if latest_summary else None),
@@ -1099,12 +1214,298 @@ def user_org_ids(user: models.User) -> List[str]:
 def action_item_visible_to_user(db: Session, action_item: models.ActionItem, user: models.User) -> bool:
     if user.role == "system-admin":
         return True
-    if action_item.created_by == user.id or action_item.assigned_to == user.id:
+    if action_item.created_by == user.id:
+        return True
+    if action_item_assigned_to_user(action_item, user):
         return True
     if action_item.meeting_id:
         meeting = db.query(models.Meeting).filter(models.Meeting.id == action_item.meeting_id).first()
         return bool(meeting and auth.get_user_org_role(db, user, meeting.organization_id))
     return False
+
+
+def action_item_assigned_to_user(action_item: models.ActionItem, user: models.User) -> bool:
+    if any(assignee.user_id == user.id for assignee in action_item.assignees or [] if assignee.user_id):
+        return True
+    user_email = (user.email or "").lower()
+    if user_email and any((assignee.email or "").lower() == user_email for assignee in action_item.assignees or []):
+        return True
+    if action_item.assigned_to == user.id:
+        return True
+    return bool(action_item.assigned_email and user_email and action_item.assigned_email.lower() == user_email)
+
+
+def action_item_manager_error_detail(meeting: models.Meeting) -> str:
+    if meeting.group_id:
+        return "Group admin access required for this meeting's tasks"
+    return "Org admin access required for ungrouped meeting tasks"
+
+
+def can_manage_action_items_for_meeting(
+    db: Session,
+    user: models.User,
+    meeting: models.Meeting,
+) -> bool:
+    if user.role == "system-admin":
+        return True
+    if meeting.group_id:
+        return auth.get_user_group_role(db, user, meeting.group_id) == "group-admin"
+    return auth.get_user_org_role(db, user, meeting.organization_id) == "org-admin"
+
+
+def require_action_item_manager_for_meeting(
+    db: Session,
+    user: models.User,
+    meeting: models.Meeting,
+) -> None:
+    if not can_manage_action_items_for_meeting(db, user, meeting):
+        raise HTTPException(status_code=403, detail=action_item_manager_error_detail(meeting))
+
+
+def action_item_manageable_by_user(db: Session, action_item: models.ActionItem, user: models.User) -> bool:
+    if user.role == "system-admin":
+        return True
+    if not action_item.meeting_id:
+        return action_item.created_by == user.id
+    meeting = db.query(models.Meeting).filter(models.Meeting.id == action_item.meeting_id).first()
+    return bool(meeting and can_manage_action_items_for_meeting(db, user, meeting))
+
+
+def meeting_participant_meeting_ids_for_user(db: Session, user: models.User):
+    email = (user.email or "").lower()
+    participant_filter = models.MeetingParticipant.user_id == user.id
+    if email:
+        participant_filter = or_(
+            participant_filter,
+            func.lower(models.MeetingParticipant.email) == email,
+        )
+    return db.query(models.MeetingParticipant.meeting_id).filter(
+        participant_filter,
+        or_(
+            models.MeetingParticipant.invite_status.is_(None),
+            models.MeetingParticipant.invite_status != "declined",
+        ),
+    )
+
+
+def meeting_participant_assignee_options(meeting: Optional[models.Meeting]) -> List[Dict[str, Optional[str]]]:
+    if not meeting:
+        return []
+    options: Dict[str, Dict[str, Optional[str]]] = {}
+    for participant in meeting.participants or []:
+        if participant.invite_status == "declined":
+            continue
+        user = participant.user
+        email = participant.email or (user.email if user else "") or ""
+        email = email.strip()
+        if not email:
+            continue
+        name = (
+            participant.name
+            or (" ".join(part for part in [user.first_name, user.last_name] if part).strip() if user else "")
+            or (user.username if user else "")
+            or email
+        )
+        options[email.lower()] = {
+            "email": email,
+            "label": name,
+            "user_id": participant.user_id,
+        }
+    return sorted(options.values(), key=lambda option: (option["label"] or option["email"] or "").lower())
+
+
+def attach_action_item_display_data(action_item: models.ActionItem) -> models.ActionItem:
+    meeting = getattr(action_item, "meeting", None)
+    setattr(action_item, "meeting_title", meeting.title if meeting else None)
+    setattr(action_item, "assignee_options", meeting_participant_assignee_options(meeting))
+    return action_item
+
+
+def serialize_action_item_assignee_payload(assignee: models.ActionItemAssignee) -> Dict[str, Any]:
+    return {
+        "id": assignee.id,
+        "user_id": assignee.user_id,
+        "email": assignee.email,
+        "display_name": assignee.display_name or (assignee.user.email if assignee.user else assignee.email),
+        "status": assignee.status,
+        "completed_at": assignee.completed_at,
+        "created_at": assignee.created_at,
+        "updated_at": assignee.updated_at,
+    }
+
+
+def serialize_action_item_payload(action_item: models.ActionItem) -> Dict[str, Any]:
+    attach_action_item_display_data(action_item)
+    assignees = sorted(
+        action_item.assignees or [],
+        key=lambda item: (
+            (item.display_name or item.email or "").lower(),
+            (item.email or "").lower(),
+        ),
+    )
+    first_assignee = assignees[0] if assignees else None
+    return {
+        "id": action_item.id,
+        "meeting_id": action_item.meeting_id,
+        "meeting_title": getattr(action_item, "meeting_title", None),
+        "assignee_options": getattr(action_item, "assignee_options", []),
+        "assignees": [serialize_action_item_assignee_payload(item) for item in assignees],
+        "summary_id": action_item.summary_id,
+        "title": action_item.title,
+        "description": action_item.description,
+        "assigned_to": first_assignee.user_id if first_assignee else action_item.assigned_to,
+        "assigned_email": first_assignee.email if first_assignee else action_item.assigned_email,
+        "status": action_item.status,
+        "priority": action_item.priority,
+        "due_date": action_item.due_date,
+        "completed_at": action_item.completed_at,
+        "created_by": action_item.created_by,
+        "created_at": action_item.created_at,
+        "updated_at": action_item.updated_at,
+    }
+
+
+def _blank_to_none(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
+
+
+def _meeting_participant_assignee_lookup(meeting: Optional[models.Meeting]) -> Dict[str, Dict[str, Optional[str]]]:
+    return {option["email"].lower(): option for option in meeting_participant_assignee_options(meeting)}
+
+
+def _resolve_single_assignee(
+    db: Session,
+    assignee_input: Dict[str, Any],
+    meeting: Optional[models.Meeting],
+) -> Optional[Dict[str, Any]]:
+    resolved = dict(assignee_input)
+    resolved["email"] = _blank_to_none(resolved.get("email") or resolved.get("assigned_email"))
+    resolved["user_id"] = _blank_to_none(resolved.get("user_id") or resolved.get("assigned_to"))
+    resolved["display_name"] = _blank_to_none(resolved.get("display_name"))
+    if not resolved["email"] and not resolved["user_id"]:
+        return None
+
+    participant_lookup = _meeting_participant_assignee_lookup(meeting)
+    assigned_to = resolved.get("user_id")
+    if assigned_to:
+        assignee = get_user_by_id(db, assigned_to)
+        if not assignee:
+            raise HTTPException(status_code=400, detail="Assigned user not found")
+        if meeting and not auth.get_user_org_role(db, assignee, meeting.organization_id):
+            raise HTTPException(status_code=400, detail="Assigned user must belong to the meeting organization")
+        resolved["email"] = assignee.email
+        resolved["display_name"] = resolved["display_name"] or " ".join(
+            part for part in [assignee.first_name, assignee.last_name] if part
+        ).strip() or assignee.username or assignee.email
+        if meeting and assignee.email.lower() not in participant_lookup:
+            raise HTTPException(status_code=400, detail="Assignee must belong to the meeting participants")
+        return resolved
+
+    email = resolved.get("email")
+    if not email:
+        return None
+
+    if meeting and email.lower() not in participant_lookup:
+        raise HTTPException(status_code=400, detail="Assignee must belong to the meeting participants")
+
+    assignee = get_user_by_email(db, email)
+    if assignee and (not meeting or auth.get_user_org_role(db, assignee, meeting.organization_id)):
+        resolved["user_id"] = assignee.id
+        resolved["email"] = assignee.email
+        resolved["display_name"] = resolved["display_name"] or " ".join(
+            part for part in [assignee.first_name, assignee.last_name] if part
+        ).strip() or assignee.username or assignee.email
+    elif meeting:
+        participant_info = participant_lookup.get(email.lower())
+        if participant_info:
+            resolved["display_name"] = resolved["display_name"] or participant_info.get("label")
+            resolved["user_id"] = participant_info.get("user_id")
+    return resolved
+
+
+def resolve_action_item_assignees(
+    db: Session,
+    payload: Dict[str, Any],
+    meeting: Optional[models.Meeting],
+    current_assignees: Optional[List[models.ActionItemAssignee]] = None,
+) -> Dict[str, Any]:
+    resolved = dict(payload)
+    assignees_payload = payload.get("assignees")
+    assignee_user_ids = payload.get("assignee_user_ids") or []
+    assignee_emails = payload.get("assignee_emails") or []
+    assign_all = bool(payload.get("assign_all_participants"))
+
+    assignee_candidates: List[Dict[str, Any]] = []
+    if assignees_payload is not None:
+        assignee_candidates.extend([item for item in assignees_payload if isinstance(item, dict)])
+    for user_id in assignee_user_ids:
+        assignee_candidates.append({"user_id": user_id})
+    for email in assignee_emails:
+        assignee_candidates.append({"email": email})
+    if "assigned_to" in payload or "assigned_email" in payload:
+        assignee_candidates.append({
+            "user_id": payload.get("assigned_to"),
+            "email": payload.get("assigned_email"),
+        })
+
+    if assign_all:
+        if not meeting:
+            raise HTTPException(status_code=400, detail="assign_all_participants requires a meeting_id")
+        assignee_candidates.extend([
+            {
+                "user_id": option.get("user_id"),
+                "email": option["email"],
+                "display_name": option.get("label"),
+            }
+            for option in meeting_participant_assignee_options(meeting)
+        ])
+
+    resolved_assignees: List[Dict[str, Any]] = []
+    seen = set()
+    if assignees_payload is not None or assignee_user_ids or assignee_emails or "assigned_to" in payload or "assigned_email" in payload or assign_all:
+        current_status_by_email = {
+            (assignee.email or "").lower(): {
+                "status": assignee.status,
+                "completed_at": assignee.completed_at,
+            }
+            for assignee in (current_assignees or [])
+            if assignee.email
+        }
+        for candidate in assignee_candidates:
+            normalized = _resolve_single_assignee(db, candidate, meeting)
+            if not normalized:
+                continue
+            email_key = normalized["email"].lower()
+            if email_key in seen:
+                continue
+            seen.add(email_key)
+            preserved = current_status_by_email.get(email_key)
+            normalized["status"] = normalized.get("status") or (preserved["status"] if preserved else "PENDING")
+            normalized["completed_at"] = normalized.get("completed_at") if "completed_at" in normalized else (preserved["completed_at"] if preserved else None)
+            resolved_assignees.append(normalized)
+    else:
+        resolved_assignees = [
+            {
+                "user_id": assignee.user_id,
+                "email": assignee.email,
+                "display_name": assignee.display_name,
+                "status": assignee.status,
+                "completed_at": assignee.completed_at,
+            }
+            for assignee in (current_assignees or [])
+        ]
+
+    if not meeting and len(resolved_assignees) > 1:
+        raise HTTPException(status_code=400, detail="Personal tasks support at most one assignee")
+
+    resolved["assignees"] = resolved_assignees
+    first_assignee = resolved_assignees[0] if resolved_assignees else None
+    resolved["assigned_to"] = first_assignee.get("user_id") if first_assignee else None
+    resolved["assigned_email"] = first_assignee.get("email") if first_assignee else None
+    return resolved
 
 
 def group_member_payload(membership: models.GroupMembership) -> Dict[str, Any]:
@@ -1445,6 +1846,9 @@ def build_room_snapshot(db: Session, meeting_id: str, current_user: models.User)
         "language": draft["language"],
         "chunks": serialize_transcript_draft_chunks(draft["chunks"]),
     }
+    latest_transcript = _latest_processed_record(meeting.transcripts or [])
+    has_transcript_draft = bool(str(draft["transcript"] or "").strip() or bool(draft["segments"]))
+    transcript_status = "COMPLETED" if latest_transcript else "DRAFT" if has_transcript_draft else "EMPTY"
     latest_summary = _latest_processed_record(meeting.summaries or [], fallback_to_any=True)
     participant_records = db.query(models.MeetingParticipant).options(
         joinedload(models.MeetingParticipant.user)
@@ -1462,8 +1866,11 @@ def build_room_snapshot(db: Session, meeting_id: str, current_user: models.User)
         },
         "participants": [format_meeting_participant_payload(item) for item in participant_records],
         "online_participants": meeting_room_manager.get_participants(meeting_id),
+        "action_items": [serialize_action_item_payload(item) for item in (meeting.action_items or [])],
         "messages": [format_meeting_message_payload(message) for message in messages],
         "transcript": draft_payload,
+        "transcript_status": transcript_status,
+        "has_transcript_draft": has_transcript_draft,
         "ai_notes": format_summary_payload(latest_summary),
         "summary_status": latest_summary.processing_status if latest_summary else None,
         "timestamp": datetime.utcnow().isoformat(),
@@ -1486,6 +1893,71 @@ def get_ws_user(db: Session, token: Optional[str]) -> models.User:
     if not user:
         raise HTTPException(status_code=401, detail="Invalid websocket user")
     return user
+
+
+def broadcast_meeting_room_event(meeting_id: Optional[str], payload: Dict[str, Any]) -> None:
+    if not meeting_id:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        asyncio.run(meeting_room_manager.broadcast(meeting_id, payload))
+    else:
+        loop.create_task(meeting_room_manager.broadcast(meeting_id, payload))
+
+
+def broadcast_participant_list_event(meeting_id: Optional[str]) -> None:
+    if not meeting_id:
+        return
+    participant_rows: List[Dict[str, Any]] = []
+    db = SessionLocal()
+    try:
+        participant_records = db.query(models.MeetingParticipant).options(
+            joinedload(models.MeetingParticipant.user)
+        ).filter(models.MeetingParticipant.meeting_id == meeting_id).all()
+        participant_rows = [format_meeting_participant_payload(item) for item in participant_records]
+    except Exception:
+        logger.exception("Failed to build participant list event for meeting %s", meeting_id)
+    finally:
+        db.close()
+    broadcast_meeting_room_event(
+        meeting_id,
+        {
+            "type": "participant.list",
+            "meeting_id": meeting_id,
+            "participants": meeting_room_manager.get_participants(meeting_id),
+            "all_participants": participant_rows,
+            "timestamp": datetime.utcnow().isoformat(),
+        },
+    )
+
+
+def broadcast_action_item_updated(action_item: models.ActionItem) -> None:
+    if not action_item.meeting_id:
+        return
+    broadcast_meeting_room_event(
+        action_item.meeting_id,
+        {
+            "type": "action_item.updated",
+            "meeting_id": action_item.meeting_id,
+            "action_item": serialize_action_item_payload(action_item),
+            "timestamp": datetime.utcnow().isoformat(),
+        },
+    )
+
+
+def broadcast_action_item_deleted(meeting_id: Optional[str], action_item_id: str) -> None:
+    if not meeting_id:
+        return
+    broadcast_meeting_room_event(
+        meeting_id,
+        {
+            "type": "action_item.deleted",
+            "meeting_id": meeting_id,
+            "action_item_id": action_item_id,
+            "timestamp": datetime.utcnow().isoformat(),
+        },
+    )
 
 
 def normalize_segment_payload(segment: Dict[str, Any], default_language: str = "auto") -> Dict[str, Any]:
@@ -2878,7 +3350,7 @@ def get_meeting_by_code(
         joinedload(models.Meeting.audio_files),
         joinedload(models.Meeting.transcripts).joinedload(models.Transcript.segments),
         joinedload(models.Meeting.summaries),
-        joinedload(models.Meeting.action_items),
+        joinedload(models.Meeting.action_items).joinedload(models.ActionItem.assignees).joinedload(models.ActionItemAssignee.user),
         joinedload(models.Meeting.speaker_mappings),
     ).filter(models.Meeting.code == meeting_code).first()
     if not meeting:
@@ -2889,6 +3361,7 @@ def get_meeting_by_code(
     user_lang = getattr(current_user, "language", None) or "vi"
     return schemas.MeetingDetailResponse.model_validate(
         build_meeting_detail_payload(
+            db,
             meeting,
             user_lang,
             access_mode=get_meeting_access_mode(db, current_user, meeting),
@@ -2911,6 +3384,7 @@ def get_meeting(
     user_lang = getattr(current_user, "language", None) or "vi"
     return schemas.MeetingDetailResponse.model_validate(
         build_meeting_detail_payload(
+            db,
             meeting,
             user_lang,
             access_mode=get_meeting_access_mode(db, current_user, meeting),
@@ -3111,6 +3585,7 @@ async def meeting_room_stream(
                 "timestamp": datetime.utcnow().isoformat(),
             },
         )
+        broadcast_participant_list_event(meeting_id)
 
         while True:
             data = await websocket.receive_json()
@@ -3162,6 +3637,7 @@ async def meeting_room_stream(
     finally:
         if connected:
             left_user = await meeting_room_manager.disconnect(meeting_id, websocket)
+            broadcast_participant_list_event(meeting_id)
             if left_user and current_user:
                 await meeting_room_manager.broadcast(
                     meeting_id,
@@ -3350,6 +3826,25 @@ async def end_meeting_endpoint(
 
     if meeting.status in {"completed", "failed", "canceled"}:
         return meeting
+
+    if target_status == "completed":
+        try:
+            await finalize_meeting_transcript(meeting_id, db, current_user, {})
+            db.expire_all()
+            refreshed = get_meeting_by_id(db, meeting_id)
+            if refreshed:
+                meeting = refreshed
+            if meeting.status in {"completed", "failed", "canceled"}:
+                await meeting_room_manager.broadcast(
+                    meeting_id,
+                    {"type": "meeting.status", "meeting_id": meeting_id, "status": meeting.status, "timestamp": datetime.utcnow().isoformat()},
+                )
+                return meeting
+        except HTTPException as exc:
+            if exc.status_code not in {400, 404}:
+                raise
+        except Exception:
+            logger.exception("Auto-finalize before meeting completion failed for meeting %s", meeting_id)
 
     now = datetime.utcnow()
     if meeting.status == "upcoming":
@@ -3620,11 +4115,19 @@ async def upload_audio(
 
     # return {"job_id": job.job_id, "meeting_id": db_meeting.id}
 
-# Singleton STT provider - load once, reuse for all chunks
+# Singleton STT providers - load once, reuse for all chunks
 _stt_service = None
+_stt_services_by_provider: Dict[str, Any] = {}
 
-def get_stt_provider():
+def get_stt_provider(provider_name: Optional[str] = None):
     global _stt_service
+    normalized_provider = (provider_name or "").strip().lower()
+    if normalized_provider:
+        if normalized_provider not in _stt_services_by_provider:
+            from src.stt.service import STTService
+            _stt_services_by_provider[normalized_provider] = STTService(provider=normalized_provider)
+        return _stt_services_by_provider[normalized_provider].provider
+
     if _stt_service is None:
         from src.stt.service import STTService
         _stt_service = STTService()
@@ -4287,13 +4790,14 @@ async def test_stt_transcribe_chunk(
     audio: UploadFile = File(...),
     chunk_index: Optional[int] = Form(None),
     language: str = Form("auto"),
+    provider_name: Optional[str] = Form(None),
     current_user=Depends(auth.get_current_user),
 ):
     """No-DB microphone test endpoint: temp audio -> STT -> optional PhoBERT -> JSON."""
     audio_path = ""
     try:
         audio_path = await save_upload_to_temp_wav(audio)
-        provider = get_stt_provider()
+        provider = get_stt_provider(provider_name)
         result = provider.transcribe(audio_path)
         if not result or "text" not in result:
             raise ValueError("Invalid transcription result")
@@ -4315,6 +4819,7 @@ async def test_stt_transcribe_chunk(
             except Exception as nlp_error:
                 logger.warning("PhoBERT test chunk post-processing skipped: %s", nlp_error)
 
+        actual_provider = provider_name or os.getenv("STT_PROVIDER", "deepgram").lower()
         return {
             "id": f"test:{current_user.id}:{chunk_index}" if chunk_index is not None else None,
             "chunkIndex": chunk_index,
@@ -4322,7 +4827,7 @@ async def test_stt_transcribe_chunk(
             "segments": segments,
             "language": detected_language,
             "detected_language": detected_language,
-            "provider": os.getenv("STT_PROVIDER", "deepgram").lower(),
+            "provider": actual_provider,
             "model": os.getenv("DEEPGRAM_MODEL", "nova-3"),
             "nlp_metadata": nlp_metadata,
         }
@@ -4688,39 +5193,39 @@ def stream_audio_file(
     )
 
 
-@app.post("/api/meetings/{meeting_id}/finalize", response_model=schemas.MeetingFinalizeResponse)
-async def finalize_meeting(
+async def finalize_meeting_transcript(
     meeting_id: str,
-    request: Request,
-    db: Session = Depends(get_db),
-    current_user=Depends(auth.get_current_user),
+    db: Session,
+    current_user: models.User,
+    body: Optional[Dict[str, Any]] = None,
 ):
-    """Save full transcript to DB, then summarize via a single Router LLM call."""
+    """Save transcript from request or drafts, then summarize and persist stable meeting artifacts."""
     from src.providers.router_llm import RouterLLMAdapter
 
-    body = await request.json()
+    body = body or {}
     full_text = body.get("transcript", "")
     segments = body.get("segments", [])
     req_language = body.get("language", "")
     regenerate = bool(body.get("regenerate", False))
     errors: List[str] = []
 
-    # Verify meeting exists
     meeting = db.query(models.Meeting).filter(models.Meeting.id == meeting_id).first()
     if not meeting:
         raise HTTPException(status_code=404, detail="Meeting not found")
 
-    # Determine language: request body > meeting > user > default "vi"
     language = req_language or getattr(meeting, "language", None) or getattr(current_user, "language", None) or "vi"
     language = language.lower().strip() if language else "vi"
     if language not in ("vi", "en", "zh", "ja", "ko"):
         language = "vi"
 
-    # Validate user has meeting room access.
     require_meeting_room_access(db, current_user, meeting)
     original_meeting_status = meeting.status
 
     draft_payload = build_transcript_from_drafts(db, meeting_id)
+    has_transcript_draft = bool(
+        str(draft_payload.get("transcript") or "").strip()
+        or bool(draft_payload.get("segments"))
+    )
     if not isinstance(full_text, str) or not full_text.strip():
         full_text = draft_payload["transcript"]
     if not segments:
@@ -4731,7 +5236,20 @@ async def finalize_meeting(
             language = "vi"
 
     if not isinstance(full_text, str) or not full_text.strip():
-        raise HTTPException(status_code=400, detail="Transcript is required for finalize")
+        return {
+            "meeting_id": meeting_id,
+            "transcript_status": "EMPTY",
+            "summary_status": "EMPTY",
+            "has_transcript_draft": has_transcript_draft,
+            "summary": schemas.MeetingAnalysisOutput(
+                meeting_summary="",
+                key_points=[],
+                decisions=[],
+                action_items=[],
+            ),
+            "nlp_metadata": None,
+            "errors": errors,
+        }
 
     nlp_metadata = None
     post_processed = False
@@ -4767,7 +5285,6 @@ async def finalize_meeting(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    # Upsert transcript so finalize can be safely retried.
     db_transcript = db.query(models.Transcript).filter(
         models.Transcript.meeting_id == meeting_id,
     ).order_by(models.Transcript.created_at.desc()).first()
@@ -4810,7 +5327,6 @@ async def finalize_meeting(
             "nlp_metadata": nlp_metadata,
         })
 
-    # Save segments
     if segments_to_save:
         segments_data = []
         for seg in segments_to_save:
@@ -4826,7 +5342,6 @@ async def finalize_meeting(
 
     db.commit()
 
-    # === Concatenate audio chunks into final recording ===
     audio_file_id = None
     try:
         perm_dir = os.path.join(AUDIO_UPLOAD_DIR, meeting_id)
@@ -4841,7 +5356,7 @@ async def finalize_meeting(
 
                 output_filename = f"recording_{meeting_id}.wav"
                 output_path = os.path.join(perm_dir, output_filename)
-                result = subprocess.run(
+                subprocess.run(
                     ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_list_path,
                      "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", output_path],
                     capture_output=True, timeout=120, check=True,
@@ -4868,7 +5383,6 @@ async def finalize_meeting(
                     db.commit()
                     logger.info(f"Audio recording saved: {output_path} ({file_size} bytes)")
 
-                    # Cleanup chunk files
                     for cf in chunk_files:
                         try:
                             os.unlink(cf)
@@ -4927,7 +5441,6 @@ async def finalize_meeting(
         },
     )
 
-    # Try Router LLM first (with built-in model fallback for content-blocked)
     if router.enabled:
         try:
             raw_response = router.structured_completion(system_prompt, user_prompt)
@@ -4943,7 +5456,6 @@ async def finalize_meeting(
         summary_error_message = router.last_error or "Router LLM is not configured"
         errors.append(summary_error_message)
 
-    # Fallback to Google Gemini if Router failed
     if not raw_response:
         google_key = os.getenv("GOOGLE_API_KEY")
         if google_key:
@@ -4962,7 +5474,6 @@ async def finalize_meeting(
                 logger.error(fallback_error, exc_info=True)
                 errors.append(fallback_error)
 
-    # Parse the response if we got one
     if raw_response:
         try:
             structured_payload = _extract_json_object(raw_response)
@@ -5005,22 +5516,22 @@ async def finalize_meeting(
             owner = (ai.owner or "").strip() or None
             deadline = (ai.deadline or "").strip() or None
 
-            # Try to match owner to meeting participant
-            assigned_email = None
-            if owner:
+            resolved_assignees = []
+            for owner_part in _split_ai_owner_text(owner or ""):
                 participant = db.query(models.MeetingParticipant).filter(
                     models.MeetingParticipant.meeting_id == meeting_id,
                     or_(
-                        models.MeetingParticipant.name.ilike(f"%{owner}%"),
-                        models.MeetingParticipant.email.ilike(f"%{owner}%"),
+                        models.MeetingParticipant.name.ilike(f"%{owner_part}%"),
+                        models.MeetingParticipant.email.ilike(f"%{owner_part}%"),
                     )
                 ).first()
-                if participant and participant.email:
-                    assigned_email = participant.email
-                elif participant and participant.user:
-                    assigned_email = participant.user.email
+                if participant and (participant.email or (participant.user and participant.user.email)):
+                    resolved_assignees.append({
+                        "user_id": participant.user_id,
+                        "email": participant.email or participant.user.email,
+                        "display_name": participant.name or owner_part,
+                    })
 
-            # Build Vietnamese description
             desc_parts = []
             if owner:
                 desc_parts.append(f"Phụ trách: {owner}")
@@ -5036,7 +5547,8 @@ async def finalize_meeting(
                 "summary_id": summary_db.id,
                 "title": ai.task,
                 "description": " | ".join(desc_parts),
-                "assigned_email": assigned_email,
+                "assignees": resolved_assignees,
+                "assigned_email": resolved_assignees[0]["email"] if resolved_assignees else None,
                 "due_date": _try_parse_date(deadline),
                 "status": "PENDING",
                 "priority": "MEDIUM",
@@ -5089,10 +5601,22 @@ async def finalize_meeting(
         "meeting_id": meeting_id,
         "transcript_status": "COMPLETED",
         "summary_status": summary_status,
+        "has_transcript_draft": has_transcript_draft,
         "summary": summary_payload,
         "nlp_metadata": nlp_metadata,
         "errors": errors,
     }
+
+
+@app.post("/api/meetings/{meeting_id}/finalize", response_model=schemas.MeetingFinalizeResponse)
+async def finalize_meeting(
+    meeting_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user=Depends(auth.get_current_user),
+):
+    body = await request.json()
+    return await finalize_meeting_transcript(meeting_id, db, current_user, body)
 
 
 @app.get("/api/meetings/{meeting_id}/dialect")
@@ -5171,9 +5695,20 @@ async def get_meeting_analytics(db: Session = Depends(get_db), current_user = De
 
     # Top action item owners
     action_rows = (
-        db.query(models.ActionItem.assigned_email, func.count())
-        .filter(models.ActionItem.assigned_email.isnot(None))
-        .group_by(models.ActionItem.assigned_email)
+        db.query(
+            func.coalesce(
+                models.ActionItemAssignee.display_name,
+                models.ActionItemAssignee.email,
+            ),
+            func.count(),
+        )
+        .filter(models.ActionItemAssignee.email.isnot(None))
+        .group_by(
+            func.coalesce(
+                models.ActionItemAssignee.display_name,
+                models.ActionItemAssignee.email,
+            )
+        )
         .order_by(func.count().desc())
         .limit(10)
         .all()
@@ -5672,34 +6207,48 @@ def list_action_items(
     Get all action items for the current user.
     Supports filtering by meeting_id and status.
     """
-    # Filter by items created by or assigned to the user, 
-    # OR items belonging to meetings in the user's current organizations
-    query = db.query(models.ActionItem).outerjoin(models.Meeting)
+    query = db.query(models.ActionItem).options(
+        joinedload(models.ActionItem.meeting)
+        .joinedload(models.Meeting.participants)
+        .joinedload(models.MeetingParticipant.user),
+        joinedload(models.ActionItem.assignees).joinedload(models.ActionItemAssignee.user),
+    )
     
     # If meeting_id is provided, filter strictly by it
     if meeting_id:
         meeting = db.query(models.Meeting).filter(models.Meeting.id == meeting_id).first()
         if not meeting:
             raise HTTPException(status_code=404, detail="Meeting not found")
-        auth.require_org_member(db, current_user, meeting.organization_id)
+        require_meeting_room_access(db, current_user, meeting)
         query = query.filter(models.ActionItem.meeting_id == meeting_id)
     else:
-        # Otherwise, show items the user is involved with
-        from sqlalchemy import or_
-        user_org_ids = [om.organization_id for om in current_user.user_organizations] if hasattr(current_user, 'user_organizations') else []
-        
+        participant_meeting_ids = meeting_participant_meeting_ids_for_user(db, current_user)
+        user_email = (current_user.email or "").lower()
+        assigned_filters = [models.ActionItem.assignees.any(models.ActionItemAssignee.user_id == current_user.id)]
+        if user_email:
+            assigned_filters.append(models.ActionItem.assignees.any(func.lower(models.ActionItemAssignee.email) == user_email))
+
         query = query.filter(
             or_(
-                models.ActionItem.created_by == current_user.id,
-                models.ActionItem.assigned_to == current_user.id,
-                models.Meeting.organization_id.in_(user_org_ids) if user_org_ids else False
+                *assigned_filters,
+                and_(
+                    ~models.ActionItem.assignees.any(),
+                    or_(
+                        and_(
+                            models.ActionItem.meeting_id.is_(None),
+                            models.ActionItem.created_by == current_user.id,
+                        ),
+                        models.ActionItem.meeting_id.in_(participant_meeting_ids),
+                    ),
+                ),
             )
         )
     
     if status:
         query = query.filter(models.ActionItem.status == status)
         
-    return query.order_by(models.ActionItem.created_at.desc()).offset(skip).limit(limit).all()
+    items = query.order_by(models.ActionItem.created_at.desc()).offset(skip).limit(limit).all()
+    return [serialize_action_item_payload(item) for item in items]
 
 @app.post("/api/action-items", response_model=schemas.ActionItem)
 def create_new_action_item(
@@ -5712,16 +6261,21 @@ def create_new_action_item(
         meeting = db.query(models.Meeting).filter(models.Meeting.id == action_item.meeting_id).first()
         if not meeting:
             raise HTTPException(status_code=404, detail="Meeting not found")
-        auth.require_org_member(db, current_user, meeting.organization_id)
+        require_action_item_manager_for_meeting(db, current_user, meeting)
+    else:
+        meeting = None
 
-    created = create_action_item(db, action_item.model_dump(), current_user.id)
+    action_data = resolve_action_item_assignees(db, action_item.model_dump(), meeting)
+    created = create_action_item(db, action_data, current_user.id)
     append_admin_audit_log(
         actor=current_user.username,
         action="CREATE_ACTION_ITEM",
         target=created.title,
         role=current_user.role or "member",
     )
-    return created
+    payload = serialize_action_item_payload(created)
+    broadcast_action_item_updated(created)
+    return payload
 
 @app.patch("/api/action-items/{action_id}", response_model=schemas.ActionItem)
 def update_existing_action_item(
@@ -5737,14 +6291,75 @@ def update_existing_action_item(
     if not action_item_visible_to_user(db, db_action, current_user):
         raise HTTPException(status_code=403, detail="Action item access denied")
 
-    updated = update_action_item(db, action_id, updates.model_dump(exclude_unset=True))
+    meeting = None
+    if db_action.meeting_id:
+        meeting = db.query(models.Meeting).filter(models.Meeting.id == db_action.meeting_id).first()
+    update_data = updates.model_dump(exclude_unset=True)
+    is_manager = action_item_manageable_by_user(db, db_action, current_user)
+    is_assignee = action_item_assigned_to_user(db_action, current_user)
+
+    if not is_manager:
+        if not is_assignee:
+            if meeting:
+                raise HTTPException(status_code=403, detail=action_item_manager_error_detail(meeting))
+            raise HTTPException(status_code=403, detail="Action item access denied")
+        raise HTTPException(status_code=403, detail="Use /assignees/me for personal status updates")
+    else:
+        update_data = resolve_action_item_assignees(db, update_data, meeting, current_assignees=list(db_action.assignees or []))
+
+    updated = update_action_item(db, action_id, update_data)
     append_admin_audit_log(
         actor=current_user.username,
         action="UPDATE_ACTION_ITEM",
         target=updated.title if updated else action_id,
         role=current_user.role or "member",
     )
-    return updated
+    payload = serialize_action_item_payload(updated)
+    broadcast_action_item_updated(updated)
+    return payload
+
+
+@app.patch("/api/action-items/{action_id}/assignees/me", response_model=schemas.ActionItem)
+def update_my_action_item_assignment(
+    action_id: str,
+    updates: schemas.ActionItemAssigneeStatusUpdate,
+    db: Session = Depends(get_db),
+    current_user = Depends(auth.get_current_user)
+):
+    db_action = get_action_item_by_id(db, action_id)
+    if not db_action:
+        raise HTTPException(status_code=404, detail="Action item not found")
+    if not action_item_assigned_to_user(db_action, current_user):
+        raise HTTPException(status_code=403, detail="Action item access denied")
+
+    user_email = (current_user.email or "").lower()
+    target = next(
+        (
+            assignee for assignee in (db_action.assignees or [])
+            if assignee.user_id == current_user.id or ((assignee.email or "").lower() == user_email and user_email)
+        ),
+        None,
+    )
+    if not target:
+        raise HTTPException(status_code=404, detail="Action item assignee not found")
+
+    next_status = updates.status
+    target.status = next_status
+    target.completed_at = datetime.now() if next_status == "COMPLETED" else None
+    update_action_item(db, action_id, {"assignees": [
+        {
+            "user_id": assignee.user_id,
+            "email": assignee.email,
+            "display_name": assignee.display_name,
+            "status": assignee.status,
+            "completed_at": assignee.completed_at,
+        }
+        for assignee in (db_action.assignees or [])
+    ]})
+    refreshed = get_action_item_by_id(db, action_id)
+    payload = serialize_action_item_payload(refreshed)
+    broadcast_action_item_updated(refreshed)
+    return payload
 
 @app.delete("/api/action-items/{action_id}")
 def delete_existing_action_item(
@@ -5756,10 +6371,15 @@ def delete_existing_action_item(
     db_action = get_action_item_by_id(db, action_id)
     if not db_action:
         raise HTTPException(status_code=404, detail="Action item not found")
-    if not action_item_visible_to_user(db, db_action, current_user):
+    if not action_item_manageable_by_user(db, db_action, current_user):
+        if db_action.meeting_id:
+            meeting = db.query(models.Meeting).filter(models.Meeting.id == db_action.meeting_id).first()
+            if meeting:
+                raise HTTPException(status_code=403, detail=action_item_manager_error_detail(meeting))
         raise HTTPException(status_code=403, detail="Action item access denied")
 
     deleted_title = db_action.title
+    deleted_meeting_id = db_action.meeting_id
     delete_action_item(db, action_id)
     append_admin_audit_log(
         actor=current_user.username,
@@ -5767,6 +6387,7 @@ def delete_existing_action_item(
         target=deleted_title,
         role=current_user.role or "member",
     )
+    broadcast_action_item_deleted(deleted_meeting_id, action_id)
     return {"message": "Action item deleted successfully"}
 
 

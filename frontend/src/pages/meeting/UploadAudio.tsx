@@ -20,14 +20,22 @@ import { useLiveTestRecorder } from '../../hooks';
 
 type UploadTab = 'file' | 'live-test';
 
+const STT_PROVIDER_OPTIONS = [
+  { value: '', label: 'Default (Deepgram)' },
+  { value: 'viwhisper', label: 'ViWhisper (small)' },
+  { value: 'phowhisper', label: 'PhoWhisper' },
+];
+
 const UploadAudio: React.FC = () => {
   const navigate = useNavigate();
   const { currentOrg, groups } = useOrgStore();
   const [selectedGroupId, setSelectedGroupId] = React.useState('');
   const [selectedFileName, setSelectedFileName] = React.useState('');
   const [activeTab, setActiveTab] = React.useState<UploadTab>('file');
+  const [sttProvider, setSttProvider] = React.useState('');
 
-  const liveTest = useLiveTestRecorder();
+  const liveTest = useLiveTestRecorder(sttProvider || undefined);
+  const isViWhisper = sttProvider === 'viwhisper';
 
   const featureQuery = useQuery({
     queryKey: ['feature-flags'],
@@ -197,14 +205,28 @@ const UploadAudio: React.FC = () => {
             </div>
 
             <div className="rounded-3xl border border-gray-200 bg-white p-6 shadow-sm dark:border-slate-700 dark:bg-slate-900">
+              <div className="mb-4">
+                <label className="mb-2 block text-sm font-semibold text-gray-700 dark:text-slate-200">STT Engine</label>
+                <select
+                  value={sttProvider}
+                  onChange={(e) => setSttProvider(e.target.value)}
+                  disabled={liveTest.isRecording || liveTest.isTranscribing}
+                  className="w-full rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm font-semibold outline-none focus:border-primary-500 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                >
+                  {STT_PROVIDER_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
+                </select>
+              </div>
               <div className="flex flex-wrap items-center gap-3">
                 {!liveTest.isRecording ? (
                   <button
                     onClick={liveTest.startRecording}
-                    className="inline-flex items-center gap-2 rounded-xl bg-rose-600 px-5 py-3 text-sm font-black text-white transition hover:bg-rose-700"
+                    disabled={liveTest.isTranscribing}
+                    className="inline-flex items-center gap-2 rounded-xl bg-rose-600 px-5 py-3 text-sm font-black text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    <Mic size={16} />
-                    Bắt đầu thu test
+                    {liveTest.isTranscribing ? <Loader2 size={16} className="animate-spin" /> : <Mic size={16} />}
+                    {liveTest.isTranscribing ? 'Đang xử lý STT' : 'Bắt đầu thu test'}
                   </button>
                 ) : (
                   <button
@@ -217,7 +239,7 @@ const UploadAudio: React.FC = () => {
                 )}
                 <button
                   onClick={liveTest.analyze}
-                  disabled={liveTest.isAnalyzing || (!liveTest.fullTranscript.trim() && !liveTest.interimTranscript.trim())}
+                  disabled={liveTest.isAnalyzing || liveTest.isTranscribing || (!liveTest.fullTranscript.trim() && !liveTest.interimTranscript.trim())}
                   className="inline-flex items-center gap-2 rounded-xl bg-primary-600 px-5 py-3 text-sm font-black text-white transition hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {liveTest.isAnalyzing ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
@@ -225,18 +247,23 @@ const UploadAudio: React.FC = () => {
                 </button>
                 <button
                   onClick={liveTest.reset}
-                  className="inline-flex items-center gap-2 rounded-xl border border-gray-200 px-5 py-3 text-sm font-bold text-gray-700 transition hover:bg-gray-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
+                  disabled={liveTest.isTranscribing}
+                  className="inline-flex items-center gap-2 rounded-xl border border-gray-200 px-5 py-3 text-sm font-bold text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
                 >
                   <Trash2 size={16} />
                   Xóa phiên test
                 </button>
               </div>
 
-              <div className="mt-5 grid gap-3 md:grid-cols-3">
+              <div className="mt-5 grid gap-3 md:grid-cols-4">
                 <div className="rounded-2xl bg-gray-50 p-4 dark:bg-slate-800">
                   <p className="text-xs font-bold uppercase text-gray-500">Microphone</p>
-                  <p className="mt-1 font-black text-gray-900 dark:text-slate-100">{liveTest.isRecording ? 'Đang thu' : 'Đang dừng'}</p>
+                  <p className="mt-1 font-black text-gray-900 dark:text-slate-100">{liveTest.isTranscribing ? 'Đang xử lý' : liveTest.isRecording ? 'Đang thu' : 'Đang dừng'}</p>
                   <p className="mt-1 text-xs font-semibold text-gray-500 dark:text-slate-400">{liveTest.sttStatus}</p>
+                </div>
+                <div className="rounded-2xl bg-gray-50 p-4 dark:bg-slate-800">
+                  <p className="text-xs font-bold uppercase text-gray-500">STT Engine</p>
+                  <p className="mt-1 font-black text-gray-900 dark:text-slate-100">{STT_PROVIDER_OPTIONS.find(o => o.value === sttProvider)?.label || 'Default'}</p>
                 </div>
                 <div className="rounded-2xl bg-gray-50 p-4 dark:bg-slate-800">
                   <p className="text-xs font-bold uppercase text-gray-500">STT chunks</p>
@@ -258,7 +285,7 @@ const UploadAudio: React.FC = () => {
             <div className="rounded-3xl border border-gray-200 bg-white p-6 shadow-sm dark:border-slate-700 dark:bg-slate-900">
               <div className="flex items-center justify-between">
                 <h2 className="text-lg font-bold text-gray-900 dark:text-slate-100">Transcript test</h2>
-                <span className="text-xs font-bold uppercase text-gray-400">Realtime chunks</span>
+                <span className="text-xs font-bold uppercase text-gray-400">{isViWhisper ? 'Deferred chunks' : 'Realtime chunks'}</span>
               </div>
               <div className="mt-5 max-h-[420px] space-y-3 overflow-y-auto pr-1">
                 {liveTest.interimTranscript && (

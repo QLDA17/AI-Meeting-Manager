@@ -1,3 +1,4 @@
+from datetime import datetime
 from sqlalchemy.orm import Session, joinedload
 from typing import List, Optional
 import uuid
@@ -173,7 +174,9 @@ def delete_meeting_summary(db: Session, summary_id: str) -> bool:
 def get_action_item_by_id(db: Session, action_id: str) -> Optional[models.ActionItem]:
     return db.query(models.ActionItem).options(
         joinedload(models.ActionItem.assigned_to_user),
-        joinedload(models.ActionItem.created_by_user)
+        joinedload(models.ActionItem.created_by_user),
+        joinedload(models.ActionItem.assignees).joinedload(models.ActionItemAssignee.user),
+        joinedload(models.ActionItem.meeting),
     ).filter(models.ActionItem.id == action_id).first()
 
 
@@ -187,7 +190,9 @@ def get_action_items(
 ) -> List[models.ActionItem]:
     query = db.query(models.ActionItem).options(
         joinedload(models.ActionItem.assigned_to_user),
-        joinedload(models.ActionItem.created_by_user)
+        joinedload(models.ActionItem.created_by_user),
+        joinedload(models.ActionItem.assignees).joinedload(models.ActionItemAssignee.user),
+        joinedload(models.ActionItem.meeting),
     )
     
     if meeting_id:
@@ -198,25 +203,108 @@ def get_action_items(
     
     if status:
         query = query.filter(models.ActionItem.status == status)
-    
+
     return query.order_by(models.ActionItem.created_at.desc()).offset(skip).limit(limit).all()
 
 
+def _normalize_aggregate_status(assignees: List[models.ActionItemAssignee]) -> str:
+    if not assignees:
+        return "PENDING"
+    statuses = [assignee.status for assignee in assignees]
+    if all(status == "COMPLETED" for status in statuses):
+        return "COMPLETED"
+    if all(status == "CANCELLED" for status in statuses):
+        return "CANCELLED"
+    if any(status == "IN_PROGRESS" for status in statuses):
+        return "IN_PROGRESS"
+    return "PENDING"
+
+
+def sync_action_item_aggregate_status(db_action: models.ActionItem) -> None:
+    aggregate_status = _normalize_aggregate_status(list(db_action.assignees or []))
+    db_action.status = aggregate_status
+    if aggregate_status == "COMPLETED":
+        db_action.completed_at = datetime.now()
+    else:
+        db_action.completed_at = None
+
+
+def replace_action_item_assignees(db: Session, db_action: models.ActionItem, assignees: List[dict]) -> None:
+    existing_by_email = {
+        (assignee.email or "").lower(): assignee
+        for assignee in (db_action.assignees or [])
+        if assignee.email
+    }
+    next_emails = set()
+    next_assignees: List[models.ActionItemAssignee] = []
+
+    for assignee_data in assignees:
+        email = (assignee_data.get("email") or "").strip()
+        if not email:
+            continue
+        email_key = email.lower()
+        if email_key in next_emails:
+            continue
+        next_emails.add(email_key)
+        existing = existing_by_email.get(email_key)
+        if existing:
+            existing.user_id = assignee_data.get("user_id")
+            existing.display_name = assignee_data.get("display_name")
+            existing.status = assignee_data.get("status", existing.status or "PENDING")
+            existing.completed_at = assignee_data.get("completed_at")
+            next_assignees.append(existing)
+            continue
+
+        next_assignees.append(
+            models.ActionItemAssignee(
+                id=str(uuid.uuid4()),
+                action_item_id=db_action.id,
+                user_id=assignee_data.get("user_id"),
+                email=email,
+                display_name=assignee_data.get("display_name"),
+                status=assignee_data.get("status", "PENDING"),
+                completed_at=assignee_data.get("completed_at"),
+            )
+        )
+
+    db_action.assignees = next_assignees
+    sync_action_item_aggregate_status(db_action)
+
+
+def _normalize_legacy_assignees(action_data: dict) -> List[dict]:
+    if action_data.get("assignees") is not None:
+        return list(action_data.get("assignees") or [])
+
+    legacy_email = action_data.get("assigned_email")
+    legacy_user_id = action_data.get("assigned_to")
+    if not legacy_email and not legacy_user_id:
+        return []
+
+    return [{
+        "user_id": legacy_user_id,
+        "email": legacy_email,
+    }]
+
+
 def create_action_item(db: Session, action_data: dict, created_by: str) -> models.ActionItem:
+    normalized_assignees = _normalize_legacy_assignees(action_data)
+    first_assignee = normalized_assignees[0] if normalized_assignees else None
     db_action = models.ActionItem(
         id=action_data.get("id", str(uuid.uuid4())),
         meeting_id=action_data.get("meeting_id"),
         summary_id=action_data.get("summary_id"),
         title=action_data["title"],
         description=action_data.get("description"),
-        assigned_to=action_data.get("assigned_to"),
-        assigned_email=action_data.get("assigned_email"),
+        assigned_to=action_data.get("assigned_to") or (first_assignee.get("user_id") if first_assignee else None),
+        assigned_email=action_data.get("assigned_email") or (first_assignee.get("email") if first_assignee else None),
         status=action_data.get("status", "PENDING"),
         priority=action_data.get("priority", "MEDIUM"),
         due_date=action_data.get("due_date"),
         created_by=created_by,
     )
     db.add(db_action)
+    db.flush()
+    replace_action_item_assignees(db, db_action, normalized_assignees)
     db.commit()
     db.refresh(db_action)
     return db_action
@@ -227,15 +315,28 @@ def update_action_item(db: Session, action_id: str, updates: dict) -> Optional[m
     if not db_action:
         return None
     
-    # Handle status change to COMPLETED
-    if updates.get("status") == "COMPLETED" and db_action.status != "COMPLETED":
-        from datetime import datetime
-        updates["completed_at"] = datetime.now()
-    
+    raw_assignees_payload = updates.pop("assignees", None)
+    assignees_payload = raw_assignees_payload
+    if raw_assignees_payload is None and ("assigned_to" in updates or "assigned_email" in updates):
+        assignees_payload = _normalize_legacy_assignees(updates)
+
     for key, value in updates.items():
         if hasattr(db_action, key):
             setattr(db_action, key, value)
-    
+
+    if assignees_payload is not None:
+        replace_action_item_assignees(db, db_action, assignees_payload)
+        first_assignee = assignees_payload[0] if assignees_payload else None
+        db_action.assigned_to = first_assignee.get("user_id") if first_assignee else None
+        db_action.assigned_email = first_assignee.get("email") if first_assignee else None
+    elif db_action.assignees:
+        sync_action_item_aggregate_status(db_action)
+    elif "status" in updates:
+        if updates.get("status") == "COMPLETED":
+            db_action.completed_at = datetime.now()
+        else:
+            db_action.completed_at = None
+
     db.commit()
     db.refresh(db_action)
     return db_action

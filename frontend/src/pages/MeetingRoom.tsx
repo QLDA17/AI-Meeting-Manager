@@ -101,6 +101,22 @@ const aiNotesFromMeeting = (meeting: MeetingDetail | null) => {
   };
 };
 
+const normalizeRole = (value: unknown): Participant["role"] => {
+  const role = String(value || "").toLowerCase();
+  if (role.includes("organizer") || role.includes("host")) return "organizer";
+  if (role.includes("presenter")) return "presenter";
+  return "attendee";
+};
+
+const dedupeActionItems = (items: any[]) => {
+  const byId = new Map<string, any>();
+  items.forEach((item) => {
+    if (!item?.id) return;
+    byId.set(item.id, item);
+  });
+  return Array.from(byId.values());
+};
+
 // ─── Mock Data ───────────────────────────────────────────────────────────────
 
 const WAVEFORM_HEIGHTS = [0, 1, 2, 3, 4, 5, 4, 3, 2, 1, 0].map(() => Math.random() * 40 + 10);
@@ -253,11 +269,9 @@ const MeetingRoomInner: React.FC = () => {
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [mainView, setMainView] = useState<"camera" | "screen">("camera");
   
-  const [participants, setParticipants] = useState<Participant[]>(() => [
-    { id: user?.id || "me", name: user?.displayName || user?.email?.split('@')[0] || "Bạn", role: "organizer", micOn: roomState.enableMic !== false, cameraOn: roomState.enableCamera !== false, handRaised: false },
-  ]);
-
-  const [spotlightId, setSpotlightId] = useState<string>("me");
+  const [remoteParticipants, setRemoteParticipants] = useState<Participant[]>([]);
+  const selfParticipantId = user?.id || "me";
+  const [spotlightId, setSpotlightId] = useState<string>(selfParticipantId);
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const { transcript: wsTranscripts, lastEvent: wsEvent, status: wsStatus, connect, sendJson, disconnect, isConnected, onReconnect } = useWebSocket();
 
@@ -278,21 +292,63 @@ const MeetingRoomInner: React.FC = () => {
   } = useAudioRecorder(localStream, meetingId);
 
   const selfParticipant = useMemo<Participant>(() => ({
-    id: user?.id || "me",
+    id: selfParticipantId,
     name: user?.displayName || user?.email?.split('@')[0] || "Bạn",
     role: isOrganizer ? "organizer" : "attendee",
     stream: localStream,
     micOn,
     cameraOn,
     handRaised: false,
-  }), [cameraOn, isOrganizer, localStream, micOn, user?.displayName, user?.email, user?.id]);
+  }), [cameraOn, isOrganizer, localStream, micOn, selfParticipantId, user?.displayName, user?.email]);
+
+  const mapOnlineParticipants = useCallback((onlineRows: any[], participantRows: any[] = []): Participant[] => {
+    const byId = new Map<string, Participant>();
+    onlineRows.forEach((onlineRow: any) => {
+      const id = String(onlineRow?.user_id || onlineRow?.id || onlineRow?.participant_id || "");
+      if (!id || id === selfParticipantId) return;
+      const matchedParticipant = participantRows.find((participant: any) => {
+        const participantId = String(participant?.user_id || participant?.id || participant?.participant_id || "");
+        const participantEmail = String(participant?.email || "").toLowerCase();
+        const onlineEmail = String(onlineRow?.email || "").toLowerCase();
+        return participantId === id || (participantEmail && onlineEmail && participantEmail === onlineEmail);
+      });
+      const existing = byId.get(id);
+      byId.set(id, {
+        id,
+        name:
+          onlineRow?.displayName
+          || onlineRow?.name
+          || matchedParticipant?.displayName
+          || matchedParticipant?.name
+          || matchedParticipant?.email
+          || onlineRow?.email
+          || existing?.name
+          || "Thành viên",
+        role: normalizeRole(onlineRow?.role || matchedParticipant?.role),
+        micOn: onlineRow?.micOn ?? onlineRow?.mic_on ?? existing?.micOn ?? true,
+        cameraOn: onlineRow?.cameraOn ?? onlineRow?.camera_on ?? existing?.cameraOn ?? true,
+        handRaised: onlineRow?.handRaised ?? onlineRow?.hand_raised ?? existing?.handRaised ?? false,
+        isSpeaking: onlineRow?.isSpeaking ?? onlineRow?.is_speaking ?? existing?.isSpeaking ?? false,
+      });
+    });
+    return Array.from(byId.values());
+  }, [selfParticipantId]);
+
+  const participants = useMemo<Participant[]>(() => {
+    const byId = new Map<string, Participant>();
+    remoteParticipants.forEach((participant) => {
+      if (!participant?.id || participant.id === selfParticipantId) return;
+      byId.set(participant.id, participant);
+    });
+    return [selfParticipant, ...Array.from(byId.values())];
+  }, [remoteParticipants, selfParticipant, selfParticipantId]);
 
   const spotlightParticipant = useMemo(() =>
     participants.find(p => p.id === spotlightId)
-      || (spotlightId === "me" ? selfParticipant : undefined)
+      || (spotlightId === selfParticipantId ? selfParticipant : undefined)
       || participants[0]
       || selfParticipant
-  , [participants, selfParticipant, spotlightId]);
+  , [participants, selfParticipant, selfParticipantId, spotlightId]);
 
   const spotlightName = spotlightParticipant.name || "Người tham gia";
   const spotlightInitial = (spotlightName.trim()[0] || "?").toUpperCase();
@@ -300,6 +356,21 @@ const MeetingRoomInner: React.FC = () => {
   const galleryParticipants = useMemo(() => 
     participants.filter(p => p.id !== spotlightId)
   , [participants, spotlightId]);
+
+  const sidebarParticipants = useMemo(
+    () => participants.filter((participant) => participant.id !== selfParticipantId),
+    [participants, selfParticipantId],
+  );
+
+  useEffect(() => {
+    setSpotlightId((current) => (current === "me" ? selfParticipantId : current));
+  }, [selfParticipantId]);
+
+  useEffect(() => {
+    if (!participants.some((participant) => participant.id === spotlightId)) {
+      setSpotlightId(selfParticipantId);
+    }
+  }, [participants, selfParticipantId, spotlightId]);
 
   useEffect(() => {
     if (!code) return;
@@ -385,24 +456,7 @@ const MeetingRoomInner: React.FC = () => {
       }
       const participantRows = Array.isArray(wsEvent.participants) ? wsEvent.participants : [];
       const onlineRows = Array.isArray(wsEvent.online_participants) ? wsEvent.online_participants : [];
-      const byId = new Map<string, Participant>();
-      [...participantRows, ...onlineRows].forEach((p: any) => {
-        const id = p.user_id || p.id || p.participant_id;
-        if (!id || id === user?.id) return;
-        const existing = byId.get(id);
-        byId.set(id, {
-          id,
-          name: p.displayName || p.name || p.email || existing?.name || "Thành viên",
-          role: (p.role || "attendee").toString().toLowerCase().includes("host") ? "organizer" : "attendee",
-          micOn: existing?.micOn ?? true,
-          cameraOn: existing?.cameraOn ?? true,
-          handRaised: existing?.handRaised ?? false,
-        });
-      });
-      setParticipants((prev) => {
-        const local = prev.find(p => p.id === user?.id || p.id === "me") || selfParticipant;
-        return [local, ...Array.from(byId.values())];
-      });
+      setRemoteParticipants(mapOnlineParticipants(onlineRows, participantRows));
       const transcriptPayload = wsEvent.transcript || {};
       const snapshotChunks = Array.isArray(transcriptPayload.chunks)
         ? transcriptPayload.chunks.map((chunk: any, index: number) => normalizeRoomTranscriptChunk(chunk, index, "snapshot"))
@@ -426,6 +480,17 @@ const MeetingRoomInner: React.FC = () => {
       } else {
         setAiNotesStatus(wsEvent.summary_status || null);
       }
+      if (wsEvent.transcript_status || typeof wsEvent.has_transcript_draft === "boolean") {
+        setRemoteMeeting((current) => current ? {
+          ...current,
+          transcriptStatus: wsEvent.transcript_status ?? current.transcriptStatus,
+          hasTranscriptDraft: wsEvent.has_transcript_draft ?? current.hasTranscriptDraft,
+          summaryStatus: wsEvent.summary_status ?? current.summaryStatus,
+        } : current);
+      }
+      if (Array.isArray(wsEvent.action_items)) {
+        setRemoteMeeting((current) => current ? { ...current, actionItems: dedupeActionItems(wsEvent.action_items) } : current);
+      }
     } else if (wsEvent.type === "chat.message" && wsEvent.message) {
       const message = normalizeMeetingMessage(wsEvent.message);
       setChatMessages((current) =>
@@ -436,14 +501,17 @@ const MeetingRoomInner: React.FC = () => {
       }
     } else if (wsEvent.type === "ai.notes.started") {
       setAiNotesStatus("PROCESSING");
+      setRemoteMeeting((current) => current ? { ...current, summaryStatus: "PROCESSING" } : current);
       showToast.info("AI Notes đang được tạo...");
     } else if ((wsEvent.type === "ai.notes.completed" || wsEvent.type === "ai.notes") && wsEvent.summary_status === "COMPLETED") {
       setAiNotes(wsEvent.summary || null);
       setAiNotesStatus("COMPLETED");
+      setRemoteMeeting((current) => current ? { ...current, summaryStatus: "COMPLETED" } : current);
       showToast.success("AI Notes đã sẵn sàng");
     } else if (wsEvent.type === "ai.notes.failed") {
       setAiNotes(wsEvent.summary || null);
       setAiNotesStatus("FAILED");
+      setRemoteMeeting((current) => current ? { ...current, summaryStatus: "FAILED" } : current);
       showToast.error("AI Notes tạo thất bại");
     } else if (wsEvent.type === "meeting.status" && wsEvent.status) {
       showToast.info(`Trạng thái cuộc họp: ${wsEvent.status}`);
@@ -465,48 +533,53 @@ const MeetingRoomInner: React.FC = () => {
         return next;
       });
     } else if (wsEvent.type === "participant.list" && wsEvent.participants) {
-      const remoteParticipants: Participant[] = wsEvent.participants
-        .filter((p: any) => p.id !== user?.id)
-        .map((p: any) => ({
-          id: p.id,
-          name: p.displayName || p.email || 'Thành viên',
-          role: 'attendee' as const,
-          micOn: true,
-          cameraOn: true,
-          handRaised: false,
-        }));
-      setParticipants(prev => {
-        const local = prev.find(p => p.id === user?.id) || prev[0];
-        return [local, ...remoteParticipants];
-      });
+      const participantRows = Array.isArray(wsEvent.all_participants) ? wsEvent.all_participants : [];
+      setRemoteParticipants(mapOnlineParticipants(wsEvent.participants, participantRows));
     } else if (wsEvent.type === "participant.joined" && wsEvent.user) {
-      if (wsEvent.user.id !== user?.id) {
-        setParticipants(prev => {
-          if (prev.some(p => p.id === wsEvent.user.id)) return prev;
-          return [...prev, {
-            id: wsEvent.user.id,
-            name: wsEvent.user.displayName || wsEvent.user.email || 'Thành viên',
-            role: 'attendee' as const,
-            micOn: true,
-            cameraOn: true,
-            handRaised: false,
-          }];
-        });
+      if (wsEvent.user.id !== selfParticipantId) {
+        setRemoteParticipants((prev) => mapOnlineParticipants([...prev, wsEvent.user], []));
         const name = wsEvent.user.displayName || wsEvent.user.email || "Một thành viên";
         showToast.info(`${name} đã vào phòng`);
       }
     } else if (wsEvent.type === "participant.left" && wsEvent.user) {
-      setParticipants(prev => prev.filter(p => p.id !== wsEvent.user.id));
+      setRemoteParticipants((prev) => prev.filter((participant) => participant.id !== wsEvent.user.id));
       const name = wsEvent.user.displayName || wsEvent.user.email || "Một thành viên";
       showToast.info(`${name} đã rời phòng`);
     } else if (wsEvent.type === "participant.state" && wsEvent.user_id) {
-      setParticipants(prev => prev.map(p =>
+      setRemoteParticipants(prev => prev.map(p =>
         p.id === wsEvent.user_id
           ? { ...p, micOn: wsEvent.micOn ?? p.micOn, cameraOn: wsEvent.cameraOn ?? p.cameraOn }
           : p
       ));
+    } else if (wsEvent.type === "action_item.updated" && wsEvent.action_item) {
+      setRemoteMeeting((current) => {
+        if (!current) return current;
+        const nextItems = dedupeActionItems([...(current.actionItems || []).filter((item) => item.id !== wsEvent.action_item.id), wsEvent.action_item]);
+        return { ...current, actionItems: nextItems };
+      });
+      setAiNotes((current: any) => {
+        if (!current) return current;
+        return {
+          ...current,
+          action_items: dedupeActionItems([...(Array.isArray(current.action_items) ? current.action_items.filter((item: any) => item.id !== wsEvent.action_item.id) : []), wsEvent.action_item]),
+        };
+      });
+    } else if (wsEvent.type === "action_item.deleted" && wsEvent.action_item_id) {
+      setRemoteMeeting((current) => current ? {
+        ...current,
+        actionItems: (current.actionItems || []).filter((item) => item.id !== wsEvent.action_item_id),
+      } : current);
+      setAiNotes((current: any) => {
+        if (!current) return current;
+        return {
+          ...current,
+          action_items: Array.isArray(current.action_items)
+            ? current.action_items.filter((item: any) => item.id !== wsEvent.action_item_id)
+            : current.action_items,
+        };
+      });
     }
-  }, [selfParticipant, user?.id, wsEvent, sidePanel]);
+  }, [mapOnlineParticipants, selfParticipantId, sidePanel, wsEvent]);
 
   // Transition meeting status: upcoming → live when entering room (organizer only)
   const statusUpdatedRef = useRef(false);
@@ -663,6 +736,34 @@ const MeetingRoomInner: React.FC = () => {
 
   const [isFinalizing, setIsFinalizing] = useState(false);
 
+  const applyFinalizeResult = useCallback((result: any) => {
+    setRemoteMeeting((current) => current ? {
+      ...current,
+      transcriptStatus: result?.transcript_status ?? current.transcriptStatus,
+      hasTranscriptDraft: result?.has_transcript_draft ?? current.hasTranscriptDraft,
+      summaryStatus: result?.summary_status ?? current.summaryStatus,
+    } : current);
+    if (result?.summary) {
+      setAiNotes(result.summary);
+    }
+    if (result?.summary_status) {
+      setAiNotesStatus(result.summary_status);
+    }
+    if (result?.transcript_status === "EMPTY") {
+      showToast.info("Chưa phát hiện giọng nói rõ để lưu transcript.");
+      return;
+    }
+    if (result?.summary_status === "COMPLETED") {
+      showToast.success("Đã lưu transcript và tạo AI Notes thành công.");
+      return;
+    }
+    if (result?.summary_status === "FAILED") {
+      showToast.error("Đã lưu transcript, chưa tạo được bản tổng hợp.");
+      return;
+    }
+    showToast.info("Đã lưu transcript.");
+  }, []);
+
   const leaveMeeting = async () => {
     // Participant: chỉ rời phòng, không kết thúc cuộc họp
     if (!isOrganizer) {
@@ -670,6 +771,7 @@ const MeetingRoomInner: React.FC = () => {
       localStream?.getAudioTracks().forEach(t => t.stop());
       screenStream?.getTracks().forEach(t => t.stop());
       disconnect();
+      showToast.info("Bản nháp transcript vẫn được giữ lại trong cuộc họp.");
       navigate("/meetings");
       return;
     }
@@ -677,29 +779,20 @@ const MeetingRoomInner: React.FC = () => {
     // Organizer: kết thúc cuộc họp + finalize
     if (meetingId) {
       setIsFinalizing(true);
-      showToast.info("Đang lưu transcript và tóm tắt AI...");
+      showToast.info("Đang lưu bản nháp transcript và tạo AI Notes...");
       try {
         await api.post(`/api/meetings/${meetingId}/start`).catch(() => {});
         await api.post(`/api/meetings/${meetingId}/end`, { status: "processing" });
         if (isRecording) {
           try {
             const result = await finalize(meetingId, "vi");
-            if (result?.transcript_status === "EMPTY") {
-              showToast.info("Không có giọng nói rõ để lưu transcript.");
-            } else if (result?.summary_status === "FAILED") {
-              setAiNotesStatus("FAILED");
-              showToast.error("Đã lưu transcript, nhưng AI Notes chưa tạo được.");
-            } else {
-              setAiNotes(result?.summary || null);
-              setAiNotesStatus(result?.summary_status || "COMPLETED");
-              showToast.success("Đã lưu transcript và AI Notes thành công!");
-            }
+            applyFinalizeResult(result);
           } catch (err: any) {
             if (err?.response?.status === 400) {
-              showToast.info("Cuộc họp đã kết thúc, chưa có transcript để xử lý.");
+              showToast.info("Cuộc họp đã kết thúc. Nếu có transcript draft, bạn vẫn có thể xem lại sau.");
             } else {
               console.error("Finalize error:", err);
-              showToast.error("Lưu transcript thất bại.");
+              showToast.error("Bản nháp transcript vẫn được giữ lại, nhưng chưa finalize được.");
             }
           }
         } else {
@@ -711,7 +804,7 @@ const MeetingRoomInner: React.FC = () => {
       } catch {
         // Last resort: try to end the meeting anyway
         await api.post(`/api/meetings/${meetingId}/end`, { status: "completed" }).catch(() => {});
-        showToast.error("Lưu transcript thất bại, nhưng meeting vẫn được tạo");
+        showToast.error("Đã kết thúc cuộc họp. Nếu transcript chưa finalize, bản nháp vẫn còn.");
         navigate("/meetings");
       } finally {
         setIsFinalizing(false);
@@ -755,14 +848,14 @@ const MeetingRoomInner: React.FC = () => {
       .map(([id, value]) => ({ id, ...value }));
     if (interimTranscript.trim()) {
       rows.push({
-        id: user?.id || "me",
+        id: selfParticipantId,
         speaker: "Bạn",
         text: interimTranscript.trim(),
         timestamp: Date.now(),
       });
     }
     return rows;
-  }, [interimTranscript, remoteInterims, user?.id]);
+  }, [interimTranscript, remoteInterims, selfParticipantId]);
 
   const aiNotesSummary = aiNotes?.meeting_summary || aiNotes?.meetingSummary || remoteMeeting?.meetingSummaryText || "";
   const aiNotesKeyPoints = Array.isArray(aiNotes?.key_points)
@@ -770,6 +863,22 @@ const MeetingRoomInner: React.FC = () => {
     : Array.isArray(aiNotes?.keyPoints)
       ? aiNotes.keyPoints
       : remoteMeeting?.keyPointsText || [];
+  const transcriptPersistenceLabel =
+    displayTranscripts.length > 0 || fullTranscript.trim()
+      ? "Đang lưu bản nháp transcript"
+      : meeting?.transcriptStatus === "COMPLETED"
+        ? "Đã lưu transcript"
+        : meeting?.hasTranscriptDraft
+          ? "Đang lưu bản nháp transcript"
+          : "Chưa có transcript";
+  const summaryPersistenceLabel =
+    aiNotesStatus === "COMPLETED"
+      ? "AI Notes đã sẵn sàng"
+      : aiNotesStatus === "FAILED"
+        ? "Đã lưu bản nháp, chưa tạo được bản tổng hợp"
+        : aiNotesStatus === "PROCESSING"
+          ? "Đang tạo bản tổng hợp"
+          : "Chưa có bản tổng hợp";
 
   if (isMeetingLoading) {
     return (
@@ -925,10 +1034,10 @@ const MeetingRoomInner: React.FC = () => {
                 {/* Me Participant */}
                 <motion.div 
                   layout
-                  onClick={() => setSpotlightId('me')}
+                  onClick={() => setSpotlightId(selfParticipantId)}
                   className={clsx(
                     "group relative p-3 rounded-2xl border transition-all cursor-pointer overflow-hidden",
-                    spotlightId === 'me' 
+                    spotlightId === selfParticipantId 
                       ? "bg-gradient-to-br from-indigo-500/10 to-transparent border-indigo-500/30 ring-1 ring-indigo-500/20 shadow-lg shadow-indigo-500/5" 
                       : "bg-white/[0.02] border-white/5 hover:border-white/10 hover:bg-white/[0.04]"
                   )}
@@ -942,7 +1051,7 @@ const MeetingRoomInner: React.FC = () => {
                             {(user?.displayName || "Me")[0]}
                           </div>
                        )}
-                       {spotlightId === 'me' && (
+                       {spotlightId === selfParticipantId && (
                          <div className="absolute inset-0 border-2 border-indigo-500/50 rounded-2xl z-20 pointer-events-none" />
                        )}
                        <div className="absolute bottom-1 right-1 z-30">
@@ -990,11 +1099,11 @@ const MeetingRoomInner: React.FC = () => {
               <div className="space-y-3">
                 <div className="px-2 flex items-center justify-between">
                   <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Thành viên khác</span>
-                  <span className="px-1.5 py-0.5 rounded-md bg-white/5 text-slate-400 text-[8px] font-black uppercase">{galleryParticipants.length}</span>
+                  <span className="px-1.5 py-0.5 rounded-md bg-white/5 text-slate-400 text-[8px] font-black uppercase">{sidebarParticipants.length}</span>
                 </div>
 
                 <div className="space-y-2">
-                  {galleryParticipants.map(p => (
+                  {sidebarParticipants.map(p => (
                     <motion.div 
                       layout
                       key={p.id} 
@@ -1067,7 +1176,7 @@ const MeetingRoomInner: React.FC = () => {
 
         <main className="flex-1 p-6 relative flex flex-col gap-4">
           <div className="flex-1 relative rounded-[2.5rem] bg-slate-900 border border-slate-800 overflow-hidden shadow-2xl group">
-              {spotlightId === 'me' ? (
+              {spotlightId === selfParticipantId ? (
                 localStream && cameraOn ? (
                   <div className="h-full w-full bg-black relative">
                     <VideoView
@@ -1231,8 +1340,9 @@ const MeetingRoomInner: React.FC = () => {
                         <div className="space-y-2 text-xs text-slate-400">
                           <p><span className="font-bold text-slate-200">Cuộc họp:</span> {meeting.title}</p>
                           <p><span className="font-bold text-slate-200">Nhóm:</span> {meeting.groupName || meeting.group?.name || "Chưa gắn nhóm"}</p>
-                          <p><span className="font-bold text-slate-200">Người tham gia:</span> {meeting.attendees?.length || participants.length}</p>
-                          <p><span className="font-bold text-slate-200">Trạng thái:</span> {displayTranscripts.length > 0 ? "Đã có transcript để phân tích" : isAudioRecording ? "Đang nghe và chờ phát hiện giọng nói" : "Sẵn sàng ghi âm"}</p>
+                          <p><span className="font-bold text-slate-200">Người tham gia:</span> {participants.length}</p>
+                          <p><span className="font-bold text-slate-200">Transcript:</span> {transcriptPersistenceLabel}</p>
+                          <p><span className="font-bold text-slate-200">Tóm tắt:</span> {summaryPersistenceLabel}</p>
                         </div>
                       </div>
 
@@ -1318,10 +1428,13 @@ const MeetingRoomInner: React.FC = () => {
                       {/* Full Transcript Preview */}
                       {fullTranscript && (
                          <div className="space-y-4">
-                            <div className="flex items-center gap-2 text-emerald-400">
+                           <div className="flex items-center gap-2 text-emerald-400">
                                <Target size={16} />
                                <span className="text-xs font-bold uppercase tracking-widest">Toàn bộ transcript</span>
                             </div>
+                            <p className="text-[11px] font-black uppercase tracking-widest text-emerald-300">
+                               {transcriptPersistenceLabel}
+                            </p>
                             <div className="p-4 rounded-2xl bg-emerald-500/5 border border-emerald-500/10 text-sm text-slate-400 max-h-40 overflow-y-auto custom-scrollbar leading-relaxed">
                                {fullTranscript}
                             </div>
@@ -1335,19 +1448,9 @@ const MeetingRoomInner: React.FC = () => {
                              setIsFinalizing(true);
                              try {
                                const result = await finalize(meetingId, "vi");
-                               if (result?.summary_status === "COMPLETED") {
-                                 setAiNotes(result.summary || null);
-                                 setAiNotesStatus("COMPLETED");
-                                 showToast.success("Đã tạo AI Notes thành công!");
-                               } else if (result?.summary_status === "FAILED") {
-                                 setAiNotesStatus("FAILED");
-                                 showToast.error("Tạo AI Notes thất bại. Thử lại sau.");
-                               } else {
-                                 setAiNotesStatus(result?.summary_status || null);
-                                 showToast.info("Đã lưu transcript.");
-                               }
+                               applyFinalizeResult(result);
                              } catch {
-                               showToast.error("Lỗi khi tạo AI Notes");
+                               showToast.error("Bản nháp transcript vẫn được giữ lại, nhưng chưa tạo được AI Notes.");
                              } finally {
                                setIsFinalizing(false);
                              }
@@ -1356,7 +1459,7 @@ const MeetingRoomInner: React.FC = () => {
                            className="w-full flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-indigo-600 to-purple-600 px-5 py-3.5 text-sm font-black text-white transition hover:from-indigo-500 hover:to-purple-500 disabled:opacity-50 disabled:cursor-not-allowed"
                          >
                            <Sparkles size={18} className={isFinalizing ? "animate-spin" : ""} />
-                           {isFinalizing ? "Đang tạo AI Notes..." : "Tạo AI Notes"}
+                           {isFinalizing ? "Đang lưu transcript..." : "Lưu transcript & tạo AI Notes"}
                          </button>
                       )}
                    </>
@@ -1408,7 +1511,7 @@ const MeetingRoomInner: React.FC = () => {
         </AnimatePresence>
       </div>
 
-      {!sidePanel && spotlightId !== 'me' && (
+      {!sidePanel && spotlightId !== selfParticipantId && (
          <div className="absolute bottom-24 right-8 w-48 aspect-video rounded-3xl bg-slate-900 border border-slate-700 shadow-2xl overflow-hidden hidden lg:block z-10">
             <VideoView stream={localStream} mirror={true} muted={true} />
          </div>

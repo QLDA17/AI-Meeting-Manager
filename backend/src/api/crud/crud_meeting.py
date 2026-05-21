@@ -73,7 +73,7 @@ def get_meeting_by_id(db: Session, meeting_id: str) -> Optional[models.Meeting]:
         joinedload(models.Meeting.audio_files),
         joinedload(models.Meeting.transcripts),
         joinedload(models.Meeting.summaries),
-        joinedload(models.Meeting.action_items),
+        joinedload(models.Meeting.action_items).joinedload(models.ActionItem.assignees).joinedload(models.ActionItemAssignee.user),
         joinedload(models.Meeting.speaker_mappings),
     ).filter(models.Meeting.id == meeting_id).first()
 

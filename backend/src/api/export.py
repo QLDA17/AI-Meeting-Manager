@@ -22,6 +22,16 @@ from . import auth, models
 
 router = APIRouter(prefix="/api/export", tags=["export"])
 
+
+def _format_action_item_assignee_summary(item: models.ActionItem) -> str:
+    assignees = getattr(item, "assignees", []) or []
+    if assignees:
+        return ", ".join(
+            f"{(assignee.display_name or assignee.email)} [{assignee.status}]"
+            for assignee in assignees
+        )
+    return item.assigned_email or item.assigned_to or 'N/A'
+
 class ExportRequest(BaseModel):
     meeting_id: str
     format: str  # "pdf" or "docx"
@@ -82,7 +92,7 @@ def create_pdf_export(meeting: models.Meeting, request: ExportRequest, db: Sessi
         pdf.cell(0, 10, 'Action Items:', 0, 1)
         pdf.set_font('Arial', '', 12)
         for item in action_items:
-            owner = item.assigned_email or item.assigned_to or 'N/A'
+            owner = _format_action_item_assignee_summary(item)
             deadline = item.due_date.strftime('%d/%m/%Y') if item.due_date else 'N/A'
             pdf.cell(0, 8, f"• {item.title} (Owner: {owner}, Deadline: {deadline})", 0, 1)
         pdf.ln(10)
@@ -143,7 +153,7 @@ def create_docx_export(meeting: models.Meeting, request: ExportRequest, db: Sess
     if request.include_action_items and action_items:
         doc.add_heading('Action Items', level=1)
         for item in action_items:
-            owner = item.assigned_email or item.assigned_to or 'N/A'
+            owner = _format_action_item_assignee_summary(item)
             deadline = item.due_date.strftime('%d/%m/%Y') if item.due_date else 'N/A'
             doc.add_paragraph(f"• {item.title} (Owner: {owner}, Hạn: {deadline})", style='List Bullet')
 

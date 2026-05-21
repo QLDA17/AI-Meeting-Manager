@@ -47,6 +47,7 @@ class User(Base):
     meeting_participants = relationship("MeetingParticipant", back_populates="user", cascade="all, delete-orphan")
     meeting_messages = relationship("MeetingMessage", back_populates="user", cascade="all, delete-orphan")
     assigned_action_items = relationship("ActionItem", back_populates="assigned_to_user", foreign_keys="ActionItem.assigned_to")
+    action_item_assignments = relationship("ActionItemAssignee", back_populates="user", cascade="all, delete-orphan")
     created_action_items = relationship("ActionItem", back_populates="created_by_user", foreign_keys="ActionItem.created_by")
     sent_invitations = relationship("Invitation", back_populates="invited_by_user", foreign_keys="Invitation.invited_by")
     accepted_invitations = relationship("Invitation", back_populates="accepted_by_user", foreign_keys="Invitation.accepted_by")
@@ -512,6 +513,33 @@ class ActionItem(Base):
     summary = relationship("MeetingSummary", back_populates="linked_action_items")
     assigned_to_user = relationship("User", back_populates="assigned_action_items", foreign_keys=[assigned_to])
     created_by_user = relationship("User", back_populates="created_action_items", foreign_keys=[created_by])
+    assignees = relationship("ActionItemAssignee", back_populates="action_item", cascade="all, delete-orphan")
+
+
+class ActionItemAssignee(Base):
+    __tablename__ = "action_item_assignees"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    action_item_id: Mapped[str] = mapped_column(String(36), ForeignKey("action_items.id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    email: Mapped[str] = mapped_column(String(255), nullable=False)
+    display_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="PENDING")
+    completed_at: Mapped[Optional[DateTime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        CheckConstraint("status IN ('PENDING', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED')", name='check_action_item_assignee_status'),
+        UniqueConstraint('action_item_id', 'email', name='uq_action_item_assignee_email'),
+        Index('idx_action_item_assignees_action_item_id', 'action_item_id'),
+        Index('idx_action_item_assignees_user_id', 'user_id'),
+        Index('idx_action_item_assignees_email', 'email'),
+        Index('idx_action_item_assignees_status', 'status'),
+    )
+
+    action_item = relationship("ActionItem", back_populates="assignees")
+    user = relationship("User", back_populates="action_item_assignments")
 
 
 # ==================== Exports ====================

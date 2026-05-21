@@ -46,11 +46,19 @@ interface WorkletPCMMessage {
   sampleRate: number;
 }
 
+interface DeferredAudioChunk {
+  blob: Blob;
+  chunkIndex: number;
+}
+
 const MAX_CHUNK_SECONDS = 8;
+const VIWHISPER_MAX_CHUNK_SECONDS = 12;
 const SILENCE_THRESHOLD = 0.012;
 const MIN_SPEECH_SECONDS = 0.4;
 const PRE_ROLL_MS = 300;
 const HANGOVER_MS = 1200;
+
+type SttStatus = "idle" | "connecting" | "streaming" | "fallback" | "recording" | "processing" | "error" | "closed";
 
 function resolveWebSocketBaseUrl(): string {
   const configured = import.meta.env.VITE_API_BASE_URL;
@@ -106,16 +114,17 @@ function encodeWAV(samples: Float32Array, sampleRate: number): Blob {
   return new Blob([buffer], { type: "audio/wav" });
 }
 
-export function useLiveTestRecorder() {
+export function useLiveTestRecorder(provider?: string) {
   const [isRecording, setIsRecording] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
   const [chunks, setChunks] = useState<TestTranscriptChunk[]>([]);
   const [fullTranscript, setFullTranscript] = useState("");
   const [allSegments, setAllSegments] = useState<TestTranscriptSegment[]>([]);
   const [interimTranscript, setInterimTranscript] = useState("");
   const [aiNotes, setAiNotes] = useState<TestAiNotes | null>(null);
   const [summaryStatus, setSummaryStatus] = useState<string | null>(null);
-  const [sttStatus, setSttStatus] = useState<"idle" | "connecting" | "streaming" | "fallback" | "error" | "closed">("idle");
+  const [sttStatus, setSttStatus] = useState<SttStatus>("idle");
   const [nlpMetadata, setNlpMetadata] = useState<any | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -134,6 +143,8 @@ export function useLiveTestRecorder() {
   const sttSocketRef = useRef<WebSocket | null>(null);
   const fallbackModeRef = useRef(false);
   const intentionalCloseRef = useRef(false);
+  const viWhisperQueueRef = useRef<DeferredAudioChunk[]>([]);
+  const isViWhisper = provider === "viwhisper";
 
   const rebuildTranscript = useCallback(() => {
     const ordered = Array.from(chunksRef.current.values()).sort((a, b) => a.chunkIndex - b.chunkIndex);
@@ -173,6 +184,9 @@ export function useLiveTestRecorder() {
     formData.append("audio", blob, `test_chunk_${chunkIndex}.wav`);
     formData.append("chunk_index", String(chunkIndex));
     formData.append("language", "vi");
+    if (provider) {
+      formData.append("provider_name", provider);
+    }
 
     try {
       const response = await api.post("/api/test-stt/transcribe-chunk", formData, {
@@ -194,7 +208,27 @@ export function useLiveTestRecorder() {
     } finally {
       pendingChunksRef.current -= 1;
     }
-  }, [mergeChunk]);
+  }, [mergeChunk, provider]);
+
+  const transcribeDeferredViWhisperChunks = useCallback(async () => {
+    const queuedChunks = viWhisperQueueRef.current.splice(0);
+    if (!queuedChunks.length) {
+      setSttStatus("closed");
+      return;
+    }
+
+    setIsTranscribing(true);
+    setSttStatus("processing");
+    setError(null);
+    try {
+      for (const queuedChunk of queuedChunks) {
+        await sendChunk(queuedChunk.blob, queuedChunk.chunkIndex);
+      }
+    } finally {
+      setIsTranscribing(false);
+      setSttStatus("closed");
+    }
+  }, [sendChunk]);
 
   const startChunkRecording = useCallback(async () => {
     setError(null);
@@ -204,6 +238,7 @@ export function useLiveTestRecorder() {
     setInterimTranscript("");
     chunksRef.current.clear();
     chunkCounterRef.current = 0;
+    viWhisperQueueRef.current = [];
     rebuildTranscript();
 
     try {
@@ -234,7 +269,12 @@ export function useLiveTestRecorder() {
         if (!data || data.type !== "chunk") return;
         const chunkIndex = chunkCounterRef.current;
         chunkCounterRef.current += 1;
-        sendChunk(encodeWAV(data.samples, sampleRateRef.current), chunkIndex);
+        const blob = encodeWAV(data.samples, sampleRateRef.current);
+        if (isViWhisper) {
+          viWhisperQueueRef.current.push({ blob, chunkIndex });
+        } else {
+          sendChunk(blob, chunkIndex);
+        }
         if (data.reason === "manual" && flushResolverRef.current) {
           flushResolverRef.current();
           flushResolverRef.current = null;
@@ -245,7 +285,7 @@ export function useLiveTestRecorder() {
         config: {
           silenceThreshold: SILENCE_THRESHOLD,
           minSpeechSeconds: MIN_SPEECH_SECONDS,
-          maxChunkSeconds: MAX_CHUNK_SECONDS,
+          maxChunkSeconds: isViWhisper ? VIWHISPER_MAX_CHUNK_SECONDS : MAX_CHUNK_SECONDS,
           preRollMs: PRE_ROLL_MS,
           hangoverMs: HANGOVER_MS,
         },
@@ -259,12 +299,12 @@ export function useLiveTestRecorder() {
       filterNodeRef.current = highpass;
       workletNodeRef.current = workletNode;
       setIsRecording(true);
-      setSttStatus("fallback");
+      setSttStatus(isViWhisper ? "recording" : "fallback");
     } catch (err: any) {
       setError(err?.message || "Không mở được microphone");
       setSttStatus("error");
     }
-  }, [rebuildTranscript, sendChunk]);
+  }, [isViWhisper, rebuildTranscript, sendChunk]);
 
   const setupStreamingAudio = useCallback(async (ws: WebSocket) => {
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -318,7 +358,16 @@ export function useLiveTestRecorder() {
     intentionalCloseRef.current = false;
     chunksRef.current.clear();
     chunkCounterRef.current = 0;
+    viWhisperQueueRef.current = [];
     rebuildTranscript();
+
+    // If custom provider, skip WebSocket streaming and use chunk-based recording.
+    if (provider) {
+      fallbackModeRef.current = true;
+      setSttStatus(isViWhisper ? "recording" : "fallback");
+      await startChunkRecording();
+      return;
+    }
 
     const wsUrl = `${resolveWebSocketBaseUrl()}/api/test-stt/stream?token=${encodeURIComponent(getAuthToken())}`;
     let ws = new WebSocket(wsUrl);
@@ -416,7 +465,7 @@ export function useLiveTestRecorder() {
         resolve();
       };
     });
-  }, [mergeChunk, rebuildTranscript, setupStreamingAudio, startChunkRecording]);
+  }, [isViWhisper, mergeChunk, rebuildTranscript, setupStreamingAudio, startChunkRecording, provider]);
 
   const flushRecording = useCallback(async () => {
     if (!workletNodeRef.current) return;
@@ -435,6 +484,8 @@ export function useLiveTestRecorder() {
 
   const stopRecording = useCallback(async () => {
     intentionalCloseRef.current = true;
+
+    const shouldTranscribeDeferredViWhisper = fallbackModeRef.current && isViWhisper;
 
     if (fallbackModeRef.current) {
       await flushRecording();
@@ -477,8 +528,12 @@ export function useLiveTestRecorder() {
     streamRef.current = null;
     setIsRecording(false);
     setInterimTranscript("");
-    setSttStatus(fallbackModeRef.current ? "fallback" : "closed");
-  }, [flushRecording]);
+    setSttStatus(shouldTranscribeDeferredViWhisper ? "processing" : fallbackModeRef.current ? "fallback" : "closed");
+
+    if (shouldTranscribeDeferredViWhisper) {
+      await transcribeDeferredViWhisperChunks();
+    }
+  }, [flushRecording, isViWhisper, transcribeDeferredViWhisperChunks]);
 
   const analyze = useCallback(async () => {
     await stopRecording();
@@ -519,6 +574,7 @@ export function useLiveTestRecorder() {
   const reset = useCallback(async () => {
     await stopRecording();
     chunksRef.current.clear();
+    viWhisperQueueRef.current = [];
     sttSocketRef.current?.close();
     sttSocketRef.current = null;
     fullTranscriptRef.current = "";
@@ -530,6 +586,7 @@ export function useLiveTestRecorder() {
     setSummaryStatus(null);
     setInterimTranscript("");
     setSttStatus("idle");
+    setIsTranscribing(false);
     setNlpMetadata(null);
     setError(null);
   }, [stopRecording]);
@@ -550,6 +607,7 @@ export function useLiveTestRecorder() {
   return {
     isRecording,
     isAnalyzing,
+    isTranscribing,
     chunks,
     fullTranscript,
     allSegments,

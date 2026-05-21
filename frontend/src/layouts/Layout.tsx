@@ -12,7 +12,7 @@ const Layout: React.FC = () => {
   const { mobileSidebarOpen, setMobileSidebarOpen } = useUIStore();
 
   return (
-    <div className="app-bg flex min-h-screen bg-gray-50 text-gray-800 dark:bg-slate-950 dark:text-slate-100">
+    <div className="app-bg flex h-screen overflow-hidden bg-gray-50 text-gray-800 dark:bg-slate-950 dark:text-slate-100">
       {/* Sidebar */}
       <Sidebar
         mobileOpen={mobileSidebarOpen}
@@ -20,9 +20,9 @@ const Layout: React.FC = () => {
       />
 
       {/* Main Content */}
-      <main className="min-w-0 flex-1 lg:pl-0">
+      <main className="flex min-h-0 min-w-0 flex-1 flex-col lg:pl-0">
         <Header />
-        <div className="custom-scrollbar min-h-[calc(100vh-64px)] overflow-y-auto px-4 py-6 lg:px-8 lg:py-8">
+        <div className="custom-scrollbar h-[calc(100vh-64px)] overflow-y-auto px-4 py-6 lg:px-8 lg:py-8">
           <Outlet />
         </div>
       </main>

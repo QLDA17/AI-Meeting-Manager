@@ -23,7 +23,7 @@ import { StatCard, Button, AnimatedCounter } from "../components/ui";
 import { useOrgStore } from "../stores";
 import { useAppStore } from "../stores";
 import { usePermission } from "../hooks";
-import { MeetingCard } from "../features/meeting/components/MeetingCard";
+import MeetingCard from "../components/meeting/MeetingCard";
 import { clsx } from "clsx";
 
 const Dashboard: React.FC = () => {
@@ -85,7 +85,7 @@ const Dashboard: React.FC = () => {
         }
       }
     };
-    
+
     initDashboard();
 
     return () => {
@@ -200,106 +200,111 @@ const Dashboard: React.FC = () => {
   }
 
   return (
-    <div className="mx-auto max-w-7xl space-y-10 pb-12">
+    <div className="mx-auto max-w-7xl space-y-10 pb-12 px-4 sm:px-6 lg:px-8">
       {/* Premium Hero Section */}
       <motion.section
         initial={{ opacity: 0, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
-        className="relative overflow-hidden rounded-[2.5rem] border border-primary-100 bg-white p-8 shadow-sm dark:border-slate-800 dark:bg-slate-900 lg:p-12"
+        className="relative overflow-hidden rounded-[2.5rem] border border-primary-50 bg-white p-8 shadow-sm lg:p-12"
       >
         {/* Background Decor */}
-        <div className="absolute right-0 top-0 -mr-24 -mt-24 h-96 w-96 rounded-full bg-primary-50/50 blur-3xl dark:bg-primary-900/10" />
-        <div className="absolute bottom-0 left-0 -ml-24 -mb-24 h-72 w-72 rounded-full bg-blue-50/50 blur-3xl dark:bg-blue-900/10" />
+        <div className="absolute right-0 top-0 -mr-24 -mt-24 h-96 w-96 rounded-full bg-primary-50/40 blur-3xl" />
+        <div className="absolute bottom-0 left-0 -ml-24 -mb-24 h-72 w-72 rounded-full bg-emerald-50/20 blur-3xl" />
 
         <div className="relative z-10 flex flex-col gap-8 lg:flex-row lg:items-center lg:justify-between">
           <div className="max-w-2xl">
-            <div className="mb-4 inline-flex items-center gap-2 rounded-full bg-primary-50 px-3 py-1 text-xs font-semibold text-primary-700 dark:bg-primary-900/30 dark:text-primary-300">
-              <Sparkles size={14} />
+            <div className="mb-6 inline-flex items-center gap-2 rounded-full bg-primary-50 px-4 py-1.5 text-xs font-black uppercase tracking-widest text-primary-700 shadow-sm shadow-primary-500/5">
+              <Sparkles size={14} className="animate-pulse" />
               <span>Workspace của bạn đã sẵn sàng</span>
             </div>
-            <h1 className="text-4xl font-extrabold tracking-tight text-gray-900 dark:text-white sm:text-5xl">
-              {(() => { const h = new Date().getHours(); return h < 12 ? 'Chào buổi sáng' : h < 18 ? 'Chào buổi chiều' : 'Chào buổi tối'; })()}, <span className="text-gradient">{user?.displayName?.split(' ')[0] || user?.email?.split('@')[0]}</span>
+            <h1 className="text-4xl font-black tracking-tight text-gray-900 sm:text-6xl leading-[1.1]">
+              {(() => { const h = new Date().getHours(); return h < 12 ? 'Chào buổi sáng' : h < 18 ? 'Chào buổi chiều' : 'Chào buổi tối'; })()}, <span className="text-primary-600">{user?.displayName?.split(' ')[0] || user?.email?.split('@')[0]}</span>
             </h1>
-            <p className="mt-4 text-lg text-gray-600 dark:text-slate-400">
-              Hôm nay là một ngày tuyệt vời để tối ưu hóa các cuộc họp của bạn. Bạn có <span className="font-semibold text-gray-900 dark:text-white">{processingCount}</span> bản ghi đang xử lý.
+            <p className="mt-6 text-lg font-medium text-gray-500 max-w-lg leading-relaxed">
+              Hôm nay là một ngày tuyệt vời để tối ưu hóa các cuộc họp của bạn. Bạn có <span className="font-black text-gray-900">{processingCount}</span> bản ghi đang xử lý.
             </p>
-            
-            <div className="mt-8 flex flex-wrap gap-4">
-              <Button size="lg" onClick={() => navigate('/meetings/create')} className="h-12 px-8 rounded-xl shadow-lg shadow-primary-500/20">
-                <Plus size={20} className="mr-2" />
+
+            <div className="mt-10 flex flex-wrap gap-4">
+              <Button size="lg" onClick={() => navigate('/meetings/create')} className="h-14 px-10 rounded-2xl shadow-xl shadow-primary-500/25 font-black text-base hover:-translate-y-1 transition-all">
+                <Plus size={20} className="mr-2 stroke-[3]" />
                 Cuộc họp mới
               </Button>
-              <Button size="lg" variant="secondary" onClick={() => navigate('/upload')} className="h-12 px-8 rounded-xl bg-white dark:bg-slate-900">
+              <Button size="lg" variant="secondary" onClick={() => navigate('/upload')} className="h-14 px-10 rounded-2xl bg-white border-gray-100 shadow-sm font-black text-base hover:-translate-y-1 transition-all">
                 <Mic size={20} className="mr-2" />
-                Tải lên ghi âm
+                Tải ghi âm
               </Button>
             </div>
           </div>
 
           <div className="hidden lg:block">
-            <div className="relative h-48 w-48 rounded-3xl bg-gradient-to-br from-primary-500 to-green-400 p-1 shadow-2xl rotate-3 hover:rotate-0 transition-transform duration-500">
-              <div className="flex h-full w-full flex-col items-center justify-center rounded-[1.4rem] bg-white dark:bg-slate-900">
-                <AnimatedCounter value={appStats.totalMeetings} className="text-5xl font-black text-primary-600" />
-                <span className="text-sm font-bold uppercase tracking-widest text-gray-400">Cuộc họp</span>
+            <div className="relative h-56 w-56 rounded-[2.5rem] bg-gradient-to-br from-primary-500 to-emerald-600 p-1 shadow-2xl rotate-3 hover:rotate-0 transition-all duration-500 group">
+              <div className="flex h-full w-full flex-col items-center justify-center rounded-[2.2rem] bg-white">
+                <AnimatedCounter value={appStats.totalMeetings} className="text-6xl font-black text-primary-600" />
+                <span className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-400 mt-1">Cuộc họp</span>
+              </div>
+              <div className="absolute -bottom-4 -right-4 h-16 w-16 rounded-2xl bg-white shadow-xl flex items-center justify-center text-primary-600 group-hover:scale-110 transition-transform">
+                <Zap size={32} fill="currentColor" />
               </div>
             </div>
           </div>
         </div>
       </motion.section>
 
-      <div className="grid grid-cols-1 gap-8 xl:grid-cols-12">
+      <div className="grid grid-cols-1 gap-10 xl:grid-cols-12">
         {/* Main Column */}
-        <div className="space-y-10 xl:col-span-8">
+        <div className="space-y-12 xl:col-span-8">
           {/* Stats Summary */}
-          <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
-            <StatCard 
-              label="Tổng cuộc họp" 
-              value={appStats.totalMeetings} 
-              icon={<FileText size={20} />} 
+          <div className="grid grid-cols-2 gap-5 md:grid-cols-4">
+            <StatCard
+              label="Tổng cuộc họp"
+              value={appStats.totalMeetings}
+              icon={<FileText size={20} />}
               accent="primary"
             />
-            <StatCard 
-              label="Đang xử lý" 
-              value={processingCount} 
-              icon={<Zap size={20} />} 
-              accent={processingCount > 0 ? "warning" : "default"}
+            <StatCard
+              label="Đang xử lý"
+              value={processingCount}
+              icon={<Zap size={20} />}
+              accent="warning"
             />
-            <StatCard 
-              label="Thành viên" 
-              value={currentOrg?.memberCount || 0} 
-              icon={<Users size={20} />} 
+            <StatCard
+              label="Thành viên"
+              value={currentOrg?.memberCount || 0}
+              icon={<Users size={20} />}
+              accent="info"
             />
-            <StatCard 
-              label="Tiết kiệm" 
-              value={hoursSaved} 
-              icon={<Clock3 size={20} />} 
+            <StatCard
+              label="Tiết kiệm"
+              value={hoursSaved}
+              icon={<Clock3 size={20} />}
+              accent="success"
             />
           </div>
 
           {/* Recent Meetings */}
           <section>
-            <div className="mb-6 flex items-center justify-between">
+            <div className="mb-8 flex items-end justify-between">
               <div>
-                <h2 className="text-2xl font-bold text-gray-900 dark:text-white">Cuộc họp gần đây</h2>
-                <p className="text-sm text-gray-500">Truy cập nhanh vào các nội dung vừa thảo luận</p>
+                <h2 className="text-3xl font-black text-gray-900 tracking-tight">Cuộc họp gần đây</h2>
+                <p className="text-sm font-bold text-gray-400 mt-1 uppercase tracking-widest">Truy cập nhanh nội dung vừa thảo luận</p>
               </div>
               <button
                 onClick={() => navigate("/meetings")}
-                className="group inline-flex items-center gap-1.5 text-sm font-bold text-primary-600 transition-colors hover:text-primary-700"
+                className="group inline-flex items-center gap-2 rounded-xl bg-gray-50 px-4 py-2 text-xs font-black text-gray-600 transition-all hover:bg-primary-50 hover:text-primary-700"
               >
                 Xem tất cả
-                <ArrowRight size={18} className="transition-transform group-hover:translate-x-1" />
+                <ArrowRight size={16} className="transition-transform group-hover:translate-x-1" />
               </button>
             </div>
-            
+
             {recentMeetings.length === 0 ? (
-              <div className="rounded-[2rem] border-2 border-dashed border-gray-100 p-12 text-center dark:border-slate-800">
-                <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-gray-50 text-gray-400 dark:bg-slate-800">
+              <div className="rounded-[2.5rem] border-2 border-dashed border-gray-100 p-16 text-center bg-gray-50/30">
+                <div className="mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-3xl bg-white text-gray-300 shadow-sm">
                   <FolderOpen size={32} />
                 </div>
-                <h3 className="mb-2 text-xl font-bold text-gray-900 dark:text-white">Chưa có cuộc họp nào</h3>
-                <p className="mx-auto max-w-xs text-gray-500 dark:text-slate-400">Bắt đầu bằng cách tạo cuộc họp mới hoặc tải lên tệp âm thanh có sẵn.</p>
-                <Button variant="secondary" onClick={() => navigate('/upload')} className="mt-6 rounded-xl px-8">Tải lên ngay</Button>
+                <h3 className="mb-2 text-2xl font-black text-gray-900">Chưa có dữ liệu</h3>
+                <p className="mx-auto max-w-xs text-sm font-medium text-gray-500 leading-relaxed">Bắt đầu bằng cách tạo cuộc họp mới hoặc tải lên tệp âm thanh có sẵn.</p>
+                <Button onClick={() => navigate('/upload')} className="mt-8 rounded-2xl px-10 h-12 shadow-lg shadow-primary-500/20 font-black">Tải lên ngay</Button>
               </div>
             ) : (
               <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
@@ -312,29 +317,29 @@ const Dashboard: React.FC = () => {
         </div>
 
         {/* Right Column */}
-        <div className="space-y-8 xl:col-span-4">
+        <div className="space-y-10 xl:col-span-4">
           {/* visual Calendar Widget */}
-          <div className="rounded-[2rem] border border-gray-100 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+          <div className="rounded-3xl border border-gray-150/70 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900">
             <div className="mb-6 flex items-center justify-between">
-              <h3 className="flex items-center gap-2 text-lg font-bold text-gray-900 dark:text-white">
-                <CalendarIcon size={20} className="text-primary-500" /> Lịch biểu
+              <h3 className="flex items-center gap-2 text-base font-black text-gray-900 dark:text-white uppercase tracking-wider">
+                <CalendarIcon size={18} className="text-primary-500" /> Lịch biểu
               </h3>
-              <div className="flex items-center gap-1">
-                <button 
+              <div className="flex items-center gap-1.5">
+                <button
                   onClick={() => setWeekOffset(prev => prev - 1)}
-                  className="rounded-lg p-1 hover:bg-gray-100 dark:hover:bg-slate-800 transition-colors"
+                  className="rounded-lg p-1 hover:bg-gray-100 dark:hover:bg-slate-800 border border-gray-150/10 dark:border-slate-800 transition-colors"
                 >
                   <ChevronLeft size={16} />
                 </button>
-                <button 
+                <button
                   onClick={() => setWeekOffset(0)}
-                  className="px-2 py-0.5 text-[10px] font-bold text-primary-600 hover:bg-primary-50 rounded"
+                  className="px-2 py-0.5 text-[9px] font-black text-primary-600 dark:text-primary-400 hover:bg-primary-50 dark:hover:bg-primary-950/30 rounded uppercase tracking-wider transition-colors"
                 >
                   Hôm nay
                 </button>
-                <button 
+                <button
                   onClick={() => setWeekOffset(prev => prev + 1)}
-                  className="rounded-lg p-1 hover:bg-gray-100 dark:hover:bg-slate-800 transition-colors"
+                  className="rounded-lg p-1 hover:bg-gray-100 dark:hover:bg-slate-800 border border-gray-150/10 dark:border-slate-800 transition-colors"
                 >
                   <ChevronRight size={16} />
                 </button>
@@ -342,67 +347,85 @@ const Dashboard: React.FC = () => {
             </div>
 
             {/* Mini Horizontal Calendar */}
-            <div className="mb-8 flex justify-between gap-1">
+            <div className="mb-6 flex justify-between gap-1 border-b border-gray-50 dark:border-slate-800/80 pb-5">
               {calendarDays.map((day) => (
-                <div 
+                <div
                   key={day.fullDate}
                   className={clsx(
-                    "flex flex-1 flex-col items-center gap-1 rounded-2xl py-3 transition-all",
-                    day.isToday ? "bg-primary-600 text-white shadow-lg shadow-primary-500/30" : "hover:bg-gray-50 dark:hover:bg-slate-800"
+                    "flex flex-1 flex-col items-center gap-1 rounded-2xl py-2.5 transition-all border",
+                    day.isToday
+                      ? "bg-gradient-to-br from-primary-600 to-emerald-600 text-white border-primary-500/25 shadow-md shadow-primary-500/20"
+                      : "hover:bg-primary-50 border-transparent dark:hover:bg-primary-950/20 text-gray-650 dark:text-slate-400"
                   )}
                 >
-                  <span className={clsx("text-[10px] font-bold uppercase", day.isToday ? "text-primary-100" : "text-gray-400")}>
+                  <span className={clsx("text-[9px] font-black uppercase tracking-wider", day.isToday ? "text-primary-100" : "text-gray-400")}>
                     {day.dayName}
                   </span>
-                  <span className="text-sm font-black">{day.date}</span>
+                  <span className="text-xs font-black">{day.date}</span>
                   {day.hasMeeting && !day.isToday && (
-                    <span className="h-1 w-1 rounded-full bg-primary-500" />
+                    <span className="h-1 w-1 rounded-full bg-primary-500 animate-pulse" />
                   )}
                 </div>
               ))}
             </div>
-            
+
             <div className="space-y-4">
-              <p className="text-[10px] font-black uppercase tracking-widest text-gray-400">Cuộc họp sắp tới</p>
+              <p className="text-[9px] font-black uppercase tracking-widest text-gray-400 dark:text-slate-500">Cuộc họp sắp tới</p>
               {upcomingMeetings.length > 0 ? (
                 upcomingMeetings.map((m) => {
                   const mDate = m.scheduled_start || m.startTime;
                   const parsedDate = mDate ? new Date(mDate) : null;
                   const isValidDate = parsedDate && !isNaN(parsedDate.getTime());
+                  const isLive = m.status === 'live';
                   return (
-                  <div key={m.id} className="group relative flex items-start gap-3 rounded-2xl border border-gray-50 p-3 transition-all hover:bg-gray-50 dark:border-slate-800 dark:hover:bg-slate-800/50">
-                    <div className={clsx(
-                      "flex h-10 w-10 shrink-0 flex-col items-center justify-center rounded-xl font-bold",
-                      m.status === 'live' ? "bg-red-50 text-red-600 dark:bg-red-900/20 dark:text-red-400 animate-pulse" : "bg-primary-50 text-primary-600 dark:bg-primary-900/20 dark:text-primary-400"
-                    )}>
-                      <span className="text-sm leading-none">{isValidDate ? parsedDate.getDate() : '--'}</span>
-                      <span className="text-[8px] uppercase">{isValidDate ? parsedDate.toLocaleDateString('vi-VN', { month: 'short' }) : '--'}</span>
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-bold text-gray-900 dark:text-white group-hover:text-primary-600">{m.title}</p>
-                      <div className="mt-1 flex items-center gap-3 text-xs text-gray-500 dark:text-slate-400">
-                        <span className="flex items-center gap-1 font-medium">
-                          <Clock3 size={12} />
-                          {isValidDate ? parsedDate.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', hour12: false }) : 'Chưa lên lịch'}
-                        </span>
-                        {m.status === 'live' && (
-                          <span className="flex items-center gap-1 font-black text-red-500">
-                            <span className="h-1 w-1 rounded-full bg-red-500 animate-pulse" />
-                            LIVE
-                          </span>
-                        )}
+                    <div
+                      key={m.id}
+                      className="group relative flex items-center justify-between gap-4 p-3.5 transition-all duration-300 hover:bg-gray-50/70 dark:hover:bg-slate-800/40 rounded-2xl border border-transparent hover:border-gray-100 dark:hover:border-slate-800"
+                    >
+                      <div className="flex items-center gap-3.5 min-w-0">
+                        {/* Timeline Indicator Dot */}
+                        <div className="relative flex items-center justify-center shrink-0">
+                          <div className={clsx(
+                            "h-2.5 w-2.5 rounded-full border-2 border-white dark:border-slate-900 shadow-sm",
+                            isLive ? "bg-red-500 animate-pulse" : "bg-primary-500"
+                          )} />
+                        </div>
+                        
+                        <div className="min-w-0">
+                          <p className="truncate text-xs font-extrabold text-gray-900 dark:text-white group-hover:text-primary-600 transition-colors">
+                            {m.title}
+                          </p>
+                          <div className="mt-1 flex items-center gap-2 text-[10px] text-gray-400 dark:text-slate-500 font-semibold">
+                            <span className="text-primary-600 dark:text-primary-400 font-black bg-primary-50 dark:bg-primary-950/40 px-1.5 py-0.5 rounded text-[9px]">
+                              {isValidDate ? parsedDate.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', hour12: false }) : 'Chưa lên lịch'}
+                            </span>
+                            <span>·</span>
+                            <span>
+                              {isValidDate ? `${parsedDate.getDate()} Tháng ${parsedDate.getMonth() + 1}` : 'Chưa rõ ngày'}
+                            </span>
+                            {isLive && (
+                              <span className="inline-flex items-center gap-0.5 font-black text-[8px] text-red-500 bg-red-50 dark:bg-red-950/30 px-1.5 py-0.5 rounded animate-pulse">
+                                LIVE
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                      
+                      <div className="shrink-0 flex items-center text-gray-300 group-hover:text-primary-500 transition-colors">
+                        <ChevronRight size={14} className="transition-transform group-hover:translate-x-0.5" />
                       </div>
                     </div>
-                  </div>
-                )})
+                  )
+                })
               ) : (
-                <div className="py-6 text-center">
+                <div className="py-6 text-center border border-dashed border-gray-150 dark:border-slate-800 rounded-xl">
                   <p className="text-xs text-gray-400">Tuyệt vời! Không có lịch họp nào.</p>
                 </div>
               )}
-              <Button 
-                variant="secondary" 
-                className="w-full rounded-xl border-dashed py-2 text-xs"
+              <Button
+                variant="secondary"
+                className="w-full rounded-xl border-dashed py-2 text-xs font-bold"
                 onClick={() => navigate('/calendar')}
               >
                 Mở lịch biểu đầy đủ
@@ -411,29 +434,15 @@ const Dashboard: React.FC = () => {
           </div>
 
           {/* Quick Actions */}
-          <div className="rounded-3xl border border-gray-100 bg-white p-8 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-            <h3 className="mb-6 flex items-center gap-2 text-lg font-bold text-gray-900 dark:text-white">
-              <Zap size={20} className="text-amber-500" /> Thao tác nhanh
+          <div className="rounded-3xl border border-gray-150/70 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+            <h3 className="mb-6 flex items-center gap-2 text-base font-black text-gray-900 dark:text-white uppercase tracking-wider">
+              <Zap size={18} className="text-amber-500" /> Thao tác nhanh
             </h3>
             <div className="grid grid-cols-2 gap-4">
-              <QuickActionButton icon={<Mic size={24} />} label="Ghi âm" onClick={() => navigate('/upload')} />
-              <QuickActionButton icon={<Plus size={24} />} label="Nhóm mới" onClick={() => navigate("/groups/create")} />
-              <QuickActionButton icon={<FileText size={24} />} label="Dự án" onClick={() => navigate("/meetings")} />
-              <QuickActionButton icon={<Sparkles size={24} />} label="AI Chat" onClick={() => navigate("/notifications")} />
-            </div>
-            
-            {/* Promotion/Info Card */}
-            <div className="mt-8 overflow-hidden rounded-2xl bg-gradient-to-br from-slate-900 to-slate-800 p-6 text-white dark:from-primary-950 dark:to-slate-900">
-              <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-lg bg-white/10 backdrop-blur-md">
-                <Crown size={20} className="text-amber-400" />
-              </div>
-              <h4 className="mb-2 font-bold">Nâng cấp Pro</h4>
-              <p className="mb-4 text-xs text-slate-300 leading-relaxed">
-                Mở khóa tính năng phân tích cảm xúc và tóm tắt đa ngôn ngữ với gói Pro.
-              </p>
-              <button className="w-full rounded-xl bg-primary-500 py-2.5 text-sm font-bold transition-all hover:bg-primary-600 active:scale-[0.98]">
-                Nâng cấp ngay
-              </button>
+              <QuickActionButton icon={<Mic size={20} />} label="Ghi âm" onClick={() => navigate('/upload')} />
+              <QuickActionButton icon={<Plus size={20} />} label="Nhóm mới" onClick={() => navigate("/groups/create")} />
+              <QuickActionButton icon={<FileText size={20} />} label="Dự án" onClick={() => navigate("/meetings")} />
+              <QuickActionButton icon={<Sparkles size={20} />} label="AI Chat" onClick={() => navigate("/notifications")} />
             </div>
           </div>
         </div>
@@ -442,15 +451,17 @@ const Dashboard: React.FC = () => {
   );
 };
 
+
+
 const QuickActionButton: React.FC<{ icon: React.ReactNode, label: string, onClick: () => void }> = ({ icon, label, onClick }) => (
   <button
     onClick={onClick}
-    className="flex flex-col items-center gap-3 rounded-xl border border-gray-100 dark:border-slate-800 p-4 text-xs font-medium text-gray-600 dark:text-slate-400 transition-all hover:bg-primary-50 hover:border-primary-100 hover:text-primary-700 dark:hover:bg-primary-900/10 dark:hover:border-primary-900/20 dark:hover:text-primary-300"
+    className="group flex flex-col items-center justify-center gap-3 rounded-2xl border border-gray-100 bg-gradient-to-b from-white to-gray-50/30 p-4 shadow-sm transition-all duration-300 hover:bg-white hover:border-primary-200 hover:-translate-y-0.5 hover:shadow-md dark:border-slate-800 dark:bg-slate-900 dark:from-slate-900 dark:to-slate-950/20 dark:hover:border-primary-900/40 active:scale-[0.97]"
   >
-    <div className="text-gray-400 dark:text-slate-500 transition-colors">
+    <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-gray-100/50 border border-gray-200/25 text-gray-400 group-hover:text-primary-500 group-hover:bg-primary-50 group-hover:border-primary-100/30 dark:bg-slate-800/80 dark:border-slate-700/25 dark:text-slate-500 dark:group-hover:text-primary-400 dark:group-hover:bg-primary-950/40 dark:group-hover:border-primary-900/30 transition-all duration-300 shrink-0">
       {icon}
     </div>
-    <span>{label}</span>
+    <span className="text-[10px] font-black text-gray-600 dark:text-slate-400 group-hover:text-primary-700 dark:group-hover:text-primary-400 uppercase tracking-wider">{label}</span>
   </button>
 );
 
@@ -486,7 +497,7 @@ const NoOrgView: React.FC = () => {
 
   return (
     <div className="flex min-h-[70vh] items-center justify-center p-4">
-      <motion.div 
+      <motion.div
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}
         className="w-full max-w-md rounded-[2.5rem] border border-gray-100 bg-white p-10 shadow-xl dark:border-slate-800 dark:bg-slate-900"
@@ -543,7 +554,7 @@ const NoOrgView: React.FC = () => {
           <form onSubmit={handleCreate} className="space-y-6">
             <div className="space-y-2">
               <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 ml-1">Tên tổ chức</label>
-              <input 
+              <input
                 autoFocus
                 className="w-full h-14 rounded-2xl border-gray-100 bg-gray-50 px-5 text-lg font-bold focus:border-primary-500 focus:bg-white focus:ring-4 focus:ring-primary-500/10 dark:border-slate-800 dark:bg-slate-800/50 dark:text-white"
                 placeholder="Ví dụ: Công ty MultiMinutes AI"

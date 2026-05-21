@@ -219,8 +219,8 @@ const CalendarView: React.FC = () => {
       )}
 
       {currentOrgId && (
-      <Card className="p-0 overflow-hidden border-none shadow-xl bg-white dark:bg-slate-900">
-        <div className="p-4 border-b border-gray-100 dark:border-slate-800 flex justify-between items-center bg-gray-50/50 dark:bg-slate-800/50">
+      <Card className="border-none bg-white p-0 shadow-xl dark:bg-slate-900">
+        <div className="flex flex-col gap-4 border-b border-gray-100 bg-gray-50/50 p-4 dark:border-slate-800 dark:bg-slate-800/50 lg:flex-row lg:items-center lg:justify-between">
            <div className="flex bg-white dark:bg-slate-900 rounded-lg p-1 border border-gray-200 dark:border-slate-700 shadow-sm">
               <button 
                 onClick={() => setViewType('dayGridMonth')}
@@ -242,7 +242,7 @@ const CalendarView: React.FC = () => {
               </button>
            </div>
            
-           <div className="flex items-center gap-4">
+           <div className="flex flex-wrap items-center gap-4">
               <div className="flex items-center gap-2 text-xs font-medium">
                 <span className="w-3 h-3 rounded-full bg-emerald-500"></span>
                 <span className="text-gray-600 dark:text-slate-400">Đã xong</span>
@@ -270,7 +270,7 @@ const CalendarView: React.FC = () => {
           </div>
         )}
 
-        <div className="relative p-4 calendar-container">
+        <div className="calendar-container relative min-h-[620px] overflow-x-auto p-4">
           {(isLoading || isUpdatingEvent) && (
             <div className="absolute inset-4 z-20 flex items-center justify-center rounded-xl bg-white/70 backdrop-blur-sm dark:bg-slate-900/70">
               <Loader2 className="h-8 w-8 animate-spin text-primary-500" />
@@ -303,6 +303,7 @@ const CalendarView: React.FC = () => {
             eventResize={handleEventResize}
             snapDuration="00:15:00"
             height="auto"
+            contentHeight="auto"
             stickyHeaderDates={true}
             eventTimeFormat={{
               hour: '2-digit',

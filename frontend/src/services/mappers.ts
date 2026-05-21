@@ -141,6 +141,29 @@ export const normalizeActionItem = (actionItem: any): ActionItem => ({
   id: actionItem.id,
   meeting_id: actionItem.meeting_id ?? undefined,
   meeting_title: actionItem.meeting_title ?? actionItem.meetingTitle ?? undefined,
+  assignee_options: Array.isArray(actionItem.assignee_options)
+    ? actionItem.assignee_options
+        .filter((option: any) => option?.email)
+        .map((option: any) => ({
+          email: option.email,
+          label: option.label ?? option.email,
+          user_id: option.user_id ?? option.userId ?? undefined,
+        }))
+    : undefined,
+  assignees: Array.isArray(actionItem.assignees)
+    ? actionItem.assignees
+        .filter((assignee: any) => assignee?.email)
+        .map((assignee: any) => ({
+          id: assignee.id,
+          user_id: assignee.user_id ?? assignee.userId ?? undefined,
+          email: assignee.email,
+          display_name: assignee.display_name ?? assignee.displayName ?? undefined,
+          status: assignee.status ?? 'PENDING',
+          completed_at: assignee.completed_at ?? assignee.completedAt ?? undefined,
+          created_at: asIsoString(assignee.created_at ?? assignee.createdAt),
+          updated_at: asIsoString(assignee.updated_at ?? assignee.updatedAt),
+        }))
+    : [],
   summary_id: actionItem.summary_id ?? undefined,
   title: actionItem.title,
   description: actionItem.description ?? undefined,
@@ -272,6 +295,8 @@ export const normalizeMeetingDetail = (meeting: any): MeetingDetail => ({
   actionItems: Array.isArray(meeting.action_items) ? meeting.action_items.map(normalizeActionItem) : [],
   transcriptContent: meeting.transcript_content ?? undefined,
   transcriptLanguage: meeting.transcript_language ?? undefined,
+  transcriptStatus: meeting.transcript_status ?? undefined,
+  hasTranscriptDraft: Boolean(meeting.has_transcript_draft),
   meetingSummaryText: meeting.meeting_summary_text ?? undefined,
   keyPointsText: Array.isArray(meeting.key_points_text) ? meeting.key_points_text : [],
   decisionsText: Array.isArray(meeting.decisions_text) ? meeting.decisions_text : [],

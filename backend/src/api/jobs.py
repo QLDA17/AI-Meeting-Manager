@@ -183,15 +183,17 @@ class MeetingProcessingJob:
             # Create action items with new schema
             if summary_data.get("action_items"):
                 for ai in summary_data["action_items"]:
+                    owner = (ai.get("owner") or "").strip()
                     action_data = {
                         "meeting_id": self.meeting_id,
                         "summary_id": db_summary.id,
                         "title": ai.get("task", "Untitled"),
                         "description": ai.get("description", ""),
-                        "assigned_email": ai.get("owner", "Unassigned"),
                         "status": "PENDING",
                         "priority": "MEDIUM",
                     }
+                    if owner and owner.lower() != "unassigned":
+                        action_data["assigned_email"] = owner
                     create_action_item(db, action_data, created_by=created_by)
             
             db.commit()

@@ -1,9 +1,10 @@
-import React, { useMemo, useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   AlertCircle,
+  ArrowDownWideNarrow,
   ArrowLeft,
   Calendar,
   CheckCircle2,
@@ -11,6 +12,7 @@ import {
   Download,
   FileText,
   Key,
+  Loader2,
   MessageSquare,
   Pencil,
   RefreshCw,
@@ -22,15 +24,19 @@ import {
   Users,
 } from 'lucide-react';
 import { format } from 'date-fns';
+import type { AxiosError } from 'axios';
 import api from '../services/api';
 import { normalizeMeetingDetail } from '../services/mappers';
-import type { MeetingDetail as MeetingDetailType, MeetingTranscriptSegment } from '../types';
+import type { ActionItem, MeetingDetail as MeetingDetailType, MeetingTranscriptSegment } from '../types';
 import AudioPlayer from '../components/meeting/AudioPlayer';
+import ActionItemComposer from '../components/meeting/ActionItemComposer';
+import MeetingActionItemCard from '../components/meeting/MeetingActionItemCard';
 import { useAuth } from '../context/AuthContext';
-import { usePermission } from '../hooks/usePermission';
 import { showToast, EditTitleModal } from '../components/ui';
+import type { ActionItemAssigneeOption } from '../types/actionItem';
 
 type DetailTab = 'summary' | 'transcript' | 'actions' | 'ai-notes';
+type ActionFilter = 'all' | 'mine' | 'unassigned' | 'completed';
 
 type TranscriptGroup = {
   id: string;
@@ -42,8 +48,15 @@ type TranscriptGroup = {
   texts: string[];
 };
 
-const TRANSCRIPT_GROUP_GAP_SECONDS = 3;
+type ActionEditDraft = {
+  title: string;
+  assignedEmails: string[];
+  dueDate: string;
+  status: string;
+  priority: string;
+};
 
+const TRANSCRIPT_GROUP_GAP_SECONDS = 3;
 const groupTranscriptSegments = (segments: MeetingTranscriptSegment[]): TranscriptGroup[] => {
   const sortedSegments = [...segments]
     .filter((segment) => segment.text?.trim())
@@ -82,9 +95,9 @@ const groupTranscriptSegments = (segments: MeetingTranscriptSegment[]): Transcri
 
 const MeetingDetail: React.FC = () => {
   const { id } = useParams<{ id: string }>();
+  const location = useLocation();
   const navigate = useNavigate();
   const { user } = useAuth();
-  const { isSystemAdmin, isOrgAdmin, isGroupAdmin, isViewer } = usePermission();
   const [activeTab, setActiveTab] = useState<DetailTab>('summary');
   const [isRegenerating, setIsRegenerating] = useState(false);
   const [summaryLanguage, setSummaryLanguage] = useState<string>('vi');
@@ -92,10 +105,32 @@ const MeetingDetail: React.FC = () => {
   const [selectedTranscriptSpeaker, setSelectedTranscriptSpeaker] = useState('all');
   const [editingSpeakerLabel, setEditingSpeakerLabel] = useState<string | null>(null);
   const [speakerNameInput, setSpeakerNameInput] = useState('');
+  const [newActionTitle, setNewActionTitle] = useState('');
+  const [newActionAssigneeEmails, setNewActionAssigneeEmails] = useState<string[]>([]);
+  const [newActionDueDate, setNewActionDueDate] = useState('');
+  const [newActionPriority, setNewActionPriority] = useState('MEDIUM');
+  const [isCreatingAction, setIsCreatingAction] = useState(false);
+  const [isCreateExpanded, setIsCreateExpanded] = useState(false);
+  const [showAdvancedCreateFields, setShowAdvancedCreateFields] = useState(false);
+  const [actionFilter, setActionFilter] = useState<ActionFilter>('all');
+  const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
+  const [editingActionId, setEditingActionId] = useState<string | null>(null);
+  const [actionEditDraft, setActionEditDraft] = useState<ActionEditDraft | null>(null);
+  const [savingActionId, setSavingActionId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const initialTab = (location.state as { initialTab?: DetailTab } | null)?.initialTab;
+    if (initialTab === 'actions') {
+      setActiveTab('actions');
+      navigate(location.pathname, { replace: true, state: null });
+    }
+  }, [location.pathname, location.state, navigate]);
 
   const query = useQuery({
     queryKey: ['meeting-detail', id],
     enabled: Boolean(id),
+    refetchInterval: 3000,
+    refetchIntervalInBackground: true,
     queryFn: async (): Promise<MeetingDetailType> => {
       const response = await api.get(`/api/meetings/${id}`);
       return normalizeMeetingDetail(response.data);
@@ -104,6 +139,24 @@ const MeetingDetail: React.FC = () => {
 
   const meeting = query.data;
   const actionItems = meeting?.actionItems || [];
+  const assigneeOptions = useMemo<ActionItemAssigneeOption[]>(() => {
+    const options = new Map<string, ActionItemAssigneeOption>();
+    meeting?.attendees.forEach((attendee) => {
+      const email = attendee.email?.trim();
+      if (!email || options.has(email)) return;
+      options.set(email, {
+        email,
+        label: attendee.displayName || [attendee.firstName, attendee.lastName].filter(Boolean).join(' ') || attendee.username || email,
+      });
+    });
+    if (meeting?.createdByUser?.email && !options.has(meeting.createdByUser.email)) {
+      options.set(meeting.createdByUser.email, {
+        email: meeting.createdByUser.email,
+        label: meeting.createdByUser.displayName || meeting.createdByUser.username || meeting.createdByUser.email,
+      });
+    }
+    return Array.from(options.values()).sort((a, b) => a.label.localeCompare(b.label));
+  }, [meeting]);
 
   // RSVP: fetch current user's invite status
   const [myInviteStatus, setMyInviteStatus] = useState<string | null>(null);
@@ -176,6 +229,13 @@ const MeetingDetail: React.FC = () => {
       : hasAiNotes
         ? 'AI Notes đã sẵn sàng'
         : 'Chưa có AI Notes';
+  const transcriptStatusLabel = meeting?.transcriptStatus === 'COMPLETED'
+    ? 'Transcript completed'
+    : meeting?.transcriptStatus === 'DRAFT'
+      ? 'Draft available'
+      : meeting?.transcriptStatus === 'FAILED'
+        ? 'Transcript failed'
+        : 'Chưa có transcript';
   const formatSegmentTime = (seconds: number) => {
     const safeSeconds = Number.isFinite(seconds) ? Math.max(0, seconds) : 0;
     const minutes = Math.floor(safeSeconds / 60);
@@ -191,10 +251,45 @@ const MeetingDetail: React.FC = () => {
   const canManageMeeting = Boolean(
     meeting &&
       user &&
-      !isViewer &&
-      (isSystemAdmin || isOrgAdmin || isGroupAdmin || meeting.createdBy === user.id),
+      user.systemRole !== 'viewer' &&
+      (
+        user.systemRole === 'system-admin' ||
+        user.orgMemberships?.some((membership) => membership.orgId === meeting.organization_id && membership.role === 'org-admin') ||
+        (meeting.group_id && user.groupMemberships?.some((membership) => membership.groupId === meeting.group_id && membership.role === 'group-admin')) ||
+        meeting.createdBy === user.id
+      ),
   );
+  const isMeetingGroupAdmin = Boolean(
+    meeting &&
+      user &&
+      (
+        user.systemRole === 'system-admin' ||
+        (meeting.group_id && user.groupMemberships?.some((membership) => membership.groupId === meeting.group_id && membership.role === 'group-admin'))
+      ),
+  );
+  const isMeetingOrgAdmin = Boolean(
+    meeting &&
+      user &&
+      (
+        user.systemRole === 'system-admin' ||
+        user.orgMemberships?.some((membership) => membership.orgId === meeting.organization_id && membership.role === 'org-admin')
+      ),
+  );
+  const canManageActionItems = Boolean(meeting && (meeting.group_id ? isMeetingGroupAdmin : isMeetingOrgAdmin));
   const canJoinRoom = meeting?.status === 'upcoming' || meeting?.status === 'live';
+  const isCurrentUserAssignee = (item: ActionItem) =>
+    Boolean(
+      user &&
+        item.assignees.some(
+          (assignee) =>
+            assignee.user_id === user.id ||
+            Boolean(
+              user.email &&
+                assignee.email &&
+                assignee.email.toLowerCase() === user.email.toLowerCase(),
+            ),
+        ),
+    );
 
   const handleRegenerateAINotes = async (lang?: string) => {
     if (!id || !transcript) return;
@@ -244,6 +339,68 @@ const MeetingDetail: React.FC = () => {
     }
   };
 
+  const filteredActionItems = useMemo(() => {
+    const items = [...actionItems].filter((item) => {
+      switch (actionFilter) {
+        case 'mine':
+          return isCurrentUserAssignee(item);
+        case 'unassigned':
+          return item.assignees.length === 0;
+        case 'completed':
+          return item.status === 'COMPLETED';
+        default:
+          return true;
+      }
+    });
+
+    return items.sort((left, right) => {
+      const leftDone = left.status === 'COMPLETED' ? 1 : 0;
+      const rightDone = right.status === 'COMPLETED' ? 1 : 0;
+      if (leftDone !== rightDone) return leftDone - rightDone;
+
+      const leftDue = left.due_date ? new Date(left.due_date).getTime() : Number.MAX_SAFE_INTEGER;
+      const rightDue = right.due_date ? new Date(right.due_date).getTime() : Number.MAX_SAFE_INTEGER;
+      if (leftDue !== rightDue) return leftDue - rightDue;
+
+      return new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime();
+    });
+  }, [actionFilter, actionItems, user]);
+
+  const actionFilterCounts = useMemo(
+    () => ({
+      all: actionItems.length,
+      mine: actionItems.filter((item) => isCurrentUserAssignee(item)).length,
+      unassigned: actionItems.filter((item) => item.assignees.length === 0).length,
+      completed: actionItems.filter((item) => item.status === 'COMPLETED').length,
+    }),
+    [actionItems, user],
+  );
+
+  const actionEmptyText =
+    actionItems.length === 0
+      ? 'Chưa có việc cần làm nào trong cuộc họp này'
+      : actionFilter === 'mine'
+        ? 'Bạn chưa được giao việc nào ở cuộc họp này'
+        : actionFilter === 'unassigned'
+          ? 'Không còn việc nào chưa giao'
+          : actionFilter === 'completed'
+            ? 'Chưa có việc nào hoàn thành'
+            : 'Không có việc cần làm phù hợp';
+  const meetingQueryError = query.error as AxiosError<{ detail?: string }> | null;
+  const meetingQueryStatus = meetingQueryError?.response?.status;
+  const meetingErrorTitle =
+    meetingQueryStatus === 403
+      ? 'Bạn không có quyền truy cập'
+      : meetingQueryStatus === 404
+        ? 'Không tìm thấy cuộc họp'
+        : 'Không tải được cuộc họp';
+  const meetingErrorMessage =
+    meetingQueryStatus === 403
+      ? 'Bạn không có quyền xem cuộc họp này hoặc lời mời tham gia không còn hiệu lực.'
+      : meetingQueryStatus === 404
+        ? 'Cuộc họp này không tồn tại hoặc đã bị xóa.'
+        : meetingQueryError?.response?.data?.detail || 'Đã có lỗi xảy ra khi tải dữ liệu cuộc họp. Vui lòng thử lại.';
+
   if (query.isLoading) {
     return (
       <div className="flex min-h-[60vh] items-center justify-center">
@@ -258,9 +415,9 @@ const MeetingDetail: React.FC = () => {
         <div className="mb-6 rounded-full bg-red-50 p-6 dark:bg-red-900/20">
           <AlertCircle className="h-12 w-12 text-red-600 dark:text-red-400" />
         </div>
-        <h2 className="text-3xl font-black text-gray-900 dark:text-slate-100">Không tìm thấy cuộc họp</h2>
+        <h2 className="text-3xl font-black text-gray-900 dark:text-slate-100">{meetingErrorTitle}</h2>
         <p className="mt-4 max-w-md text-lg text-gray-500 dark:text-slate-400">
-          Cuộc họp này không tồn tại hoặc bạn không còn quyền truy cập.
+          {meetingErrorMessage}
         </p>
         <button
           onClick={() => navigate('/meetings')}
@@ -326,13 +483,110 @@ const MeetingDetail: React.FC = () => {
       showToast.error(err?.response?.data?.detail || 'Xuất file thất bại. Vui lòng thử lại.');
     }
   };
-  const handleUpdateActionItem = async (actionId: string, updates: Record<string, string>) => {
+  const handleCreateActionItem = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!meeting || !newActionTitle.trim()) return;
+    setIsCreatingAction(true);
+    try {
+      await api.post('/api/action-items', {
+        meeting_id: meeting.id,
+        title: newActionTitle.trim(),
+        assignee_emails: newActionAssigneeEmails,
+        due_date: newActionDueDate || undefined,
+        priority: newActionPriority,
+      });
+      setNewActionTitle('');
+      setNewActionAssigneeEmails([]);
+      setNewActionDueDate('');
+      setNewActionPriority('MEDIUM');
+      setIsCreateExpanded(false);
+      setShowAdvancedCreateFields(false);
+      await query.refetch();
+      showToast.success('Đã tạo việc cần làm');
+    } catch (err: any) {
+      showToast.error(err?.response?.data?.detail || 'Không thể tạo việc cần làm');
+    } finally {
+      setIsCreatingAction(false);
+    }
+  };
+
+  const handleUpdateActionItem = async (actionId: string, updates: Record<string, string | string[] | null>) => {
     try {
       await api.patch(`/api/action-items/${actionId}`, updates);
-      query.refetch();
+      await query.refetch();
       showToast.success('Đã cập nhật việc cần làm');
+      return true;
     } catch (err: any) {
       showToast.error(err?.response?.data?.detail || 'Không thể cập nhật việc cần làm');
+      return false;
+    }
+  };
+
+  const startEditActionItem = (item: ActionItem) => {
+    setEditingActionId(item.id);
+    setActionEditDraft({
+      title: item.title,
+      assignedEmails: item.assignees.map((assignee) => assignee.email).filter(Boolean),
+      dueDate: item.due_date || '',
+      status: item.status,
+      priority: item.priority,
+    });
+  };
+
+  const cancelEditActionItem = () => {
+    setEditingActionId(null);
+    setActionEditDraft(null);
+  };
+
+  const patchActionDraft = (updates: Partial<ActionEditDraft>) => {
+    setActionEditDraft((draft) => draft ? { ...draft, ...updates } : draft);
+  };
+
+  const handleDeleteActionItem = async (item: ActionItem) => {
+    const confirmed = window.confirm(`Xóa việc cần làm "${item.title}"?`);
+    if (!confirmed) return;
+    try {
+      await api.delete(`/api/action-items/${item.id}`);
+      if (editingActionId === item.id) {
+        cancelEditActionItem();
+      }
+      if (expandedTaskId === item.id) {
+        setExpandedTaskId(null);
+      }
+      await query.refetch();
+      showToast.success('Đã xóa việc cần làm');
+    } catch (err: any) {
+      showToast.error(err?.response?.data?.detail || 'Không thể xóa việc cần làm');
+    }
+  };
+
+  const handleUpdateSelfActionStatus = async (item: ActionItem, status: ActionItem['status']) => {
+    try {
+      await api.patch(`/api/action-items/${item.id}/assignees/me`, { status });
+      await query.refetch();
+      showToast.success('Đã cập nhật tiến độ của bạn');
+    } catch (err: any) {
+      showToast.error(err?.response?.data?.detail || 'Không thể cập nhật tiến độ');
+    }
+  };
+
+  const confirmEditActionItem = async (item: ActionItem) => {
+    if (!actionEditDraft || editingActionId !== item.id) return;
+    const title = actionEditDraft.title.trim();
+    if (!title) {
+      showToast.error('Vui lòng nhập tiêu đề việc cần làm');
+      return;
+    }
+    setSavingActionId(item.id);
+    const ok = await handleUpdateActionItem(item.id, {
+      title,
+      priority: actionEditDraft.priority,
+      assignee_emails: actionEditDraft.assignedEmails,
+      due_date: actionEditDraft.dueDate || null,
+    });
+    setSavingActionId(null);
+    if (ok) {
+      cancelEditActionItem();
     }
   };
 
@@ -403,13 +657,6 @@ const MeetingDetail: React.FC = () => {
                 >
                   <Pencil size={16} />
                   Sua
-                </button>
-                <button
-                  onClick={handleDeleteMeeting}
-                  className="inline-flex items-center gap-2 rounded-xl border border-red-200 bg-white px-4 py-2.5 text-sm font-bold text-red-600 transition hover:bg-red-50 dark:border-red-900/50 dark:bg-slate-900 dark:text-red-400 dark:hover:bg-red-900/20"
-                >
-                  <Trash2 size={16} />
-                  Xoa
                 </button>
               </>
             )}
@@ -587,6 +834,9 @@ const MeetingDetail: React.FC = () => {
                               ? `${visibleTranscriptGroups.length}/${transcriptGroups.length} lượt nói`
                               : 'Timeline cuộc họp'}
                           </p>
+                          <p className="mt-2 text-[11px] font-black uppercase tracking-widest text-primary-600 dark:text-primary-300">
+                            {transcriptStatusLabel}
+                          </p>
                         </div>
                         <div className="flex flex-wrap items-center gap-2">
                           {transcriptSpeakers.length > 1 && (
@@ -658,58 +908,95 @@ const MeetingDetail: React.FC = () => {
                   )}
 
                   {activeTab === 'actions' && (
-                    <motion.div key="actions" initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 10 }} className="space-y-4">
-                      <h3 className="text-lg font-black text-gray-900 dark:text-slate-100">Việc cần làm</h3>
-                      {actionItems.length === 0 ? (
+                    <motion.div key="actions" initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 10 }} className="space-y-6">
+                      {/* Clean Header & Filters */}
+                      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between px-1">
+                        <div className="flex items-center gap-3">
+                          <h3 className="text-xl font-black text-gray-900 tracking-tight">Việc cần làm</h3>
+                          <span className="flex h-6 min-w-[24px] items-center justify-center rounded-lg bg-gray-100 px-2 text-[11px] font-black text-gray-500 shadow-inner">
+                            {actionItems.length}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-3">
+                          {/* Segmented Filter Control */}
+                          <div className="inline-flex items-center gap-0.5 rounded-xl border border-gray-100 bg-gray-50/50 p-1">
+                            {[
+                              { key: 'all' as const, label: 'Tất cả', count: actionFilterCounts.all },
+                              { key: 'mine' as const, label: 'Của tôi', count: actionFilterCounts.mine },
+                              { key: 'unassigned' as const, label: 'Chưa giao', count: actionFilterCounts.unassigned },
+                              { key: 'completed' as const, label: 'Xong', count: actionFilterCounts.completed },
+                            ].map((filter) => (
+                              <button
+                                key={filter.key}
+                                type="button"
+                                onClick={() => setActionFilter(filter.key)}
+                                className={`relative rounded-lg px-3 py-1.5 text-[11px] font-black uppercase tracking-wider transition-all ${
+                                  actionFilter === filter.key
+                                    ? 'bg-white text-primary-600 shadow-sm ring-1 ring-black/5'
+                                    : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100/50'
+                                }`}
+                              >
+                                {filter.label}
+                                {filter.count > 0 && actionFilter !== filter.key && (
+                                  <span className="ml-1 opacity-50">({filter.count})</span>
+                                )}
+                              </button>
+                            ))}
+                          </div>
+
+                          <button className="flex h-9 w-9 items-center justify-center rounded-xl border border-gray-100 bg-white text-gray-400 transition hover:bg-gray-50 hover:text-gray-900 shadow-sm">
+                            <ArrowDownWideNarrow size={16} />
+                          </button>
+                        </div>
+                      </div>
+
+                      <ActionItemComposer
+                        canManage={canManageActionItems}
+                        title={newActionTitle}
+                        onTitleChange={setNewActionTitle}
+                        assigneeOptions={assigneeOptions}
+                        selectedAssignees={newActionAssigneeEmails}
+                        onSelectedAssigneesChange={setNewActionAssigneeEmails}
+                        dueDate={newActionDueDate}
+                        onDueDateChange={setNewActionDueDate}
+                        priority={newActionPriority as ActionItem['priority']}
+                        onPriorityChange={(value) => setNewActionPriority(value)}
+                        isExpanded={isCreateExpanded}
+                        onExpandedChange={setIsCreateExpanded}
+                        showAdvanced={showAdvancedCreateFields}
+                        onShowAdvancedChange={setShowAdvancedCreateFields}
+                        isSubmitting={isCreatingAction}
+                        onSubmit={handleCreateActionItem}
+                      />
+
+                      {filteredActionItems.length === 0 ? (
                         <div className="rounded-2xl border border-dashed border-gray-200 bg-gray-50 p-10 text-center dark:border-slate-700 dark:bg-slate-800/30">
                           <CheckCircle2 size={32} className="mx-auto mb-3 text-gray-300 dark:text-slate-600" />
-                          <p className="text-sm font-bold text-gray-500 dark:text-slate-400">Chưa có việc cần làm nào được trích xuất</p>
+                          <p className="text-sm font-bold text-gray-500 dark:text-slate-400">{actionEmptyText}</p>
                         </div>
                       ) : (
                         <div className="space-y-3">
-                          {actionItems.map((item) => (
-                            <div key={item.id} className="rounded-2xl border border-gray-100 bg-gray-50/60 p-4 dark:border-slate-800 dark:bg-slate-800/30">
-                              <div className="flex items-start justify-between gap-3">
-                                <div>
-                                  <p className="font-bold text-gray-900 dark:text-slate-100">{item.title}</p>
-                                  {item.description && (
-                                    <p className="mt-1 text-sm text-gray-600 dark:text-slate-400">{item.description}</p>
-                                  )}
-                                </div>
-                                <select
-                                  value={item.status}
-                                  onChange={(event) => handleUpdateActionItem(item.id, { status: event.target.value })}
-                                  className="rounded-full border border-primary-100 bg-primary-50 px-2.5 py-1 text-[10px] font-black uppercase tracking-wider text-primary-700 outline-none dark:border-primary-900/30 dark:bg-primary-900/20 dark:text-primary-300"
-                                >
-                                  <option value="PENDING">PENDING</option>
-                                  <option value="IN_PROGRESS">IN_PROGRESS</option>
-                                  <option value="COMPLETED">COMPLETED</option>
-                                  <option value="CANCELLED">CANCELLED</option>
-                                </select>
-                              </div>
-                              <div className="mt-3 flex flex-wrap gap-2">
-                                <input
-                                  defaultValue={item.assigned_email || ''}
-                                  placeholder="Email người phụ trách"
-                                  onBlur={(event) => {
-                                    if (event.target.value !== (item.assigned_email || '')) {
-                                      handleUpdateActionItem(item.id, { assigned_email: event.target.value });
-                                    }
-                                  }}
-                                  className="h-9 min-w-52 rounded-xl border border-gray-200 bg-white px-3 text-xs font-semibold outline-none dark:border-slate-700 dark:bg-slate-900"
-                                />
-                                <input
-                                  type="date"
-                                  defaultValue={item.due_date || ''}
-                                  onBlur={(event) => {
-                                    if (event.target.value !== (item.due_date || '')) {
-                                      handleUpdateActionItem(item.id, { due_date: event.target.value });
-                                    }
-                                  }}
-                                  className="h-9 rounded-xl border border-gray-200 bg-white px-3 text-xs font-semibold outline-none dark:border-slate-700 dark:bg-slate-900"
-                                />
-                              </div>
-                            </div>
+                          {filteredActionItems.map((item) => (
+                            <MeetingActionItemCard
+                              key={item.id}
+                              item={item}
+                              currentUser={user}
+                              assigneeOptions={assigneeOptions}
+                              canManage={canManageActionItems}
+                              isCurrentUserAssignee={isCurrentUserAssignee(item)}
+                              isEditing={editingActionId === item.id}
+                              isSaving={savingActionId === item.id}
+                              draft={editingActionId === item.id ? actionEditDraft : null}
+                              expanded={expandedTaskId === item.id}
+                              onToggleExpanded={() => setExpandedTaskId((current) => (current === item.id ? null : item.id))}
+                              onStartEdit={() => startEditActionItem(item)}
+                              onCancelEdit={cancelEditActionItem}
+                              onPatchDraft={patchActionDraft}
+                              onConfirmEdit={() => confirmEditActionItem(item)}
+                              onDelete={() => handleDeleteActionItem(item)}
+                              onUpdateSelfStatus={(status) => handleUpdateSelfActionStatus(item, status)}
+                            />
                           ))}
                         </div>
                       )}
@@ -724,7 +1011,7 @@ const MeetingDetail: React.FC = () => {
                           AI Notes
                         </h3>
                         <p className="mt-1 text-xs font-semibold uppercase tracking-widest text-gray-400">
-                          {aiNotesStatusLabel} / {currentLanguage || 'vi'} / {keyPoints.length} điểm chính / {decisions.length} quyết định / {actionItems.length} việc cần làm
+                          {transcriptStatusLabel} / {aiNotesStatusLabel} / {currentLanguage || 'vi'} / {keyPoints.length} điểm chính / {decisions.length} quyết định / {actionItems.length} việc cần làm
                         </p>
                       </div>
 
@@ -896,8 +1183,10 @@ const MeetingDetail: React.FC = () => {
                                       {item.status}
                                     </span>
                                   </div>
-                                  {item.assigned_email && (
-                                    <p className="mt-2 text-xs font-semibold text-gray-500 dark:text-slate-400">{item.assigned_email}</p>
+                                  {item.assignees.length > 0 && (
+                                    <p className="mt-2 text-xs font-semibold text-gray-500 dark:text-slate-400">
+                                      {item.assignees.map((assignee) => assignee.display_name || assignee.email).join(', ')}
+                                    </p>
                                   )}
                                 </div>
                               ))}
@@ -929,6 +1218,24 @@ const MeetingDetail: React.FC = () => {
               <p>Trạng thái: {meeting.status}</p>
             </div>
           </div>
+
+          {canManageMeeting && (
+            <div className="rounded-3xl border border-red-200 bg-red-50/70 p-6 shadow-sm dark:border-red-900/30 dark:bg-red-950/10">
+              <h3 className="text-sm font-black uppercase tracking-widest text-red-500 dark:text-red-300">
+                Vùng nguy hiểm
+              </h3>
+              <p className="mt-3 text-sm leading-6 text-red-700 dark:text-red-200">
+                Xóa cuộc họp sẽ làm bạn rời khỏi trang chi tiết này và không thể hoàn tác từ giao diện.
+              </p>
+              <button
+                onClick={handleDeleteMeeting}
+                className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl border border-red-200 bg-white px-4 py-2.5 text-sm font-bold text-red-600 transition hover:bg-red-50 dark:border-red-900/40 dark:bg-slate-900 dark:text-red-400 dark:hover:bg-red-950/20"
+              >
+                <Trash2 size={16} />
+                Xóa cuộc họp này
+              </button>
+            </div>
+          )}
         </aside>
       </div>
     </div>

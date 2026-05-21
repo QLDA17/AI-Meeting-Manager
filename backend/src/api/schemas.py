@@ -552,6 +552,9 @@ class ActionItemBase(BaseSchema):
     description: Optional[str] = None
     assigned_to: Optional[str] = None
     assigned_email: Optional[EmailStr] = None
+    assignee_user_ids: Optional[List[str]] = None
+    assignee_emails: Optional[List[EmailStr]] = None
+    assign_all_participants: bool = False
     status: str = Field(default="PENDING", pattern="^(PENDING|IN_PROGRESS|COMPLETED|CANCELLED)$")
     priority: str = Field(default="MEDIUM", pattern="^(LOW|MEDIUM|HIGH|URGENT)$")
     due_date: Optional[date] = None
@@ -572,9 +575,34 @@ class ActionItemUpdate(BaseSchema):
     due_date: Optional[date] = None
 
 
+class ActionItemAssigneeOption(BaseSchema):
+    email: str
+    label: str
+    user_id: Optional[str] = None
+
+
+class ActionItemAssigneeBase(BaseSchema):
+    user_id: Optional[str] = None
+    email: EmailStr
+    display_name: Optional[str] = None
+    status: str = Field(default="PENDING", pattern="^(PENDING|IN_PROGRESS|COMPLETED|CANCELLED)$")
+
+
+class ActionItemAssignee(ActionItemAssigneeBase, TimestampMixin):
+    id: str
+    completed_at: Optional[datetime] = None
+
+
+class ActionItemAssigneeStatusUpdate(BaseSchema):
+    status: str = Field(..., pattern="^(PENDING|IN_PROGRESS|COMPLETED|CANCELLED)$")
+
+
 class ActionItem(ActionItemBase, TimestampMixin):
     id: str
     meeting_id: Optional[str] = None
+    meeting_title: Optional[str] = None
+    assignee_options: Optional[List[ActionItemAssigneeOption]] = None
+    assignees: List[ActionItemAssignee] = Field(default_factory=list)
     summary_id: Optional[str] = None
     created_by: str
     completed_at: Optional[datetime] = None
@@ -697,6 +725,8 @@ class MeetingDetailResponse(Meeting):
     action_items: List[ActionItem] = Field(default_factory=list)
     transcript_content: Optional[str] = None
     transcript_language: Optional[str] = None
+    transcript_status: Optional[str] = None
+    has_transcript_draft: bool = False
     meeting_summary_text: Optional[str] = None
     key_points_text: List[str] = Field(default_factory=list)
     decisions_text: List[str] = Field(default_factory=list)
@@ -732,6 +762,7 @@ class MeetingFinalizeResponse(BaseSchema):
     meeting_id: str
     transcript_status: str
     summary_status: str
+    has_transcript_draft: bool = False
     summary: MeetingAnalysisOutput
     nlp_metadata: Optional[Dict[str, Any]] = None
     errors: List[str] = Field(default_factory=list)

@@ -10,8 +10,6 @@ import {
   RotateCw,
   Volume2,
   VolumeX,
-  FastForward,
-  Rewind,
 } from 'lucide-react';
 
 interface AudioPlayerProps {
@@ -41,7 +39,13 @@ const AudioPlayer: React.FC<AudioPlayerProps> = ({ src, onTimeUpdate }) => {
       if (isPlaying) {
         audioRef.current.pause();
       } else {
-        audioRef.current.play();
+        // Fix for sound issue: explicit play after some interaction or source check
+        const playPromise = audioRef.current.play();
+        if (playPromise !== undefined) {
+          playPromise.catch(error => {
+            console.error("Audio playback error:", error);
+          });
+        }
       }
       setIsPlaying(!isPlaying);
     }
@@ -86,18 +90,19 @@ const AudioPlayer: React.FC<AudioPlayerProps> = ({ src, onTimeUpdate }) => {
   };
 
   return (
-    <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+    <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
       <audio
         ref={audioRef}
         src={src}
         onLoadedMetadata={onLoadedMetadata}
         onTimeUpdate={handleTimeUpdate}
         onEnded={onEnded}
+        controls={false}
       />
 
       {/* Progress Bar */}
       <div className="mb-3 flex items-center gap-3">
-        <span className="w-10 text-right text-xs font-medium text-gray-500 dark:text-slate-400">
+        <span className="w-10 text-right text-xs font-medium text-gray-500">
           {formatTime(currentTime)}
         </span>
         <input
@@ -107,9 +112,12 @@ const AudioPlayer: React.FC<AudioPlayerProps> = ({ src, onTimeUpdate }) => {
           step="0.1"
           value={currentTime}
           onChange={handleProgressChange}
-          className="h-1.5 flex-1 cursor-pointer appearance-none rounded-full bg-gray-200 accent-primary-600 dark:bg-slate-800"
+          className="h-1.5 flex-1 cursor-pointer appearance-none rounded-full bg-gray-200 accent-emerald-600"
+          style={{
+            background: `linear-gradient(to right, #10b981 ${(currentTime / (duration || 1)) * 100}%, #e5e7eb ${(currentTime / (duration || 1)) * 100}%)`
+          }}
         />
-        <span className="w-10 text-left text-xs font-medium text-gray-500 dark:text-slate-400">
+        <span className="w-10 text-left text-xs font-medium text-gray-500">
           {formatTime(duration)}
         </span>
       </div>
@@ -121,7 +129,7 @@ const AudioPlayer: React.FC<AudioPlayerProps> = ({ src, onTimeUpdate }) => {
           <select
             value={playbackRate}
             onChange={(e) => setPlaybackRate(parseFloat(e.target.value))}
-            className="rounded bg-gray-100 px-2 py-1 text-[10px] font-bold text-gray-700 outline-none hover:bg-gray-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
+            className="rounded bg-gray-100 px-2 py-1 text-[10px] font-bold text-gray-700 outline-none hover:bg-gray-200"
           >
             <option value="0.5">0.5x</option>
             <option value="1">1.0x</option>
@@ -134,7 +142,7 @@ const AudioPlayer: React.FC<AudioPlayerProps> = ({ src, onTimeUpdate }) => {
         <div className="flex items-center gap-4">
           <button
             onClick={() => skip(-10)}
-            className="rounded-full p-2 text-gray-600 transition hover:bg-gray-100 dark:text-slate-300 dark:hover:bg-slate-800"
+            className="rounded-full p-2 text-gray-600 transition hover:bg-gray-100"
             title="Lùi 10s"
           >
             <RotateCcw size={18} />
@@ -142,14 +150,14 @@ const AudioPlayer: React.FC<AudioPlayerProps> = ({ src, onTimeUpdate }) => {
           
           <button
             onClick={togglePlay}
-            className="flex h-12 w-12 items-center justify-center rounded-full bg-primary-600 text-white shadow-lg shadow-primary-500/30 transition-all hover:scale-105 hover:bg-primary-700 active:scale-95"
+            className="flex h-12 w-12 items-center justify-center rounded-full bg-emerald-600 text-white shadow-lg shadow-emerald-500/30 transition-all hover:scale-105 hover:bg-emerald-700 active:scale-95"
           >
             {isPlaying ? <Pause size={24} fill="currentColor" /> : <Play size={24} className="ml-1" fill="currentColor" />}
           </button>
 
           <button
             onClick={() => skip(10)}
-            className="rounded-full p-2 text-gray-600 transition hover:bg-gray-100 dark:text-slate-300 dark:hover:bg-slate-800"
+            className="rounded-full p-2 text-gray-600 transition hover:bg-gray-100"
             title="Tiến 10s"
           >
             <RotateCw size={18} />
@@ -159,7 +167,7 @@ const AudioPlayer: React.FC<AudioPlayerProps> = ({ src, onTimeUpdate }) => {
         <div className="flex items-center gap-2">
           <button
             onClick={() => setIsMuted(!isMuted)}
-            className="rounded-full p-2 text-gray-600 transition hover:bg-gray-100 dark:text-slate-300 dark:hover:bg-slate-800"
+            className="rounded-full p-2 text-gray-600 transition hover:bg-gray-100"
           >
             {isMuted ? <VolumeX size={18} /> : <Volume2 size={18} />}
           </button>
@@ -170,7 +178,10 @@ const AudioPlayer: React.FC<AudioPlayerProps> = ({ src, onTimeUpdate }) => {
             step="0.05"
             value={volume}
             onChange={(e) => setVolume(parseFloat(e.target.value))}
-            className="hidden h-1 w-16 cursor-pointer appearance-none rounded-full bg-gray-200 accent-primary-600 dark:bg-slate-800 sm:block"
+            className="hidden h-1 w-16 cursor-pointer appearance-none rounded-full bg-gray-200 accent-emerald-600 sm:block"
+            style={{
+              background: `linear-gradient(to right, #10b981 ${volume * 100}%, #e5e7eb ${volume * 100}%)`
+            }}
           />
         </div>
       </div>

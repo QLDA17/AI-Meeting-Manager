@@ -211,6 +211,8 @@ export interface MeetingDetail extends Meeting {
   actionItems: ActionItem[];
   transcriptContent?: string;
   transcriptLanguage?: string;
+  transcriptStatus?: string;
+  hasTranscriptDraft?: boolean;
   meetingSummaryText?: string;
   keyPointsText: string[];
   decisionsText: string[];

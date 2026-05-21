@@ -12,7 +12,7 @@ import {
   Loader2,
 } from 'lucide-react';
 import { useAppStore, useOrgStore } from '../stores';
-import { AnimatedCounter } from '../components/ui';
+import { AnimatedCounter, StatCard } from '../components/ui';
 import EditMeetingModal from '../components/meeting/EditMeetingModal';
 import MeetingCard from '../components/meeting/MeetingCard';
 import MeetingFilters from '../components/meeting/MeetingFilters';
@@ -104,11 +104,11 @@ const MeetingList: React.FC = () => {
     const failed = filteredMeetings.filter(m => m.status === 'failed');
 
     return [
-      { key: 'live', label: 'Đang diễn ra', icon: <Radio size={16} />, accent: 'border-red-500', badge: 'bg-red-100 text-red-700 dark:bg-red-900/20 dark:text-red-300', meetings: live },
-      { key: 'upcoming', label: 'Sắp tới', icon: <Clock size={16} />, accent: 'border-blue-500', badge: 'bg-blue-100 text-blue-700 dark:bg-blue-900/20 dark:text-blue-300', meetings: upcoming },
-      { key: 'processing', label: 'Cần xử lý', icon: <Loader2 size={16} className="animate-spin" />, accent: 'border-amber-500', badge: 'bg-amber-100 text-amber-700 dark:bg-amber-900/20 dark:text-amber-300', meetings: processing },
-      { key: 'completed', label: 'Đã hoàn tất', icon: <CheckCircle2 size={16} />, accent: 'border-emerald-500', badge: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-300', meetings: completed, collapsible: true },
-      { key: 'failed', label: 'Lỗi', icon: <AlertCircle size={16} />, accent: 'border-rose-500', badge: 'bg-rose-100 text-rose-700 dark:bg-rose-900/20 dark:text-rose-300', meetings: failed },
+      { key: 'live', label: 'Đang diễn ra', icon: <Radio size={16} className="text-red-500 animate-pulse stroke-[2.5]" />, accent: 'border-red-500', badge: 'bg-red-100 text-red-700', meetings: live },
+      { key: 'upcoming', label: 'Sắp tới', icon: <Clock size={16} />, accent: 'border-teal-500', badge: 'bg-teal-50 text-teal-700 border border-teal-100/30', meetings: upcoming },
+      { key: 'processing', label: 'Cần xử lý', icon: <Loader2 size={16} className="animate-spin" />, accent: 'border-amber-500', badge: 'bg-amber-100 text-amber-700', meetings: processing },
+      { key: 'completed', label: 'Đã hoàn tất', icon: <CheckCircle2 size={16} />, accent: 'border-emerald-500', badge: 'bg-emerald-100 text-emerald-700', meetings: completed, collapsible: true },
+      { key: 'failed', label: 'Lỗi', icon: <AlertCircle size={16} />, accent: 'border-rose-500', badge: 'bg-rose-100 text-rose-700', meetings: failed },
     ].filter(s => s.meetings.length > 0);
   }, [filteredMeetings]);
 
@@ -139,60 +139,54 @@ const MeetingList: React.FC = () => {
 
   return (
     <>
-      <div className="space-y-6">
+      <div className="space-y-10 pb-12">
         {/* Header */}
-        <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+        <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="flex flex-col gap-6 sm:flex-row sm:items-end sm:justify-between px-1">
           <div>
-            <h1 className="text-2xl font-black tracking-tight text-gray-900 dark:text-slate-100">
+            <h1 className="text-4xl font-black tracking-tight text-gray-900 leading-none">
               Cuộc họp
-              {currentOrg && <span className="ml-2 text-base font-semibold text-gray-400 dark:text-slate-500">{currentOrg.name}</span>}
+              {currentOrg && <span className="ml-3 text-lg font-bold text-gray-400">/ {currentOrg.name}</span>}
             </h1>
-            <p className="mt-1 text-sm text-gray-500 dark:text-slate-400">{orgMeetings.length} cuộc họp · {stats.totalHours.toFixed(1)}h đã xử lý</p>
+            <p className="mt-3 text-sm font-bold text-gray-400 uppercase tracking-widest">{orgMeetings.length} cuộc họp · {stats.totalHours.toFixed(1)}h đã xử lý</p>
           </div>
-          <div className="flex gap-2">
-            <button onClick={() => navigate('/upload')} className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3.5 py-2 text-xs font-bold text-gray-600 transition hover:bg-gray-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800">
+          <div className="flex gap-3">
+            <button onClick={() => navigate('/upload')} className="inline-flex items-center gap-2 rounded-xl border border-gray-100 bg-white px-5 py-2.5 text-xs font-black text-gray-600 shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md">
               <Upload size={14} /> Tải âm thanh
             </button>
-            <button onClick={() => navigate('/meetings/create')} className="inline-flex items-center gap-1.5 rounded-lg bg-gray-900 px-3.5 py-2 text-xs font-bold text-white shadow-sm transition hover:bg-gray-800 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-white">
-              <Plus size={14} /> Tạo live
+            <button onClick={() => navigate('/meetings/create')} className="inline-flex items-center gap-2 rounded-xl bg-primary-600 px-5 py-2.5 text-xs font-black text-white shadow-lg shadow-primary-600/20 transition-all hover:-translate-y-0.5 hover:shadow-primary-600/30">
+              <Plus size={14} className="stroke-[3]" /> Tạo live
             </button>
           </div>
         </motion.div>
 
         {/* Stats */}
-        <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }} className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }} className="grid grid-cols-2 gap-5 sm:grid-cols-4">
           {[
-            { label: 'Tổng cuộc họp', value: stats.total, icon: <FileText size={16} />, accent: 'from-blue-500/10 to-blue-600/5 dark:from-blue-500/5 dark:to-blue-600/0', iconRing: 'ring-blue-500/20', iconColor: 'text-blue-600 dark:text-blue-400', valueColor: 'text-blue-700 dark:text-blue-300' },
-            { label: 'Live / Sắp tới', value: stats.liveOrUpcoming, icon: <Radio size={16} />, accent: 'from-rose-500/10 to-rose-600/5 dark:from-rose-500/5 dark:to-rose-600/0', iconRing: 'ring-rose-500/20', iconColor: 'text-rose-600 dark:text-rose-400', valueColor: 'text-rose-700 dark:text-rose-300' },
-            { label: 'Hoàn thành', value: stats.completed, icon: <CheckCircle2 size={16} />, accent: 'from-emerald-500/10 to-emerald-600/5 dark:from-emerald-500/5 dark:to-emerald-600/0', iconRing: 'ring-emerald-500/20', iconColor: 'text-emerald-600 dark:text-emerald-400', valueColor: 'text-emerald-700 dark:text-emerald-300' },
-            { label: 'Tổng thời gian', value: stats.totalHours, suffix: 'h', icon: <Clock size={16} />, accent: 'from-violet-500/10 to-violet-600/5 dark:from-violet-500/5 dark:to-violet-600/0', iconRing: 'ring-violet-500/20', iconColor: 'text-violet-600 dark:text-violet-400', valueColor: 'text-violet-700 dark:text-violet-300' },
+            { label: 'Tổng cuộc họp', value: stats.total, icon: <FileText size={18} />, accent: 'primary' },
+            { label: 'Live / Sắp tới', value: stats.liveOrUpcoming, icon: <Radio size={18} className="text-red-500 animate-pulse" />, accent: 'danger' },
+            { label: 'Hoàn thành', value: stats.completed, icon: <CheckCircle2 size={18} />, accent: 'primary' },
+            { label: 'Tổng thời gian', value: stats.totalHours, suffix: 'h', icon: <Clock size={18} />, accent: 'warning' },
           ].map((stat, i) => (
             <motion.div
               key={stat.label}
               initial={{ opacity: 0, y: 6 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.06 + i * 0.04 }}
-              className={`group relative overflow-hidden rounded-2xl border border-gray-200/60 bg-gradient-to-br ${stat.accent} p-4 transition-all hover:border-gray-300 hover:shadow-sm dark:border-slate-700/50 dark:hover:border-slate-600`}
             >
-              <div className="flex items-start justify-between">
-                <div className="flex-1">
-                  <p className={`text-[28px] font-extrabold leading-none tracking-tight ${stat.valueColor}`}>
-                    {typeof stat.value === 'number' ? <AnimatedCounter value={stat.value} /> : stat.value}
-                    {stat.suffix && <span className="ml-0.5 text-lg font-bold opacity-60">{stat.suffix}</span>}
-                  </p>
-                  <p className="mt-1.5 text-[11px] font-semibold uppercase tracking-wider text-gray-400 dark:text-slate-500">{stat.label}</p>
-                </div>
-                <div className={`flex h-8 w-8 items-center justify-center rounded-lg ring-1 ${stat.iconRing} ${stat.iconColor} bg-white/80 dark:bg-slate-800/80`}>{stat.icon}</div>
-              </div>
-              {/* Subtle decorative line */}
-              <div className="absolute bottom-0 left-4 right-4 h-px bg-gradient-to-r from-transparent via-gray-200 to-transparent dark:via-slate-700" />
+              <StatCard
+                label={stat.label}
+                value={typeof stat.value === 'number' ? <AnimatedCounter value={stat.value} /> : stat.value}
+                icon={stat.icon}
+                accent={stat.accent as any}
+                subtitle={stat.suffix ? `${stat.value.toFixed(1)}${stat.suffix}` : undefined}
+              />
             </motion.div>
           ))}
         </motion.div>
 
         {/* Filters */}
-        <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }} className="sticky top-0 z-20 -mx-4 px-4 py-2 backdrop-blur-sm lg:mx-0 lg:px-0">
-          <div className="rounded-xl border border-gray-200 bg-white/80 p-3 shadow-sm dark:border-slate-700 dark:bg-slate-900/80">
+        <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }} className="sticky top-0 z-20 -mx-4 px-4 py-3 backdrop-blur-md lg:mx-0 lg:px-0">
+          <div className="rounded-[1.5rem] border border-gray-100 bg-white/80 p-3 shadow-xl shadow-gray-200/20">
             <MeetingFilters
               searchTerm={searchTerm} setSearchTerm={setSearchTerm}
               sortBy={sortBy} setSortBy={setSortBy}
@@ -206,26 +200,27 @@ const MeetingList: React.FC = () => {
         {/* Content */}
         <AnimatePresence mode="wait">
           {isLoadingMeetings ? (
-            <motion.div key="loading" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex flex-col items-center justify-center rounded-2xl border border-gray-200 bg-white py-20 dark:border-slate-800 dark:bg-slate-900/50">
-              <div className="mb-3 h-7 w-7 animate-spin rounded-full border-2 border-primary-500 border-t-transparent" />
-              <p className="text-sm font-semibold text-gray-500 dark:text-slate-400">Đang tải...</p>
+            <motion.div key="loading" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex flex-col items-center justify-center rounded-[2.5rem] border border-gray-100 bg-white py-24 shadow-sm">
+              <div className="mb-4 h-10 w-10 animate-spin rounded-full border-4 border-primary-500 border-t-transparent" />
+              <p className="text-sm font-black text-gray-400 uppercase tracking-widest">Đang tải...</p>
             </motion.div>
           ) : loadError ? (
-            <motion.div key="error" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex flex-col items-center justify-center rounded-2xl border border-red-200 bg-red-50/30 py-16 text-center dark:border-red-900/30 dark:bg-red-900/5">
-              <p className="text-sm font-bold text-red-700 dark:text-red-300">{loadError}</p>
-              <button onClick={() => targetOrgId && loadMeetings(targetOrgId)} className="mt-4 rounded-lg bg-red-600 px-4 py-2 text-xs font-bold text-white hover:bg-red-700">Tải lại</button>
+            <motion.div key="error" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex flex-col items-center justify-center rounded-[2.5rem] border border-red-100 bg-red-50/30 py-20 text-center">
+              <div className="mb-4 p-4 bg-red-100 text-red-600 rounded-full"><AlertCircle size={32} /></div>
+              <p className="text-lg font-black text-red-900">{loadError}</p>
+              <button onClick={() => targetOrgId && loadMeetings(targetOrgId)} className="mt-6 rounded-xl bg-red-600 px-8 py-3 text-sm font-black text-white hover:bg-red-700 shadow-lg shadow-red-600/20 transition-all">Tải lại</button>
             </motion.div>
           ) : filteredMeetings.length === 0 ? (
-            <motion.div key="empty" initial={{ opacity: 0, scale: 0.97 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0 }} className="flex flex-col items-center justify-center rounded-2xl border-2 border-dashed border-gray-200 bg-white py-20 text-center dark:border-slate-800 dark:bg-slate-900/50">
-              <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-gray-100 text-gray-300 dark:bg-slate-800 dark:text-slate-600"><FileText size={28} /></div>
-              <p className="text-sm font-bold text-gray-700 dark:text-slate-200">{orgMeetings.length === 0 ? 'Chưa có cuộc họp nào' : 'Không tìm thấy kết quả'}</p>
-              <p className="mt-1 max-w-xs text-xs text-gray-400 dark:text-slate-500">{orgMeetings.length === 0 ? 'Tạo cuộc họp live hoặc tải âm thanh để bắt đầu.' : 'Thử thay đổi từ khóa hoặc bộ lọc.'}</p>
-              <button onClick={() => navigate(orgMeetings.length === 0 ? '/meetings/create' : '/upload')} className="mt-6 inline-flex items-center gap-1.5 rounded-lg bg-gray-900 px-4 py-2.5 text-xs font-bold text-white transition hover:bg-gray-800 dark:bg-slate-100 dark:text-slate-900">
-                <Plus size={14} />{orgMeetings.length === 0 ? 'Tạo cuộc họp' : 'Tải âm thanh'}
+            <motion.div key="empty" initial={{ opacity: 0, scale: 0.97 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0 }} className="flex flex-col items-center justify-center rounded-[2.5rem] border-2 border-dashed border-gray-100 bg-white py-24 text-center">
+              <div className="mb-6 flex h-20 w-20 items-center justify-center rounded-3xl bg-gray-50 text-gray-200"><FileText size={40} /></div>
+              <p className="text-xl font-black text-gray-900">{orgMeetings.length === 0 ? 'Chưa có cuộc họp nào' : 'Không tìm thấy kết quả'}</p>
+              <p className="mt-2 max-w-xs text-sm font-bold text-gray-400 leading-relaxed uppercase tracking-tight">{orgMeetings.length === 0 ? 'Tạo cuộc họp live hoặc tải âm thanh để bắt đầu.' : 'Thử thay đổi từ khóa hoặc bộ lọc.'}</p>
+              <button onClick={() => navigate(orgMeetings.length === 0 ? '/meetings/create' : '/upload')} className="mt-10 inline-flex items-center gap-2 rounded-2xl bg-gray-900 px-8 py-4 text-sm font-black text-white shadow-xl shadow-gray-900/20 transition-all hover:-translate-y-1">
+                <Plus size={18} className="stroke-[3]" />{orgMeetings.length === 0 ? 'Tạo cuộc họp' : 'Tải âm thanh'}
               </button>
             </motion.div>
           ) : (
-            <motion.div key="sections" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-8">
+            <motion.div key="sections" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-12">
               {sections.map((section) => {
                 const displayMeetings = section.collapsible && !showAllCompleted
                   ? section.meetings.slice(0, COMPLETED_PREVIEW_COUNT)
@@ -234,17 +229,17 @@ const MeetingList: React.FC = () => {
                 return (
                   <div key={section.key}>
                     {/* Section header */}
-                    <div className="mb-4 flex items-center gap-2.5">
-                      <div className={`flex items-center gap-2 rounded-xl border border-gray-200/60 bg-white px-3 py-1.5 shadow-sm dark:border-slate-700/50 dark:bg-slate-900`}>
-                        <div className={`h-1.5 w-1.5 rounded-full ${section.accent.replace('border-', 'bg-')}`} />
-                        {section.icon}
-                        <span className="text-[13px] font-bold text-gray-800 dark:text-slate-200">{section.label}</span>
+                    <div className="mb-6 flex items-center gap-3">
+                      <div className="flex items-center gap-3 rounded-2xl border border-gray-100 bg-white px-5 py-2.5 shadow-xl shadow-gray-200/10">
+                        <div className={`h-2 w-2 rounded-full ${section.accent.replace('border-', 'bg-')} shadow-sm`} />
+                        <span className="text-gray-400">{section.icon}</span>
+                        <span className="text-sm font-black text-gray-900 uppercase tracking-widest">{section.label}</span>
                       </div>
-                      <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${section.badge}`}>{section.meetings.length}</span>
+                      <span className={`rounded-full px-3 py-1 text-xs font-black shadow-inner ${section.badge}`}>{section.meetings.length}</span>
                     </div>
 
                     {/* Cards grid */}
-                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                    <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
                       {displayMeetings.map((meeting, idx) => (
                         <MeetingCard key={meeting.id} meeting={meeting} index={idx} canManage={!isViewer} onEdit={handleEditMeeting} onDelete={handleDeleteMeeting} />
                       ))}
@@ -252,9 +247,11 @@ const MeetingList: React.FC = () => {
 
                     {/* Show more for completed */}
                     {section.collapsible && section.meetings.length > COMPLETED_PREVIEW_COUNT && (
-                      <button onClick={() => setShowAllCompleted(!showAllCompleted)} className="mt-3 text-xs font-bold text-primary-600 hover:text-primary-700 dark:text-primary-400">
-                        {showAllCompleted ? 'Thu gọn' : `Xem thêm ${section.meetings.length - COMPLETED_PREVIEW_COUNT} cuộc họp`}
-                      </button>
+                      <div className="mt-6 flex justify-center">
+                        <button onClick={() => setShowAllCompleted(!showAllCompleted)} className="inline-flex items-center gap-2 rounded-xl bg-gray-50 px-6 py-2.5 text-xs font-black text-gray-600 transition-all hover:bg-primary-50 hover:text-primary-700">
+                          {showAllCompleted ? 'Thu gọn' : `Xem thêm ${section.meetings.length - COMPLETED_PREVIEW_COUNT} cuộc họp`}
+                        </button>
+                      </div>
                     )}
                   </div>
                 );

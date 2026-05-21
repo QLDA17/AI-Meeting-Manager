@@ -8,16 +8,20 @@ class STTService:
     """STT service coordinating Whisper, Phowhisper, Deepgram, or Google transcription."""
 
     def __init__(self, provider=None):
-        if provider:
+        if provider and not isinstance(provider, str):
+            # provider is an instance
             self.provider = provider
         else:
-            stt_provider = os.getenv("STT_PROVIDER", "deepgram").lower()
+            stt_provider = (provider or os.getenv("STT_PROVIDER", "deepgram")).lower()
             if stt_provider == "deepgram":
                 from src.providers.deepgram import DeepgramProvider
                 self.provider = DeepgramProvider()
             elif stt_provider == "phowhisper":
                 from src.providers.phowhisper import PhowhisperProvider
                 self.provider = PhowhisperProvider()
+            elif stt_provider == "viwhisper":
+                from src.providers.viwhisper import ViWhisperProvider
+                self.provider = ViWhisperProvider()
             elif stt_provider == "google":
                 try:
                     from src.providers.google_stt import GoogleSTTProvider
