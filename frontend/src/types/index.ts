@@ -48,7 +48,7 @@ export interface Organization {
   groupCount: number;
   meetingCount: number;
   totalHours: number;
-  approvalStatus?: 'pending' | 'active';
+  approvalStatus?: 'pending' | 'active' | 'rejected' | 'suspended';
   requestedByUserId?: string;
   approvedByUserId?: string;
   approvedAt?: string;
@@ -60,7 +60,7 @@ export interface OrgUser {
   role: 'org-admin' | 'member' | 'viewer';
   joinedAt: string;
   orgName?: string;
-  approvalStatus?: 'pending' | 'active';
+  approvalStatus?: 'pending' | 'active' | 'rejected' | 'suspended';
 }
 
 export type PrivacyLevel = 'private' | 'internal' | 'public';

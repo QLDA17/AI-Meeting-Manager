@@ -136,7 +136,7 @@ class ServerConfig:
     debug: bool = False
     reload: bool = False
     workers: int = 1
-    cors_origins: List[str] = field(default_factory=lambda: ["*"])
+    cors_origins: List[str] = field(default_factory=lambda: ["http://localhost:5173", "http://localhost:3000"])
     cors_credentials: bool = True
     request_timeout: int = 300  # 5 minutes
     max_upload_size: int = 50 * 1024 * 1024  # 50MB
@@ -149,7 +149,7 @@ class ServerConfig:
             debug=os.getenv("DEBUG", "false").lower() == "true",
             reload=os.getenv("RELOAD", "false").lower() == "true",
             workers=int(os.getenv("WORKERS", "1")),
-            cors_origins=os.getenv("CORS_ORIGINS", "*").split(","),
+            cors_origins=os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost:3000").split(","),
             cors_credentials=os.getenv("CORS_CREDENTIALS", "true").lower() == "true",
             request_timeout=int(os.getenv("REQUEST_TIMEOUT", "300")),
             max_upload_size=int(os.getenv("MAX_UPLOAD_SIZE", str(50 * 1024 * 1024))),

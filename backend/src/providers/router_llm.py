@@ -29,6 +29,7 @@ class RouterLLMAdapter:
         self.timeout_seconds = float(os.getenv("ROUTER_TIMEOUT_SECONDS", "60"))
         self.enabled = bool(self.api_url and self.api_key and HAS_REQUESTS)
         self.last_error: Optional[str] = None
+        self.last_usage: Optional[dict] = None
 
         if not self.enabled:
             reasons = []
@@ -107,6 +108,14 @@ class RouterLLMAdapter:
 
         data = response.json()
         content = data["choices"][0]["message"]["content"]
+        # Extract usage info (Groq returns OpenAI-compatible usage)
+        usage = data.get("usage", {})
+        self.last_usage = {
+            "prompt_tokens": usage.get("prompt_tokens", 0),
+            "completion_tokens": usage.get("completion_tokens", 0),
+            "total_tokens": usage.get("total_tokens", 0),
+            "model": model,
+        }
         return content, None, None
 
     def chat_completion(

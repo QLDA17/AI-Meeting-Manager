@@ -1,6 +1,6 @@
 import os
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 try:
     from deepgram import DeepgramClient
@@ -9,6 +9,9 @@ except ImportError:
     HAS_DEEPGRAM = False
 
 logger = logging.getLogger(__name__)
+
+# Deepgram Nova-3 pricing: ~$0.0043/min = $0.0000717/sec
+_COST_PER_SECOND = 0.0000717
 
 class DeepgramProvider:
     """Deepgram cloud STT provider for Vietnamese."""
@@ -20,6 +23,8 @@ class DeepgramProvider:
         if not HAS_DEEPGRAM:
             raise ImportError("deepgram-sdk not installed: pip install deepgram-sdk")
         self.client = DeepgramClient(api_key=self.api_key)
+        self.last_duration_seconds = 0.0
+        self.last_model = ""
 
     def transcribe(self, audio_path: str, model: str = None) -> Dict[str, Any]:
         """Transcribe audio file via Deepgram API.
@@ -47,6 +52,16 @@ class DeepgramProvider:
                 paragraphs=True,
                 filler_words=True,
             )
+
+            # Extract usage metadata
+            duration_seconds = 0.0
+            try:
+                if hasattr(response, 'metadata') and response.metadata:
+                    duration_seconds = float(getattr(response.metadata, 'duration', 0) or 0)
+            except Exception:
+                pass
+            self.last_duration_seconds = duration_seconds
+            self.last_model = model
 
             results = response.results
             transcript = results.channels[0].alternatives[0].transcript
@@ -101,7 +116,12 @@ class DeepgramProvider:
                             seg["speaker"] = f"Speaker {current_speaker}"
                         segments.append(seg)
 
-            return {"text": transcript, "segments": segments}
+            return {
+                "text": transcript,
+                "segments": segments,
+                "duration_seconds": duration_seconds,
+                "model": model,
+            }
 
         except Exception as e:
             logger.error(f"Deepgram transcription failed: {e}", exc_info=True)

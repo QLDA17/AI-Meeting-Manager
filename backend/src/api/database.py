@@ -51,17 +51,21 @@ elif is_mysql:
     if os.getenv("DB_USE_SSL", "false").lower() == "true":
         connect_args["ssl"] = {"ca": os.getenv("DB_SSL_CA")}
 
-# Create engine with pooling
-engine = create_engine(
-    DATABASE_URL,
-    connect_args=connect_args,
-    pool_size=POOL_SIZE,
-    max_overflow=MAX_OVERFLOW,
-    pool_timeout=POOL_TIMEOUT,
-    pool_recycle=POOL_RECYCLE,
-    pool_pre_ping=True,  # Verify connections before use
-    echo=os.getenv("DB_ECHO", "false").lower() == "true",
-)
+# Create engine with pooling (SQLite uses StaticPool internally, pool params ignored)
+engine_kwargs = {
+    "connect_args": connect_args,
+    "pool_pre_ping": True,
+    "echo": os.getenv("DB_ECHO", "false").lower() == "true",
+}
+if not is_sqlite:
+    engine_kwargs.update({
+        "pool_size": POOL_SIZE,
+        "max_overflow": MAX_OVERFLOW,
+        "pool_timeout": POOL_TIMEOUT,
+        "pool_recycle": POOL_RECYCLE,
+    })
+
+engine = create_engine(DATABASE_URL, **engine_kwargs)
 
 # SQLite pragmas for better concurrency
 @event.listens_for(engine, "connect")

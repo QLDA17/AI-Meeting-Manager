@@ -352,3 +352,36 @@ def test_assignee_me_endpoint_aggregates_completion(client, db_session):
     )
     assert second_response.status_code == 200
     assert second_response.json()["status"] == "COMPLETED"
+
+
+def test_personal_action_item_list_only_shows_owned_items(client, db_session):
+    owner = create_member(db_session, "owner1", "owner1@example.com")
+    other = create_member(db_session, "other1", "other1@example.com")
+
+    create_response = client.post(
+        "/api/action-items",
+        headers=auth_headers(owner.username),
+        json={"title": "Personal follow-up"},
+    )
+    assert create_response.status_code == 200
+
+    visible_to_owner = client.get("/api/action-items", headers=auth_headers(owner.username))
+    assert visible_to_owner.status_code == 200
+    assert [item["title"] for item in visible_to_owner.json()] == ["Personal follow-up"]
+
+    hidden_from_other = client.get("/api/action-items", headers=auth_headers(other.username))
+    assert hidden_from_other.status_code == 200
+    assert hidden_from_other.json() == []
+
+
+def test_action_item_list_with_unknown_meeting_returns_404(client, db_session):
+    member = create_member(db_session, "member404", "member404@example.com")
+
+    response = client.get(
+        "/api/action-items",
+        headers=auth_headers(member.username),
+        params={"meeting_id": "missing-meeting"},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Meeting not found"

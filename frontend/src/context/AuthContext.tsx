@@ -1,9 +1,10 @@
 /* eslint-disable react-refresh/only-export-comments */
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
-import type { GroupUser, OrgUser, Session, SystemRole, User } from '../types';
+import type { GroupUser, OrgUser, Permission, Session, SystemRole, User } from '../types';
 import api from '../services/api';
 import { useOrgStore } from '../stores';
 import { normalizeOrganization, normalizeUser } from '../services/mappers';
+import { hasPermissionInRole } from '../data/roles';
 
 export type Role = SystemRole | 'admin' | 'manager' | 'staff';
 
@@ -267,73 +268,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const currentOrgMembership = user.orgMemberships?.find(
       (membership: OrgUser) => membership.orgId === session?.currentOrgId,
     );
-    if (currentOrgMembership?.role === 'org-admin') {
-      return !['manage_system_settings', 'view_audit_log'].includes(permission);
-    }
-
     const currentGroupMembership = user.groupMemberships?.find(
       (membership: GroupUser) => membership.groupId === session?.currentGroupId,
     );
-    if (currentGroupMembership?.role === 'group-admin') {
-      return [
-        'read_organization',
-        'read_group',
-        'update_group',
-        'manage_group_users',
-        'create_meeting',
-        'read_meeting',
-        'update_meeting',
-        'delete_meeting',
-        'record_meeting',
-        'download_recording',
-        'edit_transcript',
-        'export_transcript',
-        'manage_meeting_attendees',
-        'create_action_item',
-        'read_action_item',
-        'update_action_item',
-        'delete_action_item',
-        'assign_action_items',
-        'view_analytics',
-        'export_data',
-      ].includes(permission);
-    }
 
-    if (currentGroupMembership?.role === 'member') {
-      return [
-        'read_organization',
-        'read_group',
-        'create_meeting',
-        'read_meeting',
-        'update_meeting',
-        'record_meeting',
-        'download_recording',
-        'edit_transcript',
-        'export_transcript',
-        'create_action_item',
-        'read_action_item',
-        'update_action_item',
-        'assign_action_items',
-        'view_analytics',
-      ].includes(permission);
-    }
+    // Check group role first (more specific), then org role
+    const effectiveRole = currentGroupMembership?.role || currentOrgMembership?.role;
+    if (!effectiveRole) return false;
 
-    if (
-      currentGroupMembership?.role === 'viewer' ||
-      currentOrgMembership?.role === 'viewer'
-    ) {
-      return [
-        'read_organization',
-        'read_group',
-        'read_meeting',
-        'download_recording',
-        'export_transcript',
-        'read_action_item',
-        'view_analytics',
-      ].includes(permission);
-    }
-
-    return false;
+    return hasPermissionInRole(effectiveRole, permission as Permission);
   }, [session, user]);
 
   const isOrgAdmin = useCallback((orgId?: string): boolean => {

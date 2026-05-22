@@ -1,0 +1,9 @@
+from src.api import _legacy_runtime as legacy
+
+RUNTIME_NOTIFICATIONS = legacy.RUNTIME_NOTIFICATIONS
+MAX_RUNTIME_NOTIFICATIONS = legacy.MAX_RUNTIME_NOTIFICATIONS
+push_runtime_notification = legacy.push_runtime_notification
+normalize_notification_metadata = legacy.normalize_notification_metadata
+notification_payload = legacy.notification_payload
+create_persisted_notification = legacy.create_persisted_notification
+get_org_admin_recipient_ids = legacy.get_org_admin_recipient_ids

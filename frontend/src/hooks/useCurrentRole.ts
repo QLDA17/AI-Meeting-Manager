@@ -30,6 +30,7 @@ export const useCurrentRole = () => {
     const isOrgAdmin = orgRole === 'org-admin';
     const isGroupAdmin = groupRole === 'group-admin';
     const isViewer = orgRole === 'viewer' || groupRole === 'viewer';
+    const isMember = orgRole === 'member' || groupRole === 'member';
 
     let currentRole: ContextRole = 'member';
     if (isSystemAdmin) currentRole = 'system-admin';
@@ -53,6 +54,7 @@ export const useCurrentRole = () => {
       isOrgAdmin,
       isGroupAdmin,
       isViewer,
+      isMember,
       displayName,
     };
   }, [user, session?.currentOrgId, session?.currentGroupId, currentOrgId, currentGroupId]);

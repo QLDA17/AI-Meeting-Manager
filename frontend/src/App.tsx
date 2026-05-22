@@ -108,7 +108,7 @@ const RoleGuard: React.FC<{ children: React.ReactNode; roles: string[] }> = ({
   children,
   roles,
 }) => {
-  const { isSystemAdmin, isOrgAdmin, isGroupAdmin, isViewer } = usePermission();
+  const { isSystemAdmin, isOrgAdmin, isGroupAdmin, isViewer, isMember } = usePermission();
 
   const hasAccess =
     (roles.includes('system-admin') && isSystemAdmin) ||
@@ -116,7 +116,7 @@ const RoleGuard: React.FC<{ children: React.ReactNode; roles: string[] }> = ({
     (roles.includes('group-admin') && (isGroupAdmin || isOrgAdmin || isSystemAdmin)) ||
     (roles.includes('viewer') &&
       (isViewer || isGroupAdmin || isOrgAdmin || isSystemAdmin)) ||
-    (roles.includes('member') && !isViewer);
+    (roles.includes('member') && (isMember || isGroupAdmin || isOrgAdmin || isSystemAdmin));
 
   if (!hasAccess) {
     return (
@@ -309,7 +309,7 @@ const AppRoutes: React.FC = () => {
         <Route
           path="/groups/create"
           element={
-            <RoleGuard roles={['org-admin', 'system-admin']}>
+            <RoleGuard roles={['org-admin', 'system-admin', 'member']}>
               <React.Suspense fallback={<PageLoader />}>
                 <CreateGroup />
               </React.Suspense>

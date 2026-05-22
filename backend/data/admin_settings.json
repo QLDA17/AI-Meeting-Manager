@@ -1,0 +1,7 @@
+{
+  "require_2fa_admin": true,
+  "public_registration_enabled": true,
+  "storage_limit_gb_per_org": 99,
+  "transcript_retention_policy": "forever",
+  "maintenance_mode": true
+}

@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import api from '../../../services/api';
 
 interface AdminStats {
   totalOrgs: number;
@@ -6,6 +7,7 @@ interface AdminStats {
   totalMeetings: number;
   totalHours: number;
   processingNow: number;
+  totalGroups: number;
 }
 
 interface AdminState {
@@ -13,7 +15,7 @@ interface AdminState {
   isLoading: boolean;
   setStats: (stats: AdminStats) => void;
   setLoading: (loading: boolean) => void;
-  // Sẽ thêm các actions gọi API thực tế tại đây
+  fetchStats: () => Promise<void>;
 }
 
 export const useAdminStore = create<AdminState>((set) => ({
@@ -23,8 +25,29 @@ export const useAdminStore = create<AdminState>((set) => ({
     totalMeetings: 0,
     totalHours: 0,
     processingNow: 0,
+    totalGroups: 0,
   },
   isLoading: false,
   setStats: (stats) => set({ stats }),
   setLoading: (isLoading) => set({ isLoading }),
+  fetchStats: async () => {
+    set({ isLoading: true });
+    try {
+      const { data } = await api.get('/api/admin/stats');
+      set({
+        stats: {
+          totalOrgs: data.total_organizations || 0,
+          totalUsers: data.total_users || 0,
+          totalMeetings: data.total_meetings || 0,
+          totalHours: 0,
+          processingNow: data.active_meetings || 0,
+          totalGroups: data.total_groups || 0,
+        },
+        isLoading: false,
+      });
+    } catch (err) {
+      console.error('Failed to fetch admin stats:', err);
+      set({ isLoading: false });
+    }
+  },
 }));

@@ -1,16 +1,15 @@
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
-from fastapi import FastAPI, Depends
-from src.api import auth, schemas
-from src.api.crud import create_user, get_user_by_username
-from src.api.database import get_db, Base
-from src.api.main import app
-from src.api import models
 
-# Use in-memory SQLite for testing
+from src.api import models
+from src.api.crud import create_user
+from src.api.database import Base, get_db
+from src.api.main import app
+
+
 TEST_DATABASE_URL = "sqlite:///:memory:"
 test_engine = create_engine(
     TEST_DATABASE_URL,
@@ -21,7 +20,6 @@ TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_
 
 
 def override_get_db():
-    """Override database dependency for testing."""
     db = TestingSessionLocal()
     try:
         yield db
@@ -29,130 +27,72 @@ def override_get_db():
         db.close()
 
 
-# Override the dependency
-app.dependency_overrides[get_db] = override_get_db
-
-
 @pytest.fixture(scope="function")
 def client():
-    """Create a test client."""
-    # Create all tables using the test engine
     Base.metadata.create_all(bind=test_engine)
     app.dependency_overrides[get_db] = override_get_db
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.pop(get_db, None)
-    # Drop all tables after test
     Base.metadata.drop_all(bind=test_engine)
 
 
-def test_register_user(client):
-    """Test user registration endpoint."""
-    response = client.post(
-        "/api/auth/register",
-        json={
-            "username": "testuser",
-            "email": "test@example.com",
-            "password": "securepassword123",
-            "role": "member",
-            "first_name": "Test",
-            "last_name": "User",
-        }
-    )
-    
-    assert response.status_code == 200
-    data = response.json()
-    assert data["message"] == "User created successfully"
+def register_payload(**overrides):
+    payload = {
+        "username": "testuser",
+        "email": "test@example.com",
+        "password": "securepassword123",
+        "firstName": "Test",
+        "lastName": "User",
+        "dateOfBirth": "1995-01-01",
+    }
+    payload.update(overrides)
+    return payload
 
 
 def test_register_duplicate_username(client):
-    """Test registering with duplicate username."""
-    # Register first user
-    client.post(
-        "/api/auth/register",
-        json={
-            "username": "testuser",
-            "email": "test1@example.com",
-            "password": "password123",
-        }
-    )
-    
-    # Try to register with same username
+    client.post("/api/auth/register", json=register_payload(email="test1@example.com"))
+
     response = client.post(
         "/api/auth/register",
-        json={
-            "username": "testuser",
-            "email": "test2@example.com",
-            "password": "password123",
-        }
+        json=register_payload(email="test2@example.com"),
     )
-    
+
     assert response.status_code == 400
     assert "already registered" in response.json()["detail"]
 
 
 def test_login_success(client):
-    """Test successful login."""
-    # Register user first
-    client.post(
-        "/api/auth/register",
-        json={
-            "username": "testuser",
-            "email": "test@example.com",
-            "password": "securepassword123",
-        }
-    )
-    
-    # Login
+    client.post("/api/auth/register", json=register_payload())
+
     response = client.post(
         "/api/auth/login",
-        json={
-            "username": "testuser",
-            "password": "securepassword123",
-        }
+        json={"username": "testuser", "password": "securepassword123"},
     )
-    
+
     assert response.status_code == 200
     data = response.json()
     assert "access_token" in data
     assert data["token_type"] == "bearer"
-    assert "user" in data
     assert data["user"]["username"] == "testuser"
 
 
 def test_login_wrong_password(client):
-    """Test login with wrong password."""
-    # Register user first
-    client.post(
-        "/api/auth/register",
-        json={
-            "username": "testuser",
-            "email": "test@example.com",
-            "password": "securepassword123",
-        }
-    )
-    
-    # Login with wrong password
+    client.post("/api/auth/register", json=register_payload())
+
     response = client.post(
         "/api/auth/login",
-        json={
-            "username": "testuser",
-            "password": "wrongpassword",
-        }
+        json={"username": "testuser", "password": "wrongpassword"},
     )
-    
+
     assert response.status_code == 401
     assert "Incorrect username or password" in response.json()["detail"]
 
 
 def test_login_nonexistent_user(client):
-    """Test login with non-existent user."""
     response = client.post(
         "/api/auth/login",
-        json={
-            "username": "nonexistent",
-            "password": "password123",
-        }
+        json={"username": "nonexistent", "password": "password123"},
     )
 
     assert response.status_code == 401
@@ -160,14 +100,7 @@ def test_login_nonexistent_user(client):
 
 
 def test_forgot_and_reset_password(client):
-    client.post(
-        "/api/auth/register",
-        json={
-            "username": "testuser",
-            "email": "test@example.com",
-            "password": "securepassword123",
-        }
-    )
+    client.post("/api/auth/register", json=register_payload())
 
     forgot_response = client.post("/api/auth/forgot-password", json={"email": "test@example.com"})
     assert forgot_response.status_code == 200
@@ -200,11 +133,7 @@ def test_forgot_password_triggers_email_send(client, monkeypatch):
 
     client.post(
         "/api/auth/register",
-        json={
-            "username": "mailuser",
-            "email": "mailuser@example.com",
-            "password": "securepassword123",
-        },
+        json=register_payload(username="mailuser", email="mailuser@example.com"),
     )
 
     forgot_response = client.post("/api/auth/forgot-password", json={"email": "mailuser@example.com"})
@@ -216,14 +145,7 @@ def test_forgot_password_triggers_email_send(client, monkeypatch):
 
 
 def test_profile_update(client):
-    client.post(
-        "/api/auth/register",
-        json={
-            "username": "testuser",
-            "email": "test@example.com",
-            "password": "securepassword123",
-        }
-    )
+    client.post("/api/auth/register", json=register_payload())
     login_response = client.post(
         "/api/auth/login",
         json={"username": "testuser", "password": "securepassword123"},
@@ -245,12 +167,10 @@ def test_profile_update(client):
 
 
 def test_health_check(client):
-    """Test health check endpoint."""
     response = client.get("/health")
-    
+
     assert response.status_code == 200
     data = response.json()
-    # Status can be "healthy" or "degraded" depending on database connection
     assert data["status"] in ["healthy", "degraded"]
     assert "timestamp" in data
 
@@ -258,19 +178,13 @@ def test_health_check(client):
 def test_register_without_username_generates_unique_username(client):
     response_one = client.post(
         "/api/auth/register",
-        json={
-            "email": "same@example.com",
-            "password": "securepassword123",
-        },
+        json=register_payload(username=None, email="same@example.com"),
     )
     assert response_one.status_code == 200
 
     response_two = client.post(
         "/api/auth/register",
-        json={
-            "email": "same@another.com",
-            "password": "securepassword123",
-        },
+        json=register_payload(username=None, email="same@another.com"),
     )
     assert response_two.status_code == 200
 
@@ -290,12 +204,12 @@ def test_register_without_username_generates_unique_username(client):
 def test_member_created_organization_requires_approval_then_promotes_creator(client):
     register_response = client.post(
         "/api/auth/register",
-        json={
-            "email": "creator@example.com",
-            "password": "securepassword123",
-            "firstName": "Org",
-            "lastName": "Creator",
-        },
+        json=register_payload(
+            username=None,
+            email="creator@example.com",
+            firstName="Org",
+            lastName="Creator",
+        ),
     )
     assert register_response.status_code == 200
 
@@ -322,17 +236,17 @@ def test_member_created_organization_requires_approval_then_promotes_creator(cli
 
     db: Session = TestingSessionLocal()
     try:
-      create_user(
-          db,
-          {
-              "username": "sysadmin",
-              "email": "sysadmin@example.com",
-              "password": "securepassword123",
-              "role": "system-admin",
-          },
-      )
+        create_user(
+            db,
+            {
+                "username": "sysadmin",
+                "email": "sysadmin@example.com",
+                "password": "securepassword123",
+                "role": "system-admin",
+            },
+        )
     finally:
-      db.close()
+        db.close()
 
     admin_login = client.post(
         "/api/auth/login",

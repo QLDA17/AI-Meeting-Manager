@@ -1,0 +1,343 @@
+import os
+import uuid
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Mapping
+
+from fastapi import HTTPException
+from sqlalchemy.orm import Session, joinedload
+
+from src.api import models
+from src.api.core.admin_runtime import (
+    ADMIN_BROADCAST_HISTORY,
+    ADMIN_PROMPTS,
+    ADMIN_SYSTEM_SETTINGS,
+    _save_admin_prompts,
+    _save_admin_settings,
+    append_admin_audit_log,
+    ensure_audit_log_table,
+)
+from src.api.core.notifications_support import create_persisted_notification
+from src.api.core.user_payloads import format_user_payload
+from src.api.crud import update_user
+
+
+def require_system_admin_user(current_user: models.User) -> None:
+    if current_user.role != "system-admin":
+        raise HTTPException(status_code=403, detail="System admin access required")
+
+
+def get_admin_stats_payload(db: Session, current_user: models.User) -> Dict[str, int]:
+    require_system_admin_user(current_user)
+    return {
+        "total_users": db.query(models.User).count(),
+        "total_organizations": db.query(models.Organization).count(),
+        "total_meetings": db.query(models.Meeting).count(),
+        "active_meetings": db.query(models.Meeting).filter(models.Meeting.status == "live").count(),
+        "total_groups": db.query(models.Group).count(),
+    }
+
+
+def get_admin_users_payload(db: Session, current_user: models.User) -> List[Dict[str, Any]]:
+    require_system_admin_user(current_user)
+    users = db.query(models.User).options(
+        joinedload(models.User.user_organizations).joinedload(models.UserOrganization.organization),
+        joinedload(models.User.group_memberships).joinedload(models.GroupMembership.group),
+    ).order_by(models.User.created_at.desc()).all()
+    return [format_user_payload(user) for user in users]
+
+
+def update_admin_user_status_payload(
+    user_id: str,
+    is_active: bool,
+    db: Session,
+    current_user: models.User,
+) -> Dict[str, Any]:
+    require_system_admin_user(current_user)
+    user = update_user(db, user_id, {"is_active": is_active})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    append_admin_audit_log(
+        actor=current_user.username,
+        action="ACTIVATE_USER" if is_active else "SUSPEND_USER",
+        target=user.email,
+    )
+    return format_user_payload(user)
+
+
+def update_admin_user_role_payload(
+    user_id: str,
+    role: str,
+    db: Session,
+    current_user: models.User,
+) -> Dict[str, Any]:
+    require_system_admin_user(current_user)
+    if role not in ("system-admin", "member"):
+        raise HTTPException(status_code=400, detail="Role must be 'system-admin' or 'member'")
+    user = update_user(db, user_id, {"role": role})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    append_admin_audit_log(
+        actor=current_user.username,
+        action="CHANGE_USER_ROLE",
+        target=f"{user.email} -> {role}",
+    )
+    return format_user_payload(user)
+
+
+def delete_admin_user_payload(user_id: str, db: Session, current_user: models.User) -> Dict[str, Any]:
+    require_system_admin_user(current_user)
+    user = update_user(db, user_id, {"is_active": False})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    append_admin_audit_log(
+        actor=current_user.username,
+        action="DELETE_USER",
+        target=user.email,
+    )
+    return {"detail": "User deactivated", "user_id": user_id}
+
+
+def get_admin_ai_services_payload(current_user: models.User) -> Dict[str, Any]:
+    require_system_admin_user(current_user)
+
+    llm_provider = os.getenv("LLM_PROVIDER", "google").lower()
+    stt_provider = os.getenv("STT_PROVIDER", "deepgram").lower()
+    groq_key = os.getenv("GROQ_API_KEY", "")
+    google_key = os.getenv("GOOGLE_API_KEY", "")
+    phobert_enabled = os.getenv("PHOBERT_ENABLED", "false").lower() == "true"
+
+    def _key_set(key: str, placeholder: str = "") -> bool:
+        return bool(key) and key != placeholder
+
+    llm_services = []
+    if _key_set(groq_key, "your_groq_key_here"):
+        llm_services.append({
+            "name": "Groq",
+            "model": os.getenv("ROUTER_MODEL", "llama-3.3-70b-versatile"),
+            "role": "primary" if llm_provider in ("router", "groq") else "fallback",
+            "enabled": True,
+            "api_key_set": True,
+        })
+    if _key_set(google_key, "your_google_ai_studio_key_here"):
+        llm_services.append({
+            "name": "Google Gemini",
+            "model": os.getenv("GEMINI_MODEL", "gemini-1.5-flash"),
+            "role": "primary" if llm_provider == "google" else "fallback",
+            "enabled": True,
+            "api_key_set": True,
+        })
+
+    stt_providers = [
+        {"name": "Deepgram", "id": "deepgram", "model": os.getenv("DEEPGRAM_MODEL", "nova-3")},
+        {"name": "PhoWhisper", "id": "phowhisper", "model": "vinai/PhoWhisper-base"},
+        {"name": "ViWhisper", "id": "viwhisper", "model": "NhutP/ViWhisper-small"},
+    ]
+    for provider in stt_providers:
+        provider["active"] = provider["id"] == stt_provider
+
+    nlp_services = []
+    if phobert_enabled:
+        nlp_services.append({
+            "name": "PhoBERT Post-Processor",
+            "model": os.getenv("PHOBERT_MODEL", "vinai/phobert-base"),
+            "enabled": True,
+            "features": {
+                "dialect_detection": os.getenv("PHOBERT_DIALECT_ENABLED", "true").lower() == "true",
+                "context_correction": True,
+                "llm_correction": os.getenv("PHOBERT_LLM_CORRECTION_ENABLED", "false").lower() == "true",
+            },
+        })
+
+    return {
+        "llm": {"provider": llm_provider, "services": llm_services},
+        "stt": {
+            "provider": stt_provider,
+            "available_providers": stt_providers,
+            "realtime_mode": os.getenv("REALTIME_STT_MODE", "deepgram_streaming"),
+        },
+        "nlp": {"services": nlp_services},
+    }
+
+
+def get_admin_ai_usage_payload(db: Session, current_user: models.User) -> Dict[str, Any]:
+    require_system_admin_user(current_user)
+
+    from sqlalchemy import func as sqlfunc
+
+    usage_by_service = db.query(
+        models.CostTracking.service,
+        models.CostTracking.model_name,
+        sqlfunc.sum(models.CostTracking.input_tokens).label("total_input_tokens"),
+        sqlfunc.sum(models.CostTracking.output_tokens).label("total_output_tokens"),
+        sqlfunc.sum(models.CostTracking.cost_usd).label("total_cost_usd"),
+        sqlfunc.count(models.CostTracking.id).label("request_count"),
+    ).group_by(models.CostTracking.service, models.CostTracking.model_name).all()
+
+    now = datetime.now(timezone.utc)
+    month_start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+    monthly_cost = db.query(sqlfunc.sum(models.CostTracking.cost_usd)).filter(
+        models.CostTracking.created_at >= month_start
+    ).scalar() or 0
+
+    day_start = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
+    daily_cost = db.query(sqlfunc.sum(models.CostTracking.cost_usd)).filter(
+        models.CostTracking.created_at >= day_start
+    ).scalar() or 0
+
+    return {
+        "services": [
+            {
+                "service": row.service,
+                "model": row.model_name,
+                "total_input_tokens": int(row.total_input_tokens or 0),
+                "total_output_tokens": int(row.total_output_tokens or 0),
+                "total_cost_usd": float(row.total_cost_usd or 0),
+                "request_count": int(row.request_count or 0),
+            }
+            for row in usage_by_service
+        ],
+        "monthly_cost_usd": float(monthly_cost),
+        "daily_cost_usd": float(daily_cost),
+    }
+
+
+def get_admin_prompts_payload(current_user: models.User) -> List[Dict[str, Any]]:
+    require_system_admin_user(current_user)
+    return list(ADMIN_PROMPTS.values())
+
+
+def update_admin_prompt_payload(
+    prompt_key: str,
+    payload: Mapping[str, Any],
+    current_user: models.User,
+) -> Dict[str, Any]:
+    require_system_admin_user(current_user)
+    next_version = payload.get("version") or ADMIN_PROMPTS.get(prompt_key, {}).get("version", "1.0.0")
+    ADMIN_PROMPTS[prompt_key] = {
+        "key": prompt_key,
+        "name": payload["name"],
+        "description": payload.get("description"),
+        "content": payload["content"],
+        "version": next_version,
+        "last_updated": datetime.now(timezone.utc).isoformat(),
+    }
+    _save_admin_prompts()
+    append_admin_audit_log(actor=current_user.username, action="UPDATE_PROMPT", target=prompt_key)
+    return ADMIN_PROMPTS[prompt_key]
+
+
+def get_admin_broadcasts_payload(current_user: models.User) -> List[Dict[str, Any]]:
+    require_system_admin_user(current_user)
+    return ADMIN_BROADCAST_HISTORY
+
+
+def create_admin_broadcast_payload(
+    payload: Mapping[str, Any],
+    db: Session,
+    current_user: models.User,
+) -> Dict[str, Any]:
+    require_system_admin_user(current_user)
+    item = {
+        "id": str(uuid.uuid4()),
+        "title": payload["title"],
+        "content": payload["content"],
+        "type": payload.get("type", "info"),
+        "target": payload.get("target", "all"),
+        "status": "sent",
+        "sentAt": datetime.now(timezone.utc).isoformat(),
+        "reach": 0,
+    }
+
+    recipients: List[models.User] = []
+    if item["target"] == "all":
+        recipients = db.query(models.User).filter(models.User.is_active == True).all()
+    else:
+        recipients = db.query(models.User).join(models.UserOrganization).filter(
+            models.UserOrganization.organization_id == item["target"],
+            models.User.is_active == True,
+        ).all()
+
+    for recipient in recipients:
+        create_persisted_notification(
+            db,
+            recipient_user_id=recipient.id,
+            notification_type="system",
+            priority="today",
+            title=item["title"],
+            message=item["content"],
+            metadata={"target": item["target"]},
+            source_type="admin-broadcast",
+            source_id=item["id"],
+            commit=False,
+        )
+    item["reach"] = len(recipients)
+    db.commit()
+    ADMIN_BROADCAST_HISTORY.insert(0, item)
+    append_admin_audit_log(actor=current_user.username, action="SEND_BROADCAST", target=item["target"])
+    return item
+
+
+def delete_admin_broadcast_payload(notification_id: str, current_user: models.User) -> Dict[str, str]:
+    require_system_admin_user(current_user)
+    before = len(ADMIN_BROADCAST_HISTORY)
+    ADMIN_BROADCAST_HISTORY[:] = [item for item in ADMIN_BROADCAST_HISTORY if item.get("id") != notification_id]
+    if len(ADMIN_BROADCAST_HISTORY) == before:
+        raise HTTPException(status_code=404, detail="Notification not found")
+    append_admin_audit_log(actor=current_user.username, action="DELETE_BROADCAST", target=notification_id)
+    return {"message": "Notification deleted"}
+
+
+def get_admin_audit_logs_payload(
+    skip: int,
+    limit: int,
+    db: Session,
+    current_user: models.User,
+) -> List[Dict[str, Any]]:
+    require_system_admin_user(current_user)
+    ensure_audit_log_table()
+    db_logs = (
+        db.query(models.AuditLog)
+        .order_by(models.AuditLog.time.desc())
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+    return [
+        {
+            "id": log.id,
+            "time": log.time.isoformat() if log.time else datetime.now(timezone.utc).isoformat(),
+            "user": log.user,
+            "role": log.role,
+            "action": log.action,
+            "target": log.target,
+            "org": log.org,
+            "ip": log.ip,
+        }
+        for log in db_logs
+    ]
+
+
+def get_admin_settings_payload(current_user: models.User) -> Dict[str, Any]:
+    require_system_admin_user(current_user)
+    return ADMIN_SYSTEM_SETTINGS
+
+
+def update_admin_settings_payload(payload: Mapping[str, Any], current_user: models.User) -> Dict[str, Any]:
+    require_system_admin_user(current_user)
+    for key, value in payload.items():
+        ADMIN_SYSTEM_SETTINGS[key] = value
+    _save_admin_settings()
+    append_admin_audit_log(actor=current_user.username, action="UPDATE_SYSTEM_SETTINGS", target="admin.settings")
+    return ADMIN_SYSTEM_SETTINGS
+
+
+def get_costs_payload() -> None:
+    raise HTTPException(status_code=503, detail="Cost tracking temporarily disabled")
+
+
+def get_feature_flags_payload(current_user: models.User) -> Dict[str, bool]:
+    return {
+        "uploadEnabled": current_user.role == "system-admin",
+        "jobTrackingEnabled": current_user.role == "system-admin",
+        "systemAdminEnabled": current_user.role == "system-admin",
+    }
