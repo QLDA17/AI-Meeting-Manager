@@ -148,9 +148,9 @@ def list_action_items_payload(
         meeting = db.query(models.Meeting).filter(models.Meeting.id == meeting_id).first()
         if not meeting:
             raise HTTPException(status_code=404, detail="Meeting not found")
-        from src.api import _legacy_runtime as legacy
+        from src.api.core.meeting_operations import require_meeting_room_access
 
-        legacy.require_meeting_room_access(db, current_user, meeting)
+        require_meeting_room_access(db, current_user, meeting)
         query = query.filter(models.ActionItem.meeting_id == meeting_id)
     else:
         participant_meeting_ids = meeting_participant_meeting_ids_for_user(db, current_user)

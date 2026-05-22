@@ -1,9 +1,17 @@
 from fastapi import APIRouter
 
-from src.api import _legacy_runtime as legacy
+from src.api.core.system_operations import get_health_payload, get_healthz_payload, get_metrics_payload
 
 router = APIRouter(tags=["system"])
 
-router.add_api_route("/health", legacy.health, methods=["GET"])
-router.add_api_route("/healthz", legacy.healthz, methods=["GET"])
-router.add_api_route("/metrics", legacy.metrics, methods=["GET"])
+@router.get("/health")
+def health():
+    return get_health_payload()
+
+@router.get("/healthz")
+def healthz():
+    return get_healthz_payload()
+
+@router.get("/metrics")
+def metrics():
+    return get_metrics_payload()

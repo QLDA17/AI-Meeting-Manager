@@ -6,24 +6,12 @@ from sqlalchemy.orm import Session
 
 from src.api import auth, models
 from src.api.crud import get_user_by_email, get_user_by_id
-
-
-def _legacy_runtime_module():
-    from src.api import _legacy_runtime as legacy
-
-    return legacy
-
-
-def _latest_processed_record(records, fallback_to_any: bool = False):
-    return _legacy_runtime_module()._latest_processed_record(records, fallback_to_any=fallback_to_any)
-
-
-def transcript_segment_response_payloads(transcript, speaker_map):
-    return _legacy_runtime_module().transcript_segment_response_payloads(transcript, speaker_map)
-
-
-def _anchor_from_segments(text: Optional[str], segments: List[Dict[str, Any]], preferred_speaker: Optional[str] = None):
-    return _legacy_runtime_module()._anchor_from_segments(text, segments, preferred_speaker=preferred_speaker)
+from src.api.core.meeting_operations import (
+    _anchor_from_segments,
+    _latest_processed_record,
+    broadcast_meeting_room_event,
+    transcript_segment_response_payloads,
+)
 
 
 def action_item_visible_to_user(db: Session, action_item: models.ActionItem, user: models.User) -> bool:
@@ -322,7 +310,7 @@ def resolve_action_item_assignees(
 def broadcast_action_item_updated(action_item: models.ActionItem) -> None:
     if not action_item.meeting_id:
         return
-    _legacy_runtime_module().broadcast_meeting_room_event(
+    broadcast_meeting_room_event(
         action_item.meeting_id,
         {
             "type": "action_item.updated",
@@ -336,7 +324,7 @@ def broadcast_action_item_updated(action_item: models.ActionItem) -> None:
 def broadcast_action_item_deleted(meeting_id: Optional[str], action_item_id: str) -> None:
     if not meeting_id:
         return
-    _legacy_runtime_module().broadcast_meeting_room_event(
+    broadcast_meeting_room_event(
         meeting_id,
         {
             "type": "action_item.deleted",

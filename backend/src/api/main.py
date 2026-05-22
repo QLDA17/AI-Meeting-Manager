@@ -3,8 +3,6 @@ import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
-from src.api import _legacy_runtime as legacy
-from src.api._legacy_runtime import *  # noqa: F401,F403
 from src.api.app import app
 from src.api.notifications import send_email as notification_send_email
 

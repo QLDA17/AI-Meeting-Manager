@@ -18,7 +18,7 @@ def _get_db():
 async def reminder_loop():
     """Check every 60 seconds for upcoming meetings that need reminders."""
     from . import models
-    from .main import push_runtime_notification
+    from src.api.core.notifications_support import push_runtime_notification
 
     while True:
         db = _get_db()

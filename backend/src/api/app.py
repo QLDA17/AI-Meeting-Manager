@@ -8,11 +8,15 @@ from src.api.core.lifecycle import register_lifecycle
 from src.api.logging_middleware import RequestLoggingMiddleware
 from src.api.rate_limiting import RateLimitMiddleware
 from src.api.routes.admin import router as admin_router
+from src.api.routes.analytics import router as analytics_router
 from src.api.routes.auth_profile import router as auth_profile_router
 from src.api.routes.glossary_action_items import router as glossary_action_items_router
 from src.api.routes.groups import router as groups_router
+from src.api.routes.jobs import router as jobs_router
 from src.api.routes.meetings import router as meetings_router
+from src.api.routes.notifications import router as notifications_router
 from src.api.routes.organizations import router as organizations_router
+from src.api.routes.search import router as search_router
 from src.api.routes.stt import router as stt_router
 from src.api.routes.system import router as system_router
 
@@ -59,6 +63,10 @@ def create_app() -> FastAPI:
     app.include_router(admin_router)
     app.include_router(glossary_action_items_router)
     app.include_router(system_router)
+    app.include_router(notifications_router)
+    app.include_router(analytics_router)
+    app.include_router(search_router)
+    app.include_router(jobs_router)
     return app
 
 
