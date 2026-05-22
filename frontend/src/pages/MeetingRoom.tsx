@@ -30,7 +30,7 @@ import {
   ShieldCheck,
   Settings
 } from "lucide-react";
-import { showToast } from "../components/ui";
+import { PageState, showToast } from "../components/ui";
 import { useWebSocket, useAudioRecorder } from "../hooks";
 import { useAuth } from "../context/AuthContext";
 import { useAppStore } from "../stores";
@@ -38,13 +38,21 @@ import { clsx } from "clsx";
 import api from "../services/api";
 import { normalizeMeetingDetail, normalizeMeetingMessage } from "../services/mappers";
 import type { MeetingDetail, MeetingMessage } from "../types";
+import {
+  aiNotesFromMeeting,
+  dedupeActionItems,
+  normalizeParticipantRole,
+  normalizeRoomTranscriptChunk,
+  type ParticipantRole,
+  type RoomTranscriptChunk,
+} from "../features/meeting-room/utils";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 interface Participant {
   id: string;
   name: string;
-  role: "organizer" | "presenter" | "attendee";
+  role: ParticipantRole;
   stream?: MediaStream | null;
   micOn: boolean;
   cameraOn: boolean;
@@ -53,69 +61,6 @@ interface Participant {
 }
 
 type SidePanel = "chat" | "participants" | "ai-notes" | null;
-
-interface RoomTranscriptChunk {
-  id: string;
-  userId?: string;
-  chunkIndex: number;
-  speaker?: string;
-  text: string;
-  segments: any[];
-  timestamp: number;
-  source?: string;
-}
-
-const normalizeRoomTranscriptChunk = (
-  chunk: any,
-  fallbackIndex: number,
-  source: string,
-): RoomTranscriptChunk => {
-  const chunkIndex = Number(chunk?.chunkIndex ?? chunk?.chunk_index ?? fallbackIndex);
-  const userId = chunk?.userId ?? chunk?.user_id;
-  const timestamp = chunk?.timestamp ? new Date(chunk.timestamp).getTime() : Date.now();
-  const segments = Array.isArray(chunk?.segments) ? chunk.segments : [];
-  const text = chunk?.text || segments.map((segment: any) => segment.text).filter(Boolean).join(" ");
-  return {
-    id: chunk?.id || `${source}:${userId || chunk?.speaker || "unknown"}:${chunkIndex}`,
-    userId,
-    chunkIndex,
-    speaker: chunk?.speaker || segments[0]?.speaker_display_name || segments[0]?.speaker,
-    text,
-    segments,
-    timestamp,
-    source,
-  };
-};
-
-const aiNotesFromMeeting = (meeting: MeetingDetail | null) => {
-  if (!meeting || (!meeting.meetingSummaryText && !meeting.keyPointsText?.length)) return null;
-  return {
-    meeting_summary: meeting.meetingSummaryText || "",
-    key_points: meeting.keyPointsText || [],
-    decisions: meeting.decisionsText || [],
-    risks: meeting.risksText || [],
-    open_questions: meeting.openQuestionsText || [],
-    timeline_highlights: meeting.timelineHighlightsText || [],
-    speaker_summaries: meeting.speakerSummariesText || [],
-    processing_status: meeting.summaryStatus,
-  };
-};
-
-const normalizeRole = (value: unknown): Participant["role"] => {
-  const role = String(value || "").toLowerCase();
-  if (role.includes("organizer") || role.includes("host")) return "organizer";
-  if (role.includes("presenter")) return "presenter";
-  return "attendee";
-};
-
-const dedupeActionItems = (items: any[]) => {
-  const byId = new Map<string, any>();
-  items.forEach((item) => {
-    if (!item?.id) return;
-    byId.set(item.id, item);
-  });
-  return Array.from(byId.values());
-};
 
 // ─── Mock Data ───────────────────────────────────────────────────────────────
 
@@ -324,7 +269,7 @@ const MeetingRoomInner: React.FC = () => {
           || onlineRow?.email
           || existing?.name
           || "Thành viên",
-        role: normalizeRole(onlineRow?.role || matchedParticipant?.role),
+        role: normalizeParticipantRole(onlineRow?.role || matchedParticipant?.role),
         micOn: onlineRow?.micOn ?? onlineRow?.mic_on ?? existing?.micOn ?? true,
         cameraOn: onlineRow?.cameraOn ?? onlineRow?.camera_on ?? existing?.cameraOn ?? true,
         handRaised: onlineRow?.handRaised ?? onlineRow?.hand_raised ?? existing?.handRaised ?? false,
@@ -882,21 +827,32 @@ const MeetingRoomInner: React.FC = () => {
 
   if (isMeetingLoading) {
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#020617] text-white">
-        <div className="h-10 w-10 animate-spin rounded-full border-4 border-indigo-500 border-t-transparent" />
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#020617] p-6">
+        <div className="w-full max-w-2xl">
+          <PageState
+            title="Đang kết nối vào phòng họp"
+            description="Hệ thống đang tải cuộc họp, trạng thái realtime và transcript draft gần nhất trước khi đưa bạn vào phòng."
+            tone="loading"
+          />
+        </div>
       </div>
     );
   }
 
   if (meetingLoadError || !meeting) {
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#020617] p-6 text-white">
-        <div className="max-w-md rounded-3xl border border-slate-800 bg-slate-900 p-8 text-center">
-          <h2 className="text-xl font-black">Không thể vào phòng họp</h2>
-          <p className="mt-3 text-sm text-slate-400">{meetingLoadError || "Cuộc họp không tồn tại hoặc bạn không có quyền truy cập."}</p>
-          <button onClick={() => navigate("/meetings")} className="mt-6 rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-bold text-white">
-            Quay lại danh sách
-          </button>
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#020617] p-6">
+        <div className="w-full max-w-2xl">
+          <PageState
+            title="Không thể vào phòng họp"
+            description={meetingLoadError || "Cuộc họp không tồn tại hoặc bạn không có quyền truy cập."}
+            tone="error"
+            action={(
+              <button onClick={() => navigate("/meetings")} className="rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-bold text-white">
+                Quay lại danh sách
+              </button>
+            )}
+          />
         </div>
       </div>
     );
@@ -908,16 +864,18 @@ const MeetingRoomInner: React.FC = () => {
     const minutesUntilStart = Math.round((meetingStart - Date.now()) / 60000);
     if (minutesUntilStart > 15) {
       return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#020617] p-6 text-white">
-          <div className="max-w-md rounded-3xl border border-slate-800 bg-slate-900 p-8 text-center">
-            <h2 className="text-xl font-black">Cuộc họp chưa tới giờ</h2>
-            <p className="mt-3 text-sm text-slate-400">
-              Cuộc họp "{meeting.title}" bắt đầu trong {minutesUntilStart} phút nữa.
-              Bạn có thể vào phòng khi còn 15 phút nữa.
-            </p>
-            <button onClick={() => navigate("/meetings")} className="mt-6 rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-bold text-white">
-              Quay lại danh sách
-            </button>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#020617] p-6">
+          <div className="w-full max-w-2xl">
+            <PageState
+              title="Cuộc họp chưa tới giờ"
+              description={`Cuộc họp "${meeting.title}" bắt đầu trong ${minutesUntilStart} phút nữa. Bạn có thể vào phòng khi còn 15 phút trước giờ họp.`}
+              tone="processing"
+              action={(
+                <button onClick={() => navigate("/meetings")} className="rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-bold text-white">
+                  Quay lại danh sách
+                </button>
+              )}
+            />
           </div>
         </div>
       );

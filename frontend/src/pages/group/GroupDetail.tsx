@@ -26,7 +26,7 @@ import GroupChatTab from '../../components/group/GroupChatTab';
 import GroupStatsTab from '../../components/group/GroupStatsTab';
 import GroupSettingsTab from '../../components/group/GroupSettingsTab';
 import CreateGroupModal from '../../components/group/CreateGroupModal';
-import { Button, Badge, Card } from '../../components/ui';
+import { Button, Badge, Card, PageState } from '../../components/ui';
 import type { Group } from '../../types';
 
 type TabKey = 'meetings' | 'members' | 'chat' | 'stats' | 'settings';
@@ -60,25 +60,27 @@ const GroupDetail: React.FC = () => {
 
   if (loading) {
     return (
-      <div className="flex min-h-[60vh] items-center justify-center">
-        <div className="h-10 w-10 animate-spin rounded-full border-4 border-primary-500 border-t-transparent shadow-lg" />
-      </div>
+      <PageState
+        title="Đang tải nhóm"
+        description="Hệ thống đang đồng bộ thông tin nhóm, thành viên và các cuộc họp liên quan."
+        tone="loading"
+      />
     );
   }
 
   if (!groupData) {
     return (
-      <div className="mx-auto max-w-lg mt-10 rounded-[2.5rem] border border-gray-100 bg-white p-12 text-center shadow-xl dark:border-slate-800 dark:bg-slate-900">
-        <div className="mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-full bg-red-50 text-red-500 dark:bg-red-900/20">
-          <Lock size={40} />
-        </div>
-        <h2 className="text-2xl font-black text-gray-900 dark:text-slate-100">Không tìm thấy nhóm</h2>
-        <p className="mt-3 text-gray-500 dark:text-slate-400">
-          {useGroupStore.getState().error || "Nhóm bạn đang tìm kiếm không tồn tại hoặc bạn không có quyền truy cập."}
-        </p>
-        <Button variant="primary" className="mt-8 px-10 rounded-2xl" onClick={() => navigate('/')}>
-          Về Trang chủ
-        </Button>
+      <div className="mx-auto mt-10 max-w-lg">
+        <PageState
+          title="Không tìm thấy nhóm"
+          description={useGroupStore.getState().error || 'Nhóm bạn đang tìm kiếm không tồn tại hoặc bạn không có quyền truy cập.'}
+          tone="error"
+          action={(
+            <Button variant="primary" className="rounded-2xl px-10" onClick={() => navigate('/')}>
+              Về trang chủ
+            </Button>
+          )}
+        />
       </div>
     );
   }
@@ -213,6 +215,64 @@ const GroupDetail: React.FC = () => {
           </div>
         </div>
       </motion.section>
+
+      {(groupData.meetingCount === 0 || totalMemberCount <= 1) && (
+        <motion.div
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="rounded-[2rem] border border-dashed border-primary-200 bg-primary-50/50 p-6 dark:border-primary-900/30 dark:bg-primary-900/10"
+        >
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <p className="text-[11px] font-black uppercase tracking-[0.24em] text-primary-600 dark:text-primary-300">
+                Thiết lập ban đầu
+              </p>
+              <h2 className="mt-2 text-2xl font-black text-gray-900 dark:text-white">
+                {groupData.meetingCount === 0 ? 'Nhóm này chưa có cuộc họp nào' : 'Nhóm đã tạo nhưng chưa có đủ người cộng tác'}
+              </h2>
+              <p className="mt-3 max-w-2xl text-sm leading-6 text-gray-600 dark:text-slate-300">
+                {groupData.meetingCount === 0
+                  ? 'Bắt đầu bằng một cuộc họp live hoặc tải ghi âm để nhóm có transcript, AI Notes và việc cần làm đầu tiên.'
+                  : 'Mời thêm thành viên để giao việc, thảo luận trong nhóm và tổ chức các cuộc họp đúng phạm vi.'}
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-3">
+              {groupData.meetingCount === 0 && (
+                <>
+                  <Button
+                    size="lg"
+                    onClick={() => navigate(`/meetings/create?groupId=${id}`)}
+                    className="rounded-2xl px-6"
+                    icon={<Plus size={16} />}
+                  >
+                    Tạo cuộc họp
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="lg"
+                    onClick={() => navigate('/upload')}
+                    className="rounded-2xl px-6"
+                    icon={<FileText size={16} />}
+                  >
+                    Tải ghi âm
+                  </Button>
+                </>
+              )}
+              {totalMemberCount <= 1 && (
+                <Button
+                  variant="secondary"
+                  size="lg"
+                  onClick={() => setActiveTab('members')}
+                  className="rounded-2xl px-6"
+                  icon={<Users size={16} />}
+                >
+                  Quản lý thành viên
+                </Button>
+              )}
+            </div>
+          </div>
+        </motion.div>
+      )}
 
       {/* Horizontal Tab Interface */}
       <div className="space-y-6">

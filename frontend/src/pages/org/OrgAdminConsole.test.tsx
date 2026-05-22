@@ -28,16 +28,17 @@ vi.mock('../../context/AuthContext', () => ({
 
 vi.mock('../../stores', () => ({
   useOrgStore: () => ({
-    currentOrg: { 
-      id: 'org-1', 
-      name: 'Test Org', 
-      memberCount: 10, 
-      groupCount: 5, 
-      meetingCount: 20, 
-      totalHours: 50 
+    currentOrg: {
+      id: 'org-1',
+      name: 'Test Org',
+      memberCount: 10,
+      groupCount: 5,
+      meetingCount: 20,
+      totalHours: 50
     },
     groups: [],
     members: [],
+    loadOrgDetails: vi.fn(),
   }),
   useGlossaryStore: () => ({
     glossaries: [],

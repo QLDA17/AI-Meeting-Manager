@@ -29,6 +29,7 @@ type MeetingActionItemCardProps = {
   onConfirmEdit: () => void;
   onDelete: () => void;
   onUpdateSelfStatus: (status: ActionItem['status']) => void;
+  onJumpToContext?: () => void;
 };
 
 const statusLabels: Record<ActionItem['status'], string> = {
@@ -104,6 +105,7 @@ const MeetingActionItemCard: React.FC<MeetingActionItemCardProps> = ({
   onConfirmEdit,
   onDelete,
   onUpdateSelfStatus,
+  onJumpToContext,
 }) => {
   const completedAssigneeCount = item.assignees.filter((assignee) => assignee.status === 'COMPLETED').length;
   const assigneeLabels = item.assignees.map((assignee) => assignee.display_name || assignee.email || 'Người phụ trách');
@@ -289,6 +291,15 @@ const MeetingActionItemCard: React.FC<MeetingActionItemCardProps> = ({
               <span className="inline-flex items-center gap-1 rounded-md border border-gray-150 bg-gray-50/80 px-1.5 py-0.5 text-gray-600 dark:border-slate-800 dark:bg-slate-800/40 dark:text-slate-300">
                 Tổng: {progressSummary}
               </span>
+              {item.anchor && onJumpToContext && (
+                <button
+                  type="button"
+                  onClick={onJumpToContext}
+                  className="inline-flex items-center gap-1 rounded-md border border-violet-100 bg-violet-50 px-1.5 py-0.5 text-violet-700 transition hover:bg-violet-100 dark:border-violet-900/30 dark:bg-violet-950/20 dark:text-violet-300"
+                >
+                  Nghe lại đoạn này
+                </button>
+              )}
             </div>
           </div>
         </div>

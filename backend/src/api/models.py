@@ -21,6 +21,7 @@ class User(Base):
     first_name: Mapped[str] = mapped_column(String(100), nullable=True)
     last_name: Mapped[str] = mapped_column(String(100), nullable=True)
     avatar_url: Mapped[str] = mapped_column(String(500), nullable=True)
+    bio: Mapped[str] = mapped_column(Text, nullable=True)
     language: Mapped[str] = mapped_column(String(10), default="vi")
     timezone: Mapped[str] = mapped_column(String(100), default="Asia/Ho_Chi_Minh")
     notification_preferences: Mapped[dict] = mapped_column(JSON, nullable=True)

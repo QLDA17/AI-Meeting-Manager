@@ -15,6 +15,13 @@ export interface ActionItemAssignee {
     updated_at: string;
 }
 
+export interface TranscriptAnchor {
+    start_time: number;
+    end_time?: number;
+    speaker_label?: string;
+    source_segment_ids: string[];
+}
+
 export interface ActionItem {
     id: string;
     meeting_id?: string;
@@ -22,6 +29,7 @@ export interface ActionItem {
     assignee_options?: ActionItemAssigneeOption[];
     assignees: ActionItemAssignee[];
     summary_id?: string;
+    anchor?: TranscriptAnchor;
     title: string;
     description?: string;
     assigned_to?: string;

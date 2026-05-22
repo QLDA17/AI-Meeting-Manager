@@ -29,6 +29,7 @@ import { normalizeMeeting } from '../services/mappers';
 import type { ActionItem, ActionItemUpdate, Meeting } from '../types';
 
 type StatusFilter = 'all' | ActionItem['status'];
+type WorkSectionKey = 'today' | 'overdue' | 'week' | 'assigned' | 'unassigned';
 
 type ActionEditDraft = {
   title: string;
@@ -73,6 +74,49 @@ const isAssignedToCurrentUser = (item: ActionItem, userId?: string, email?: stri
 };
 
 const isUnassigned = (item: ActionItem) => item.assignees.length === 0;
+
+const startOfToday = () => {
+  const date = new Date();
+  date.setHours(0, 0, 0, 0);
+  return date;
+};
+
+const parseDueDate = (value?: string) => {
+  if (!value) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
+const isDueToday = (item: ActionItem) => {
+  const dueDate = parseDueDate(item.due_date);
+  if (!dueDate) return false;
+  const today = startOfToday();
+  const tomorrow = new Date(today);
+  tomorrow.setDate(today.getDate() + 1);
+  return dueDate >= today && dueDate < tomorrow;
+};
+
+const isOverdueTask = (item: ActionItem) => {
+  const dueDate = parseDueDate(item.due_date);
+  if (!dueDate || item.status === 'COMPLETED' || item.status === 'CANCELLED') return false;
+  return dueDate < startOfToday();
+};
+
+const isDueThisWeek = (item: ActionItem) => {
+  const dueDate = parseDueDate(item.due_date);
+  if (!dueDate) return false;
+  const today = startOfToday();
+  const weekLater = new Date(today);
+  weekLater.setDate(today.getDate() + 7);
+  return dueDate >= today && dueDate < weekLater;
+};
+
+const wasRecentlyAssigned = (item: ActionItem) => {
+  const createdAt = item.created_at ? new Date(item.created_at) : null;
+  if (!createdAt || Number.isNaN(createdAt.getTime())) return false;
+  const now = Date.now();
+  return now - createdAt.getTime() <= 3 * 24 * 60 * 60 * 1000;
+};
 
 const formatDate = (value?: string) => {
   if (!value) return 'Chưa có hạn';
@@ -481,6 +525,7 @@ const ActionItems: React.FC = () => {
   const [deletingTaskId, setDeletingTaskId] = useState<string | null>(null);
   const [isCreating, setIsCreating] = useState(false);
   const [activeTab, setActiveTab] = useState<'my' | 'unassigned'>('my');
+  const [activeSection, setActiveSection] = useState<WorkSectionKey>('today');
 
   const { data: actionItems = [], isLoading } = useQuery({
     queryKey: ['actionItems'],
@@ -561,6 +606,46 @@ const ActionItems: React.FC = () => {
     }),
     [myItems],
   );
+  const workSections = useMemo(
+    () => ({
+      today: myItems.filter(isDueToday),
+      overdue: myItems.filter(isOverdueTask),
+      week: myItems.filter(isDueThisWeek),
+      assigned: myItems.filter(wasRecentlyAssigned),
+      unassigned: unassignedItems,
+    }),
+    [myItems, unassignedItems],
+  );
+  const sectionMeta: Record<
+    WorkSectionKey,
+    { label: string; count: number; description: string }
+  > = {
+    today: {
+      label: 'Hôm nay',
+      count: workSections.today.length,
+      description: 'Các việc chạm hạn trong hôm nay.',
+    },
+    overdue: {
+      label: 'Quá hạn',
+      count: workSections.overdue.length,
+      description: 'Những việc đã quá hạn nhưng chưa hoàn thành.',
+    },
+    week: {
+      label: 'Tuần này',
+      count: workSections.week.length,
+      description: 'Việc cần xử lý trong 7 ngày tới.',
+    },
+    assigned: {
+      label: 'Vừa được giao',
+      count: workSections.assigned.length,
+      description: 'Những việc mới giao gần đây để bạn bắt đầu nhanh.',
+    },
+    unassigned: {
+      label: 'Chưa giao',
+      count: workSections.unassigned.length,
+      description: 'Backlog chưa giao trong các cuộc họp bạn tham gia.',
+    },
+  };
   const meetingsById = useMemo(
     () => new Map(meetings.map((meeting) => [meeting.id, meeting])),
     [meetings],
@@ -700,8 +785,11 @@ const ActionItems: React.FC = () => {
     }
   };
 
-  const currentList = activeTab === 'my' ? myItems : unassignedItems;
-  const currentEmptyText = activeTab === 'my' ? 'Không có việc được giao cho bạn' : 'Không có việc chưa giao phù hợp';
+  const currentList = activeTab === 'my' ? workSections[activeSection] : workSections.unassigned;
+  const currentEmptyText =
+    activeTab === 'my'
+      ? sectionMeta[activeSection].description
+      : 'Không có việc chưa giao phù hợp trong các cuộc họp bạn đang theo dõi.';
 
   if (isLoading) {
     return (
@@ -721,7 +809,7 @@ const ActionItems: React.FC = () => {
         <div>
           <h1 className="text-2xl font-bold text-gray-900 dark:text-slate-100">Việc cần làm</h1>
           <p className="text-gray-600 dark:text-slate-400">
-            Theo dõi việc của bạn và backlog chưa giao trong các cuộc họp bạn có liên quan.
+            Trung tâm làm việc hằng ngày của bạn: ưu tiên việc đến hạn, backlog chưa giao và lối tắt về đúng cuộc họp nguồn.
           </p>
         </div>
       </motion.div>
@@ -749,9 +837,9 @@ const ActionItems: React.FC = () => {
             <div className="relative z-10">
               <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-50 px-2.5 py-1 text-[10px] font-bold text-blue-600 dark:bg-blue-950/40 dark:text-blue-400">
                 <ClipboardList size={11} />
-                Tiến độ cá nhân
+                Tổng quan danh sách hiện tại
               </span>
-              <p className="text-[11px] text-gray-400 dark:text-slate-500 font-semibold mt-2.5 uppercase tracking-wider">Hiệu suất cá nhân</p>
+              <p className="text-[11px] text-gray-400 dark:text-slate-500 font-semibold mt-2.5 uppercase tracking-wider">Nhịp công việc của tôi</p>
               <h2 className="text-3xl font-black text-gray-900 dark:text-white mt-1 tracking-tight">
                 {stats.total > 0 ? Math.round((stats.completed / stats.total) * 100) : 0}%
               </h2>
@@ -947,7 +1035,10 @@ const ActionItems: React.FC = () => {
         {/* Tab Headers */}
         <div className="flex border-b border-gray-100 dark:border-slate-800/80 bg-gray-50/50 dark:bg-slate-950/20 px-4">
           <button
-            onClick={() => setActiveTab('my')}
+            onClick={() => {
+              setActiveTab('my');
+              setActiveSection((current) => (current === 'unassigned' ? 'today' : current));
+            }}
             className={`flex items-center gap-2 py-3.5 text-xs font-black transition relative ${
               activeTab === 'my' ? 'text-gray-900 dark:text-white' : 'text-gray-400 hover:text-gray-600 dark:hover:text-slate-300'
             }`}
@@ -964,7 +1055,10 @@ const ActionItems: React.FC = () => {
           </button>
           
           <button
-            onClick={() => setActiveTab('unassigned')}
+            onClick={() => {
+              setActiveTab('unassigned');
+              setActiveSection('unassigned');
+            }}
             className={`flex items-center gap-2 py-3.5 text-xs font-black transition relative ml-6 ${
               activeTab === 'unassigned' ? 'text-gray-900 dark:text-white' : 'text-gray-400 hover:text-gray-600 dark:hover:text-slate-300'
             }`}
@@ -980,6 +1074,39 @@ const ActionItems: React.FC = () => {
             )}
           </button>
         </div>
+
+        {activeTab === 'my' && (
+          <div className="border-b border-gray-100 bg-white px-4 py-3 dark:border-slate-800/80 dark:bg-slate-900">
+            <div className="flex flex-wrap gap-2">
+              {(['today', 'overdue', 'week', 'assigned'] as WorkSectionKey[]).map((section) => (
+                <button
+                  key={section}
+                  type="button"
+                  onClick={() => setActiveSection(section)}
+                  className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-[11px] font-bold transition ${
+                    activeSection === section
+                      ? 'border-gray-900 bg-gray-900 text-white dark:border-slate-100 dark:bg-slate-100 dark:text-slate-900'
+                      : 'border-gray-200 bg-gray-50 text-gray-600 hover:border-gray-300 hover:bg-white dark:border-slate-700 dark:bg-slate-850 dark:text-slate-300 dark:hover:border-slate-600'
+                  }`}
+                >
+                  {sectionMeta[section].label}
+                  <span
+                    className={`rounded-full px-1.5 py-0.5 text-[10px] ${
+                      activeSection === section
+                        ? 'bg-white/20 text-white dark:bg-slate-900/20 dark:text-slate-900'
+                        : 'bg-white text-gray-500 dark:bg-slate-900 dark:text-slate-300'
+                    }`}
+                  >
+                    {sectionMeta[section].count}
+                  </span>
+                </button>
+              ))}
+            </div>
+            <p className="mt-2 text-xs text-gray-500 dark:text-slate-400">
+              {sectionMeta[activeSection].description}
+            </p>
+          </div>
+        )}
 
         {/* Unified Rows List */}
         <div className="divide-y divide-gray-100 dark:divide-slate-800/80">

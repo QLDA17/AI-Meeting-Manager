@@ -13,6 +13,7 @@ interface UIState {
   isDarkMode: boolean;
   sidebarOpen: boolean;
   mobileSidebarOpen: boolean;
+  commandPaletteOpen: boolean;
 
   // Modal/Dialog States
   isCreateMeetingOpen: boolean;
@@ -26,6 +27,8 @@ interface UIState {
   toggleSidebar: () => void;
   setMobileSidebarOpen: (value: boolean) => void;
   toggleMobileSidebar: () => void;
+  setCommandPaletteOpen: (value: boolean) => void;
+  toggleCommandPalette: () => void;
 
   // Modal Actions
   setCreateMeetingOpen: (value: boolean) => void;
@@ -40,6 +43,7 @@ export const useUIStore = create<UIState>()(
       isDarkMode: false,
       sidebarOpen: true,
       mobileSidebarOpen: false,
+      commandPaletteOpen: false,
 
       // Modal/Dialog States
       isCreateMeetingOpen: false,
@@ -57,6 +61,9 @@ export const useUIStore = create<UIState>()(
       setMobileSidebarOpen: (value) => set({ mobileSidebarOpen: value }),
       toggleMobileSidebar: () =>
         set((state) => ({ mobileSidebarOpen: !state.mobileSidebarOpen })),
+      setCommandPaletteOpen: (value) => set({ commandPaletteOpen: value }),
+      toggleCommandPalette: () =>
+        set((state) => ({ commandPaletteOpen: !state.commandPaletteOpen })),
 
       // Modal Actions
       setCreateMeetingOpen: (value) => set({ isCreateMeetingOpen: value }),

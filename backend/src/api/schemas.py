@@ -23,6 +23,7 @@ class UserBase(BaseSchema):
     first_name: Optional[str] = Field(None, max_length=100)
     last_name: Optional[str] = Field(None, max_length=100)
     avatar_url: Optional[str] = Field(None, max_length=500)
+    bio: Optional[str] = Field(None, max_length=400)
     language: str = Field(default="vi", max_length=10)
     timezone: str = Field(default="Asia/Ho_Chi_Minh", max_length=100)
     notification_preferences: Optional[Dict[str, Any]] = None
@@ -44,6 +45,7 @@ class UserUpdate(BaseSchema):
     first_name: Optional[str] = Field(None, max_length=100)
     last_name: Optional[str] = Field(None, max_length=100)
     avatar_url: Optional[str] = Field(None, max_length=500)
+    bio: Optional[str] = Field(None, max_length=400)
     language: Optional[str] = Field(None, max_length=10)
     timezone: Optional[str] = Field(None, max_length=100)
     notification_preferences: Optional[Dict[str, Any]] = None
@@ -92,6 +94,7 @@ class ProfileUpdate(BaseSchema):
     first_name: Optional[str] = Field(None, max_length=100)
     last_name: Optional[str] = Field(None, max_length=100)
     avatar_url: Optional[str] = Field(None, max_length=500)
+    bio: Optional[str] = Field(None, max_length=400)
     language: Optional[str] = Field(None, max_length=10)
     timezone: Optional[str] = Field(None, max_length=100)
     notification_preferences: Optional[Dict[str, Any]] = None
@@ -601,6 +604,18 @@ class ActionItemAssigneeStatusUpdate(BaseSchema):
     status: str = Field(..., pattern="^(PENDING|IN_PROGRESS|COMPLETED|CANCELLED)$")
 
 
+class TranscriptAnchor(BaseSchema):
+    start_time: float
+    end_time: Optional[float] = None
+    speaker_label: Optional[str] = None
+    source_segment_ids: List[str] = Field(default_factory=list)
+
+
+class AnchoredTextItem(BaseSchema):
+    text: str
+    anchor: Optional[TranscriptAnchor] = None
+
+
 class ActionItem(ActionItemBase, TimestampMixin):
     id: str
     meeting_id: Optional[str] = None
@@ -608,6 +623,7 @@ class ActionItem(ActionItemBase, TimestampMixin):
     assignee_options: Optional[List[ActionItemAssigneeOption]] = None
     assignees: List[ActionItemAssignee] = Field(default_factory=list)
     summary_id: Optional[str] = None
+    anchor: Optional[TranscriptAnchor] = None
     created_by: str
     completed_at: Optional[datetime] = None
 
@@ -731,18 +747,31 @@ class MeetingDetailResponse(Meeting):
     transcript_language: Optional[str] = None
     transcript_status: Optional[str] = None
     has_transcript_draft: bool = False
+    activity: List[Dict[str, Any]] = Field(default_factory=list)
     meeting_summary_text: Optional[str] = None
     key_points_text: List[str] = Field(default_factory=list)
+    key_points_items: List[AnchoredTextItem] = Field(default_factory=list)
     decisions_text: List[str] = Field(default_factory=list)
+    decisions_items: List[AnchoredTextItem] = Field(default_factory=list)
     risks_text: List[str] = Field(default_factory=list)
     open_questions_text: List[str] = Field(default_factory=list)
     timeline_highlights_text: List[str] = Field(default_factory=list)
+    timeline_highlights_items: List[AnchoredTextItem] = Field(default_factory=list)
     speaker_summaries_text: List[str] = Field(default_factory=list)
     summary_status: Optional[str] = None
     summary_error_text: Optional[str] = None
     summary_provider: Optional[str] = None
     summary_model_name: Optional[str] = None
     access_mode: Optional[str] = None
+
+
+class SearchResult(BaseSchema):
+    id: str
+    type: str
+    title: str
+    subtitle: Optional[str] = None
+    route: str
+    context: Optional[Dict[str, Any]] = None
 
 
 class MeetingAnalysisActionItem(BaseSchema):

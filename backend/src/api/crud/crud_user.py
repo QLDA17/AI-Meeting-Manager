@@ -48,6 +48,7 @@ def create_user(db: Session, user_data: dict, commit: bool = True) -> models.Use
         first_name=user_data.get("first_name"),
         last_name=user_data.get("last_name"),
         avatar_url=user_data.get("avatar_url"),
+        bio=user_data.get("bio"),
         language=user_data.get("language", "vi"),
         timezone=user_data.get("timezone", "Asia/Ho_Chi_Minh"),
         notification_preferences=user_data.get("notification_preferences"),

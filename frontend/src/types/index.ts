@@ -106,6 +106,7 @@ export interface User {
   lastName: string;
   displayName?: string;
   avatarUrl?: string;
+  bio?: string;
   phone?: string;
   gender?: 'male' | 'female' | 'other';
   dateOfBirth?: string;
@@ -201,6 +202,26 @@ export interface MeetingSummaryRecord {
   createdAt: string;
 }
 
+export interface ActivityFeedItem {
+  id: string;
+  type?: string;
+  title: string;
+  description: string;
+  timestamp?: string;
+  tone: 'neutral' | 'success' | 'warning' | 'danger' | 'info';
+  actor?: {
+    id?: string;
+    displayName?: string;
+    email?: string;
+  };
+  metadata?: Record<string, unknown>;
+}
+
+export interface AnchoredTextItem {
+  text: string;
+  anchor?: import('./actionItem').TranscriptAnchor;
+}
+
 export interface MeetingDetail extends Meeting {
   organization?: Organization;
   group?: Group;
@@ -214,12 +235,16 @@ export interface MeetingDetail extends Meeting {
   transcriptLanguage?: string;
   transcriptStatus?: string;
   hasTranscriptDraft?: boolean;
+  activity: ActivityFeedItem[];
   meetingSummaryText?: string;
   keyPointsText: string[];
+  keyPointsItems: AnchoredTextItem[];
   decisionsText: string[];
+  decisionsItems: AnchoredTextItem[];
   risksText: string[];
   openQuestionsText: string[];
   timelineHighlightsText: string[];
+  timelineHighlightsItems: AnchoredTextItem[];
   speakerSummariesText: string[];
   summaryStatus?: string;
   summaryErrorText?: string;
@@ -309,7 +334,29 @@ export interface NotificationItem {
   message: string;
   timestamp: string;
   isRead: boolean;
-  metadata?: Record<string, unknown>;
+  metadata?: {
+    entity_type?: 'meeting' | 'task' | 'group' | 'invitation' | 'system';
+    meeting_id?: string;
+    group_id?: string;
+    task_id?: string;
+    organization_id?: string;
+    action_label?: string;
+    [key: string]: unknown;
+  };
+}
+
+export interface SearchResult {
+  id: string;
+  type: 'meeting' | 'group' | 'task' | 'transcript';
+  title: string;
+  subtitle?: string;
+  route: string;
+  context?: {
+    meeting_id?: string;
+    initial_tab?: 'summary' | 'transcript' | 'actions' | 'ai-notes';
+    transcript_anchor?: import('./actionItem').TranscriptAnchor;
+    [key: string]: unknown;
+  };
 }
 
 export interface AuthContext {

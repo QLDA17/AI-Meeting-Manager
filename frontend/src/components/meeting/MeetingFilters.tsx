@@ -16,12 +16,9 @@ interface MeetingFiltersProps {
 
 const STATUS_OPTIONS = [
   { value: 'all', label: 'Tất cả trạng thái' },
-  { value: 'live', label: 'Đang diễn ra' },
-  { value: 'upcoming', label: 'Sắp tới' },
-  { value: 'processing', label: 'Cần xử lý' },
-  { value: 'completed', label: 'Đã hoàn tất' },
-  { value: 'failed', label: 'Lỗi' },
-  { value: 'canceled', label: 'Đã hủy' },
+  { value: 'live_upcoming', label: 'Sắp tới / Đang diễn ra' },
+  { value: 'processing', label: 'Đang xử lý' },
+  { value: 'done', label: 'Đã xong' },
 ];
 
 const MeetingFilters: React.FC<MeetingFiltersProps> = ({

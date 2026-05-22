@@ -82,6 +82,7 @@ export const normalizeUser = (user: any): User => {
     lastName,
     displayName: displayName || user.email,
     avatarUrl: user.avatarUrl ?? user.avatar_url,
+    bio: user.bio ?? undefined,
     phone: user.phone ?? undefined,
     gender: user.gender ?? undefined,
     dateOfBirth: user.dateOfBirth ?? user.date_of_birth ?? undefined,
@@ -169,6 +170,14 @@ export const normalizeActionItem = (actionItem: any): ActionItem => ({
   description: actionItem.description ?? undefined,
   assigned_to: actionItem.assigned_to ?? undefined,
   assigned_email: actionItem.assigned_email ?? undefined,
+  anchor: actionItem.anchor
+    ? {
+        start_time: asNumber(actionItem.anchor.start_time),
+        end_time: actionItem.anchor.end_time != null ? asNumber(actionItem.anchor.end_time) : undefined,
+        speaker_label: actionItem.anchor.speaker_label ?? undefined,
+        source_segment_ids: Array.isArray(actionItem.anchor.source_segment_ids) ? actionItem.anchor.source_segment_ids : [],
+      }
+    : undefined,
   status: actionItem.status ?? 'PENDING',
   priority: actionItem.priority ?? 'MEDIUM',
   due_date: actionItem.due_date ?? undefined,
@@ -298,12 +307,63 @@ export const normalizeMeetingDetail = (meeting: any): MeetingDetail => ({
   transcriptLanguage: meeting.transcript_language ?? undefined,
   transcriptStatus: meeting.transcript_status ?? undefined,
   hasTranscriptDraft: Boolean(meeting.has_transcript_draft),
+  activity: Array.isArray(meeting.activity)
+    ? meeting.activity.map((item: any) => ({
+        id: item.id,
+        type: item.type ?? undefined,
+        title: item.title ?? '',
+        description: item.description ?? '',
+        timestamp: item.timestamp ? asIsoString(item.timestamp) : undefined,
+        tone: item.tone ?? 'neutral',
+        actor: item.actor ?? undefined,
+        metadata: item.metadata ?? undefined,
+      }))
+    : [],
   meetingSummaryText: meeting.meeting_summary_text ?? undefined,
   keyPointsText: Array.isArray(meeting.key_points_text) ? meeting.key_points_text : [],
+  keyPointsItems: Array.isArray(meeting.key_points_items)
+    ? meeting.key_points_items.map((item: any) => ({
+        text: item.text ?? '',
+        anchor: item.anchor
+          ? {
+              start_time: asNumber(item.anchor.start_time),
+              end_time: item.anchor.end_time != null ? asNumber(item.anchor.end_time) : undefined,
+              speaker_label: item.anchor.speaker_label ?? undefined,
+              source_segment_ids: Array.isArray(item.anchor.source_segment_ids) ? item.anchor.source_segment_ids : [],
+            }
+          : undefined,
+      }))
+    : [],
   decisionsText: Array.isArray(meeting.decisions_text) ? meeting.decisions_text : [],
+  decisionsItems: Array.isArray(meeting.decisions_items)
+    ? meeting.decisions_items.map((item: any) => ({
+        text: item.text ?? '',
+        anchor: item.anchor
+          ? {
+              start_time: asNumber(item.anchor.start_time),
+              end_time: item.anchor.end_time != null ? asNumber(item.anchor.end_time) : undefined,
+              speaker_label: item.anchor.speaker_label ?? undefined,
+              source_segment_ids: Array.isArray(item.anchor.source_segment_ids) ? item.anchor.source_segment_ids : [],
+            }
+          : undefined,
+      }))
+    : [],
   risksText: Array.isArray(meeting.risks_text) ? meeting.risks_text : [],
   openQuestionsText: Array.isArray(meeting.open_questions_text) ? meeting.open_questions_text : [],
   timelineHighlightsText: Array.isArray(meeting.timeline_highlights_text) ? meeting.timeline_highlights_text : [],
+  timelineHighlightsItems: Array.isArray(meeting.timeline_highlights_items)
+    ? meeting.timeline_highlights_items.map((item: any) => ({
+        text: item.text ?? '',
+        anchor: item.anchor
+          ? {
+              start_time: asNumber(item.anchor.start_time),
+              end_time: item.anchor.end_time != null ? asNumber(item.anchor.end_time) : undefined,
+              speaker_label: item.anchor.speaker_label ?? undefined,
+              source_segment_ids: Array.isArray(item.anchor.source_segment_ids) ? item.anchor.source_segment_ids : [],
+            }
+          : undefined,
+      }))
+    : [],
   speakerSummariesText: Array.isArray(meeting.speaker_summaries_text) ? meeting.speaker_summaries_text : [],
   summaryStatus: meeting.summary_status ?? undefined,
   summaryErrorText: meeting.summary_error_text ?? undefined,
@@ -383,5 +443,15 @@ export const normalizeNotification = (notification: any): NotificationItem => ({
   message: notification.message ?? '',
   timestamp: asIsoString(notification.timestamp),
   isRead: asBoolean(notification.isRead ?? notification.is_read),
-  metadata: notification.metadata ?? {},
+  metadata: notification.metadata
+    ? {
+        ...notification.metadata,
+        entity_type: notification.metadata.entity_type ?? undefined,
+        meeting_id: notification.metadata.meeting_id ?? notification.metadata.meetingId ?? undefined,
+        group_id: notification.metadata.group_id ?? notification.metadata.groupId ?? undefined,
+        task_id: notification.metadata.task_id ?? notification.metadata.taskId ?? undefined,
+        organization_id: notification.metadata.organization_id ?? notification.metadata.organizationId ?? undefined,
+        action_label: notification.metadata.action_label ?? undefined,
+      }
+    : {},
 });

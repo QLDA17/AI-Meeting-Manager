@@ -118,19 +118,19 @@ const GroupMeetingsTab: React.FC<GroupMeetingsTabProps> = ({ meetings }) => {
       {/* Header Stats */}
       <div className="grid grid-cols-3 gap-3">
         <div className="rounded-xl bg-blue-50 p-4 dark:bg-blue-900/20">
-          <p className="text-xs text-blue-600 dark:text-blue-400">Total Meetings</p>
+          <p className="text-xs text-blue-600 dark:text-blue-400">Tổng cuộc họp</p>
           <p className="mt-1 text-2xl font-bold text-blue-700 dark:text-blue-200">
             {meetings.length}
           </p>
         </div>
         <div className="rounded-xl bg-green-50 p-4 dark:bg-green-900/20">
-          <p className="text-xs text-green-600 dark:text-green-400">Total Hours</p>
+          <p className="text-xs text-green-600 dark:text-green-400">Tổng thời lượng</p>
           <p className="mt-1 text-2xl font-bold text-green-700 dark:text-green-200">
             {(meetings.reduce((sum, m) => sum + m.duration, 0) / 60).toFixed(1)}h
           </p>
         </div>
         <div className="rounded-xl bg-purple-50 p-4 dark:bg-purple-900/20">
-          <p className="text-xs text-purple-600 dark:text-purple-400">Avg Duration</p>
+          <p className="text-xs text-purple-600 dark:text-purple-400">Thời lượng trung bình</p>
           <p className="mt-1 text-2xl font-bold text-purple-700 dark:text-purple-200">
             {(meetings.reduce((sum, m) => sum + m.duration, 0) / meetings.length || 0).toFixed(0)}m
           </p>
@@ -151,7 +151,7 @@ const GroupMeetingsTab: React.FC<GroupMeetingsTabProps> = ({ meetings }) => {
               setSearchTerm(e.target.value);
               setCurrentPage(1);
             }}
-            placeholder="Search meetings..."
+            placeholder="Tìm theo tiêu đề hoặc mô tả..."
             className="w-full rounded-lg border border-gray-200 bg-white pl-10 pr-4 py-2 text-sm outline-none transition focus:border-primary-400 focus:ring-2 focus:ring-primary-100 dark:border-slate-700 dark:bg-slate-800 dark:focus:ring-primary-900/30"
           />
         </div>
@@ -163,10 +163,10 @@ const GroupMeetingsTab: React.FC<GroupMeetingsTabProps> = ({ meetings }) => {
           }}
           className="rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm outline-none transition focus:border-primary-400 dark:border-slate-700 dark:bg-slate-800"
         >
-          <option value="all">All Status</option>
-          <option value="completed">Completed</option>
-          <option value="processing">Processing</option>
-          <option value="failed">Failed</option>
+          <option value="all">Tất cả trạng thái</option>
+          <option value="completed">Hoàn tất</option>
+          <option value="processing">Đang xử lý</option>
+          <option value="failed">Lỗi</option>
         </select>
         <select
           value={sortBy}
@@ -176,9 +176,9 @@ const GroupMeetingsTab: React.FC<GroupMeetingsTabProps> = ({ meetings }) => {
           }}
           className="rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm outline-none transition focus:border-primary-400 dark:border-slate-700 dark:bg-slate-800"
         >
-          <option value="newest">Newest First</option>
-          <option value="oldest">Oldest First</option>
-          <option value="longest">Longest Duration</option>
+          <option value="newest">Mới nhất</option>
+          <option value="oldest">Cũ nhất</option>
+          <option value="longest">Thời lượng dài nhất</option>
 
         </select>
       </div>
@@ -189,10 +189,12 @@ const GroupMeetingsTab: React.FC<GroupMeetingsTabProps> = ({ meetings }) => {
           <div className="rounded-xl border border-dashed border-gray-300 p-8 text-center dark:border-slate-700">
             <FileText size={32} className="mx-auto mb-3 text-gray-400" />
             <p className="text-sm font-semibold text-gray-700 dark:text-slate-200">
-              No meetings found
+              {meetings.length === 0 ? 'Nhóm này chưa có cuộc họp nào' : 'Không có cuộc họp phù hợp bộ lọc'}
             </p>
             <p className="mt-1 text-xs text-gray-500 dark:text-slate-400">
-              Try adjusting your filters or create a new meeting
+              {meetings.length === 0
+                ? 'Hãy tạo cuộc họp đầu tiên của nhóm hoặc tải một bản ghi âm để bắt đầu timeline, AI Notes và việc cần làm.'
+                : 'Hãy đổi bộ lọc hoặc từ khóa để xem thêm kết quả.'}
             </p>
           </div>
         ) : (

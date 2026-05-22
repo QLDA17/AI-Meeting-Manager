@@ -27,13 +27,13 @@ import { format } from 'date-fns';
 import type { AxiosError } from 'axios';
 import api from '../services/api';
 import { normalizeMeetingDetail } from '../services/mappers';
-import type { ActionItem, MeetingDetail as MeetingDetailType, MeetingTranscriptSegment } from '../types';
+import type { ActionItem, MeetingDetail as MeetingDetailType, MeetingTranscriptSegment, AnchoredTextItem } from '../types';
 import AudioPlayer, { type AudioPlayerHandle } from '../components/meeting/AudioPlayer';
 import ActionItemComposer from '../components/meeting/ActionItemComposer';
 import MeetingActionItemCard from '../components/meeting/MeetingActionItemCard';
 import { useAuth } from '../context/AuthContext';
-import { showToast, EditTitleModal } from '../components/ui';
-import type { ActionItemAssigneeOption } from '../types/actionItem';
+import { showToast, EditTitleModal, PageState } from '../components/ui';
+import type { ActionItemAssigneeOption, TranscriptAnchor } from '../types/actionItem';
 
 type DetailTab = 'summary' | 'transcript' | 'actions' | 'ai-notes';
 type ActionFilter = 'all' | 'mine' | 'unassigned' | 'completed';
@@ -54,6 +54,14 @@ type ActionEditDraft = {
   dueDate: string;
   status: string;
   priority: string;
+};
+
+type ActivityFeedItem = {
+  id: string;
+  title: string;
+  description: string;
+  timestamp?: string;
+  tone: 'neutral' | 'success' | 'warning' | 'danger' | 'info';
 };
 
 const TRANSCRIPT_GROUP_GAP_SECONDS = 3;
@@ -93,6 +101,156 @@ const groupTranscriptSegments = (segments: MeetingTranscriptSegment[]): Transcri
   }, []);
 };
 
+const formatTimelineDate = (value?: string) => {
+  if (!value) return 'Chưa có mốc thời gian';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return 'Chưa có mốc thời gian';
+  return format(parsed, 'HH:mm · dd/MM/yyyy');
+};
+
+const buildMeetingActivityFeed = (meeting: MeetingDetailType | undefined, actionItems: ActionItem[]): ActivityFeedItem[] => {
+  if (!meeting) return [];
+  const creatorLabel =
+    meeting.createdByUser?.displayName ||
+    meeting.createdByUser?.email ||
+    'Hệ thống';
+
+  const items: ActivityFeedItem[] = [
+    {
+      id: `meeting-created-${meeting.id}`,
+      title: 'Cuộc họp được tạo',
+      description: `${creatorLabel} đã tạo cuộc họp và chia sẻ ngữ cảnh ban đầu.`,
+      timestamp: meeting.createdAt,
+      tone: 'neutral',
+    },
+  ];
+
+  if (meeting.actual_start || meeting.startTime) {
+    items.push({
+      id: `meeting-start-${meeting.id}`,
+      title: 'Cuộc họp bắt đầu',
+      description: meeting.status === 'live' ? 'Phòng họp đang diễn ra và người tham gia có thể vào trực tiếp.' : 'Buổi họp đã bắt đầu và dữ liệu đang được thu thập.',
+      timestamp: meeting.actual_start || meeting.startTime,
+      tone: 'info',
+    });
+  }
+
+  if (meeting.actual_end) {
+    items.push({
+      id: `meeting-end-${meeting.id}`,
+      title: 'Cuộc họp kết thúc',
+      description: 'Bản ghi âm, transcript và AI Notes đã sẵn sàng cho giai đoạn xử lý sau họp.',
+      timestamp: meeting.actual_end,
+      tone: 'neutral',
+    });
+  }
+
+  if (meeting.transcriptStatus === 'DRAFT' && meeting.hasTranscriptDraft) {
+    items.push({
+      id: `transcript-draft-${meeting.id}`,
+      title: 'Transcript đang được lưu bản nháp',
+      description: 'Hệ thống đã giữ lại transcript gần realtime, kể cả khi AI Notes chưa hoàn tất.',
+      timestamp: meeting.updatedAt,
+      tone: 'info',
+    });
+  }
+
+  if (meeting.transcriptStatus === 'COMPLETED') {
+    items.push({
+      id: `transcript-complete-${meeting.id}`,
+      title: 'Transcript đã hoàn tất',
+      description: `${meeting.transcriptSegments.length || 0} đoạn transcript đã sẵn sàng để tìm kiếm và nghe lại theo timeline.`,
+      timestamp: meeting.updatedAt,
+      tone: 'success',
+    });
+  }
+
+  if (meeting.transcriptStatus === 'FAILED') {
+    items.push({
+      id: `transcript-failed-${meeting.id}`,
+      title: 'Transcript gặp lỗi',
+      description: 'Hệ thống chưa hoàn tất transcript chính thức. Bạn vẫn có thể kiểm tra draft hoặc thử lại AI Notes.',
+      timestamp: meeting.updatedAt,
+      tone: 'danger',
+    });
+  }
+
+  if (meeting.audioStatus === 'PROCESSING') {
+    items.push({
+      id: `audio-processing-${meeting.id}`,
+      title: 'Bản ghi âm đang được publish',
+      description: 'Raw audio đã có và hệ thống đang chuẩn bị player để phát lại trên giao diện.',
+      timestamp: meeting.updatedAt,
+      tone: 'warning',
+    });
+  }
+
+  if (meeting.audioStatus === 'READY') {
+    items.push({
+      id: `audio-ready-${meeting.id}`,
+      title: 'Bản ghi âm đã sẵn sàng',
+      description: 'Bạn có thể phát lại audio full và nhảy tới từng mốc transcript.',
+      timestamp: meeting.updatedAt,
+      tone: 'success',
+    });
+  }
+
+  if (meeting.summaryStatus === 'COMPLETED') {
+    items.push({
+      id: `summary-complete-${meeting.id}`,
+      title: 'AI Notes đã tạo xong',
+      description: `Tóm tắt, quyết định và việc cần làm đã được tổng hợp${meeting.summaryProvider ? ` bởi ${meeting.summaryProvider}` : ''}.`,
+      timestamp: meeting.summaries[0]?.createdAt || meeting.updatedAt,
+      tone: 'success',
+    });
+  }
+
+  if (meeting.summaryStatus === 'FAILED') {
+    items.push({
+      id: `summary-failed-${meeting.id}`,
+      title: 'AI Notes cần được tạo lại',
+      description: meeting.summaryErrorText || 'Bản tổng hợp AI chưa hoàn tất. Bạn có thể thử tạo lại từ tab AI Notes.',
+      timestamp: meeting.updatedAt,
+      tone: 'danger',
+    });
+  }
+
+  actionItems.forEach((item) => {
+    const assigneeSummary = item.assignees.length
+      ? item.assignees.map((assignee) => assignee.display_name || assignee.email).filter(Boolean).join(', ')
+      : 'Chưa giao người phụ trách';
+    const completedCount = item.assignees.filter((assignee) => assignee.status === 'COMPLETED').length;
+    items.push({
+      id: `action-${item.id}`,
+      title:
+        item.status === 'COMPLETED'
+          ? `Hoàn tất việc: ${item.title}`
+          : item.assignees.length > 0
+            ? `Cập nhật phân công: ${item.title}`
+            : `Backlog mới: ${item.title}`,
+      description:
+        item.assignees.length > 0
+          ? `${assigneeSummary} · ${completedCount}/${item.assignees.length} đã xong`
+          : 'Task đang chờ người phụ trách nhận việc.',
+      timestamp: item.completed_at || item.updated_at || item.created_at,
+      tone:
+        item.status === 'COMPLETED'
+          ? 'success'
+          : item.assignees.length === 0
+            ? 'warning'
+            : 'info',
+    });
+  });
+
+  return items
+    .sort((left, right) => {
+      const leftTime = left.timestamp ? new Date(left.timestamp).getTime() : 0;
+      const rightTime = right.timestamp ? new Date(right.timestamp).getTime() : 0;
+      return rightTime - leftTime;
+    })
+    .slice(0, 8);
+};
+
 const MeetingDetail: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const location = useLocation();
@@ -120,12 +278,21 @@ const MeetingDetail: React.FC = () => {
   const [isAudioReady, setIsAudioReady] = useState(false);
   const [currentAudioTime, setCurrentAudioTime] = useState(0);
   const [activeTranscriptGroupId, setActiveTranscriptGroupId] = useState<string | null>(null);
+  const [pendingTranscriptAnchor, setPendingTranscriptAnchor] = useState<TranscriptAnchor | null>(null);
   const audioPlayerRef = useRef<AudioPlayerHandle | null>(null);
 
   useEffect(() => {
-    const initialTab = (location.state as { initialTab?: DetailTab } | null)?.initialTab;
-    if (initialTab === 'actions') {
-      setActiveTab('actions');
+    const state = (location.state as { initialTab?: DetailTab; transcript_anchor?: TranscriptAnchor; transcriptAnchor?: TranscriptAnchor } | null);
+    const initialTab = state?.initialTab;
+    const anchor = state?.transcript_anchor || state?.transcriptAnchor;
+    if (initialTab === 'actions' || initialTab === 'transcript') {
+      setActiveTab(initialTab);
+    }
+    if (anchor) {
+      setPendingTranscriptAnchor(anchor);
+      setActiveTab('transcript');
+    }
+    if (initialTab || anchor) {
       navigate(location.pathname, { replace: true, state: null });
     }
   }, [location.pathname, location.state, navigate]);
@@ -190,10 +357,19 @@ const MeetingDetail: React.FC = () => {
     }
   };
   const keyPoints = meeting?.keyPointsText?.length ? meeting.keyPointsText : meeting?.keyPoints || [];
+  const keyPointItems: AnchoredTextItem[] = meeting?.keyPointsItems?.length
+    ? meeting.keyPointsItems
+    : keyPoints.map((text) => ({ text }));
   const decisions = meeting?.decisionsText?.length ? meeting.decisionsText : meeting?.decisions || [];
+  const decisionItems: AnchoredTextItem[] = meeting?.decisionsItems?.length
+    ? meeting.decisionsItems
+    : decisions.map((text) => ({ text }));
   const risks = meeting?.risksText || [];
   const openQuestions = meeting?.openQuestionsText || [];
   const timelineHighlights = meeting?.timelineHighlightsText || [];
+  const timelineHighlightItems: AnchoredTextItem[] = meeting?.timelineHighlightsItems?.length
+    ? meeting.timelineHighlightsItems
+    : timelineHighlights.map((text) => ({ text }));
   const speakerSummaries = meeting?.speakerSummariesText || [];
   const transcript = useMemo(() => {
     if (!meeting) return '';
@@ -249,6 +425,42 @@ const MeetingDetail: React.FC = () => {
   const hasMeetingAudio = Boolean(meeting?.audioUrl);
   const canReplayTranscript = hasMeetingAudio && isAudioReady;
 
+  const selectTranscriptAnchor = async (anchor: TranscriptAnchor, autoplay = true) => {
+    setActiveTab('transcript');
+    const targetGroup = transcriptGroups.find((group) => {
+      const groupContainsStart = anchor.start_time >= group.startTime && anchor.start_time <= Math.max(group.endTime, group.startTime + 0.25);
+      const speakerMatches = !anchor.speaker_label || group.speakerLabel === anchor.speaker_label;
+      return groupContainsStart && speakerMatches;
+    }) || transcriptGroups.reduce<TranscriptGroup | null>((closest, group) => {
+      if (!closest) return group;
+      const currentDistance = Math.abs(group.startTime - anchor.start_time);
+      const bestDistance = Math.abs(closest.startTime - anchor.start_time);
+      return currentDistance < bestDistance ? group : closest;
+    }, null);
+
+    if (targetGroup) {
+      setActiveTranscriptGroupId(targetGroup.id);
+    }
+
+    if (!hasMeetingAudio) {
+      showToast.info('Cuộc họp này chưa có audio để phát lại.');
+      return;
+    }
+
+    if (!isAudioReady || !audioPlayerRef.current) {
+      return;
+    }
+
+    audioPlayerRef.current.seekTo(anchor.start_time);
+    if (autoplay) {
+      try {
+        await audioPlayerRef.current.play();
+      } catch {
+        showToast.error('Không thể phát lại audio ở mốc này.');
+      }
+    }
+  };
+
   useEffect(() => {
     if (!transcriptGroups.length) {
       setActiveTranscriptGroupId(null);
@@ -263,6 +475,12 @@ const MeetingDetail: React.FC = () => {
       setActiveTranscriptGroupId(null);
     }
   }, [currentAudioTime, transcriptGroups]);
+
+  useEffect(() => {
+    if (!pendingTranscriptAnchor || !transcriptGroups.length) return;
+    void selectTranscriptAnchor(pendingTranscriptAnchor, true);
+    setPendingTranscriptAnchor(null);
+  }, [pendingTranscriptAnchor, transcriptGroups, isAudioReady, hasMeetingAudio]);
 
   const nowMs = Date.now();
   const startMs = meeting ? new Date(meeting.startTime).getTime() : nowMs;
@@ -422,9 +640,13 @@ const MeetingDetail: React.FC = () => {
         ? 'Bạn chưa được giao việc nào ở cuộc họp này'
         : actionFilter === 'unassigned'
           ? 'Không còn việc nào chưa giao'
-          : actionFilter === 'completed'
+        : actionFilter === 'completed'
             ? 'Chưa có việc nào hoàn thành'
             : 'Không có việc cần làm phù hợp';
+  const activityFeed = useMemo(
+    () => (meeting?.activity?.length ? meeting.activity : buildMeetingActivityFeed(meeting, actionItems)),
+    [actionItems, meeting],
+  );
   const meetingQueryError = query.error as AxiosError<{ detail?: string }> | null;
   const meetingQueryStatus = meetingQueryError?.response?.status;
   const meetingErrorTitle =
@@ -442,30 +664,30 @@ const MeetingDetail: React.FC = () => {
 
   if (query.isLoading) {
     return (
-      <div className="flex min-h-[60vh] items-center justify-center">
-        <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary-500 border-t-transparent" />
-      </div>
+      <PageState
+        title="Đang tải chi tiết cuộc họp"
+        description="Transcript, AI Notes, việc cần làm và bản ghi âm đang được đồng bộ."
+        tone="loading"
+      />
     );
   }
 
   if (query.isError || !meeting) {
     return (
-      <div className="flex min-h-[60vh] flex-col items-center justify-center rounded-3xl border border-gray-200 bg-white p-12 text-center shadow-sm dark:border-slate-700 dark:bg-slate-900">
-        <div className="mb-6 rounded-full bg-red-50 p-6 dark:bg-red-900/20">
-          <AlertCircle className="h-12 w-12 text-red-600 dark:text-red-400" />
-        </div>
-        <h2 className="text-3xl font-black text-gray-900 dark:text-slate-100">{meetingErrorTitle}</h2>
-        <p className="mt-4 max-w-md text-lg text-gray-500 dark:text-slate-400">
-          {meetingErrorMessage}
-        </p>
-        <button
-          onClick={() => navigate('/meetings')}
-          className="mt-8 inline-flex items-center gap-2 rounded-xl bg-primary-600 px-6 py-3 font-bold text-white transition hover:bg-primary-700"
-        >
-          <ArrowLeft size={18} />
-          Quay lai danh sach
-        </button>
-      </div>
+      <PageState
+        title={meetingErrorTitle}
+        description={meetingErrorMessage}
+        tone="error"
+        action={(
+          <button
+            onClick={() => navigate('/meetings')}
+            className="inline-flex items-center gap-2 rounded-xl bg-primary-600 px-6 py-3 font-bold text-white transition hover:bg-primary-700"
+          >
+            <ArrowLeft size={18} />
+            Quay lại danh sách
+          </button>
+        )}
+      />
     );
   }
 
@@ -837,12 +1059,23 @@ const MeetingDetail: React.FC = () => {
                             Điểm chính thảo luận
                           </h3>
                           <div className="grid gap-3">
-                            {keyPoints.map((point, index) => (
-                              <div key={`${point}-${index}`} className="flex items-start gap-4 rounded-xl border border-gray-100 bg-gray-50/50 p-4 dark:border-slate-800 dark:bg-slate-800/30">
+                            {keyPointItems.map((point, index) => (
+                              <div key={`${point.text}-${index}`} className="flex items-start gap-4 rounded-xl border border-gray-100 bg-gray-50/50 p-4 dark:border-slate-800 dark:bg-slate-800/30">
                                 <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-blue-100 text-xs font-black text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">
                                   {index + 1}
                                 </span>
-                                <p className="text-sm font-medium leading-relaxed text-gray-700 dark:text-slate-300">{point}</p>
+                                <div className="min-w-0 flex-1">
+                                  <p className="text-sm font-medium leading-relaxed text-gray-700 dark:text-slate-300">{point.text}</p>
+                                  {point.anchor && (
+                                    <button
+                                      type="button"
+                                      onClick={() => void selectTranscriptAnchor(point.anchor!, true)}
+                                      className="mt-2 text-[10px] font-black uppercase tracking-widest text-violet-600 transition hover:text-violet-700"
+                                    >
+                                      Nghe lại đoạn này
+                                    </button>
+                                  )}
+                                </div>
                               </div>
                             ))}
                           </div>
@@ -856,10 +1089,21 @@ const MeetingDetail: React.FC = () => {
                             Quyết định đã thống nhất
                           </h3>
                           <div className="space-y-3">
-                            {decisions.map((decision, index) => (
-                              <div key={`${decision}-${index}`} className="flex items-start gap-3 rounded-xl border border-green-100 bg-green-50/30 p-4 dark:border-green-900/20 dark:bg-green-900/10">
+                            {decisionItems.map((decision, index) => (
+                              <div key={`${decision.text}-${index}`} className="flex items-start gap-3 rounded-xl border border-green-100 bg-green-50/30 p-4 dark:border-green-900/20 dark:bg-green-900/10">
                                 <CheckCircle2 size={18} className="mt-0.5 shrink-0 text-green-600 dark:text-green-400" />
-                                <p className="text-sm font-bold text-green-900 dark:text-green-100">{decision}</p>
+                                <div className="min-w-0 flex-1">
+                                  <p className="text-sm font-bold text-green-900 dark:text-green-100">{decision.text}</p>
+                                  {decision.anchor && (
+                                    <button
+                                      type="button"
+                                      onClick={() => void selectTranscriptAnchor(decision.anchor!, true)}
+                                      className="mt-2 text-[10px] font-black uppercase tracking-widest text-violet-600 transition hover:text-violet-700"
+                                    >
+                                      Nghe lại đoạn này
+                                    </button>
+                                  )}
+                                </div>
                               </div>
                             ))}
                           </div>
@@ -1065,6 +1309,7 @@ const MeetingDetail: React.FC = () => {
                               onConfirmEdit={() => confirmEditActionItem(item)}
                               onDelete={() => handleDeleteActionItem(item)}
                               onUpdateSelfStatus={(status) => handleUpdateSelfActionStatus(item, status)}
+                              onJumpToContext={item.anchor ? () => void selectTranscriptAnchor(item.anchor!, true) : undefined}
                             />
                           ))}
                         </div>
@@ -1151,12 +1396,23 @@ const MeetingDetail: React.FC = () => {
                                 <Key size={16} />
                                 Điểm chính
                               </h4>
-                              {keyPoints.map((point, index) => (
-                                <div key={`${point}-${index}`} className="flex items-start gap-3 rounded-xl border border-gray-100 bg-gray-50/60 p-4 dark:border-slate-800 dark:bg-slate-800/30">
+                              {keyPointItems.map((point, index) => (
+                                <div key={`${point.text}-${index}`} className="flex items-start gap-3 rounded-xl border border-gray-100 bg-gray-50/60 p-4 dark:border-slate-800 dark:bg-slate-800/30">
                                   <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-blue-100 text-xs font-black text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">
                                     {index + 1}
                                   </span>
-                                  <p className="text-sm font-medium leading-relaxed text-gray-700 dark:text-slate-300">{point}</p>
+                                  <div className="min-w-0 flex-1">
+                                    <p className="text-sm font-medium leading-relaxed text-gray-700 dark:text-slate-300">{point.text}</p>
+                                    {point.anchor && (
+                                      <button
+                                        type="button"
+                                        onClick={() => void selectTranscriptAnchor(point.anchor!, true)}
+                                        className="mt-2 text-[10px] font-black uppercase tracking-widest text-violet-600 transition hover:text-violet-700"
+                                      >
+                                        Nghe lại đoạn này
+                                      </button>
+                                    )}
+                                  </div>
                                 </div>
                               ))}
                             </section>
@@ -1168,10 +1424,21 @@ const MeetingDetail: React.FC = () => {
                                 <Target size={16} />
                                 Quyết định
                               </h4>
-                              {decisions.map((decision, index) => (
-                                <div key={`${decision}-${index}`} className="flex items-start gap-3 rounded-xl border border-emerald-100 bg-emerald-50/40 p-4 dark:border-emerald-900/20 dark:bg-emerald-900/10">
+                              {decisionItems.map((decision, index) => (
+                                <div key={`${decision.text}-${index}`} className="flex items-start gap-3 rounded-xl border border-emerald-100 bg-emerald-50/40 p-4 dark:border-emerald-900/20 dark:bg-emerald-900/10">
                                   <CheckCircle2 size={18} className="mt-0.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
-                                  <p className="text-sm font-bold leading-relaxed text-emerald-900 dark:text-emerald-100">{decision}</p>
+                                  <div className="min-w-0 flex-1">
+                                    <p className="text-sm font-bold leading-relaxed text-emerald-900 dark:text-emerald-100">{decision.text}</p>
+                                    {decision.anchor && (
+                                      <button
+                                        type="button"
+                                        onClick={() => void selectTranscriptAnchor(decision.anchor!, true)}
+                                        className="mt-2 text-[10px] font-black uppercase tracking-widest text-violet-600 transition hover:text-violet-700"
+                                      >
+                                        Nghe lại đoạn này
+                                      </button>
+                                    )}
+                                  </div>
                                 </div>
                               ))}
                             </section>
@@ -1183,10 +1450,21 @@ const MeetingDetail: React.FC = () => {
                                 <Clock size={16} />
                                 Dòng thời gian nổi bật
                               </h4>
-                              {timelineHighlights.map((highlight, index) => (
-                                <div key={`${highlight}-${index}`} className="flex items-start gap-3 rounded-xl border border-violet-100 bg-violet-50/40 p-4 dark:border-violet-900/20 dark:bg-violet-900/10">
+                              {timelineHighlightItems.map((highlight, index) => (
+                                <div key={`${highlight.text}-${index}`} className="flex items-start gap-3 rounded-xl border border-violet-100 bg-violet-50/40 p-4 dark:border-violet-900/20 dark:bg-violet-900/10">
                                   <span className="mt-0.5 text-xs font-black text-violet-600 dark:text-violet-300">{String(index + 1).padStart(2, '0')}</span>
-                                  <p className="text-sm font-medium leading-relaxed text-gray-700 dark:text-slate-300">{highlight}</p>
+                                  <div className="min-w-0 flex-1">
+                                    <p className="text-sm font-medium leading-relaxed text-gray-700 dark:text-slate-300">{highlight.text}</p>
+                                    {highlight.anchor && (
+                                      <button
+                                        type="button"
+                                        onClick={() => void selectTranscriptAnchor(highlight.anchor!, true)}
+                                        className="mt-2 text-[10px] font-black uppercase tracking-widest text-violet-600 transition hover:text-violet-700"
+                                      >
+                                        Nghe lại đoạn này
+                                      </button>
+                                    )}
+                                  </div>
                                 </div>
                               ))}
                             </section>
@@ -1286,6 +1564,97 @@ const MeetingDetail: React.FC = () => {
               <p>Nhóm: {meeting.group?.name || 'Nhóm chung'}</p>
               <p>Trạng thái: {meeting.status}</p>
             </div>
+          </div>
+
+          <div className="rounded-3xl border border-gray-200 bg-white p-6 shadow-sm dark:border-slate-700 dark:bg-slate-900">
+            <h3 className="text-sm font-black uppercase tracking-widest text-gray-400">Trạng thái xử lý</h3>
+            <div className="mt-4 space-y-3 text-sm">
+              {[
+                {
+                  label: 'Transcript',
+                  value: transcriptStatusLabel,
+                  tone:
+                    meeting.transcriptStatus === 'COMPLETED'
+                      ? 'text-emerald-600'
+                      : meeting.transcriptStatus === 'FAILED'
+                        ? 'text-red-600'
+                        : 'text-blue-600',
+                },
+                {
+                  label: 'Audio',
+                  value:
+                    meeting.audioStatus === 'READY'
+                      ? 'Audio player đã sẵn sàng'
+                      : meeting.audioStatus === 'PROCESSING'
+                        ? 'Đang chuẩn bị bản ghi âm'
+                        : meeting.audioStatus === 'FAILED'
+                          ? 'Audio publish lỗi'
+                          : 'Chưa có audio',
+                  tone:
+                    meeting.audioStatus === 'READY'
+                      ? 'text-emerald-600'
+                      : meeting.audioStatus === 'FAILED'
+                        ? 'text-red-600'
+                        : 'text-amber-600',
+                },
+                {
+                  label: 'AI Notes',
+                  value: aiNotesStatusLabel,
+                  tone:
+                    meeting.summaryStatus === 'COMPLETED'
+                      ? 'text-emerald-600'
+                      : meeting.summaryStatus === 'FAILED'
+                        ? 'text-red-600'
+                        : 'text-amber-600',
+                },
+              ].map((item) => (
+                <div key={item.label} className="flex items-start justify-between gap-3 rounded-2xl border border-gray-100 bg-gray-50/70 px-4 py-3 dark:border-slate-800 dark:bg-slate-800/50">
+                  <span className="text-xs font-black uppercase tracking-widest text-gray-400 dark:text-slate-500">{item.label}</span>
+                  <span className={`text-right text-xs font-bold ${item.tone} dark:text-inherit`}>{item.value}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="rounded-3xl border border-gray-200 bg-white p-6 shadow-sm dark:border-slate-700 dark:bg-slate-900">
+            <div className="flex items-center justify-between gap-3">
+              <h3 className="text-sm font-black uppercase tracking-widest text-gray-400">Hoạt động gần đây</h3>
+              <span className="rounded-full bg-gray-100 px-2 py-1 text-[10px] font-black text-gray-500 dark:bg-slate-800 dark:text-slate-400">
+                {activityFeed.length}
+              </span>
+            </div>
+            {activityFeed.length > 0 ? (
+              <div className="mt-4 space-y-3">
+                {activityFeed.map((item) => (
+                  <div key={item.id} className="rounded-2xl border border-gray-100 bg-gray-50/70 p-4 dark:border-slate-800 dark:bg-slate-800/40">
+                    <div className="flex items-start justify-between gap-3">
+                      <p className="text-sm font-bold text-gray-900 dark:text-slate-100">{item.title}</p>
+                      <span
+                        className={`mt-0.5 h-2.5 w-2.5 shrink-0 rounded-full ${
+                          item.tone === 'success'
+                            ? 'bg-emerald-500'
+                            : item.tone === 'warning'
+                              ? 'bg-amber-500'
+                              : item.tone === 'danger'
+                                ? 'bg-red-500'
+                                : item.tone === 'info'
+                                  ? 'bg-blue-500'
+                                  : 'bg-gray-400'
+                        }`}
+                      />
+                    </div>
+                    <p className="mt-2 text-xs leading-6 text-gray-600 dark:text-slate-300">{item.description}</p>
+                    <p className="mt-3 text-[11px] font-bold uppercase tracking-widest text-gray-400 dark:text-slate-500">
+                      {formatTimelineDate(item.timestamp)}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="mt-4 rounded-2xl border border-dashed border-gray-200 bg-gray-50 p-5 text-sm text-gray-500 dark:border-slate-700 dark:bg-slate-800/40 dark:text-slate-400">
+                Hoạt động cộng tác sẽ hiện ở đây khi transcript, audio, AI Notes hoặc việc cần làm được cập nhật.
+              </div>
+            )}
           </div>
 
           {canManageMeeting && (

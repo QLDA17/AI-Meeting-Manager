@@ -9,6 +9,7 @@ export { default as MultiSelect } from './MultiSelect';
 export { default as Logo } from './Logo';
 export { default as FloatingSaveBar } from './FloatingSaveBar';
 export { default as EditTitleModal } from './EditTitleModal';
+export { default as PageState } from './PageState';
 
 export { showToast, toast } from "./Toast";
 

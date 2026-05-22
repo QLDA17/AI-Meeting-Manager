@@ -68,6 +68,7 @@ from src.api.swagger import custom_openapi
 
 # Audio upload storage directory
 AUDIO_UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads", "audio")
+AVATAR_UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads", "avatars")
 
 # Initialize SQLite tables automatically in development fallback mode.
 if str(config.database.url).startswith("sqlite"):
@@ -125,6 +126,7 @@ def _ensure_meeting_runtime_columns() -> None:
     _ensure_column("meeting_summaries", "open_questions", "open_questions JSON")
     _ensure_column("meeting_summaries", "timeline_highlights", "timeline_highlights JSON")
     _ensure_column("meeting_summaries", "speaker_summaries", "speaker_summaries JSON")
+    _ensure_column("users", "bio", "bio TEXT")
 
 
 def _ensure_action_item_assignee_backfill() -> None:
@@ -435,6 +437,54 @@ def push_runtime_notification(notification: Dict[str, Any]) -> None:
         del RUNTIME_NOTIFICATIONS[:-MAX_RUNTIME_NOTIFICATIONS]
 
 
+def normalize_notification_metadata(
+    metadata: Optional[Dict[str, Any]] = None,
+    *,
+    source_type: Optional[str] = None,
+    source_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    raw = dict(metadata or {})
+    entity_type = (
+        raw.get("entity_type")
+        or source_type
+        or raw.get("type")
+        or ("task" if raw.get("task_id") or raw.get("taskId") else None)
+        or ("group" if raw.get("group_id") or raw.get("groupId") else None)
+        or ("meeting" if raw.get("meeting_id") or raw.get("meetingId") else None)
+        or ("invitation" if raw.get("invitationId") else None)
+        or "system"
+    )
+    meeting_id = raw.get("meeting_id") or raw.get("meetingId")
+    group_id = raw.get("group_id") or raw.get("groupId")
+    task_id = raw.get("task_id") or raw.get("taskId")
+    organization_id = raw.get("organization_id") or raw.get("organizationId")
+    action_label = raw.get("action_label")
+
+    if not action_label:
+        action_label = {
+            "meeting": "Mở cuộc họp",
+            "task": "Mở việc",
+            "group": "Mở nhóm",
+            "invitation": "Xem lời mời",
+            "system": "Xem chi tiết",
+        }.get(str(entity_type), "Xem chi tiết")
+
+    normalized = {
+        **raw,
+        "entity_type": entity_type,
+        "meeting_id": meeting_id,
+        "group_id": group_id,
+        "task_id": task_id,
+        "organization_id": organization_id,
+        "action_label": action_label,
+    }
+    if source_id and entity_type in {"meeting", "task", "group", "invitation"}:
+        key = f"{entity_type}_id"
+        if not normalized.get(key):
+            normalized[key] = source_id
+    return normalized
+
+
 def notification_payload(notification: models.Notification) -> Dict[str, Any]:
     return {
         "id": notification.id,
@@ -444,7 +494,11 @@ def notification_payload(notification: models.Notification) -> Dict[str, Any]:
         "message": notification.message,
         "timestamp": (notification.created_at or datetime.utcnow()).isoformat(),
         "isRead": bool(notification.is_read),
-        "metadata": notification.metadata_json or {},
+        "metadata": normalize_notification_metadata(
+            notification.metadata_json,
+            source_type=notification.source_type,
+            source_id=notification.source_id,
+        ),
     }
 
 
@@ -477,7 +531,7 @@ def create_persisted_notification(
         priority=priority,
         title=title,
         message=message,
-        metadata_json=metadata or {},
+        metadata_json=normalize_notification_metadata(metadata, source_type=source_type, source_id=source_id),
         source_type=source_type,
         source_id=source_id,
     )
@@ -606,6 +660,7 @@ def format_user_payload(user: models.User) -> Dict[str, Any]:
         "firstName": user.first_name,
         "lastName": user.last_name,
         "avatarUrl": user.avatar_url,
+        "bio": user.bio,
         "phone": user.phone,
         "gender": user.gender,
         "dateOfBirth": user.date_of_birth.isoformat() if user.date_of_birth else None,
@@ -788,6 +843,237 @@ def draft_transcript_segment_response_payloads(
             "created_at": datetime.utcnow(),
         })
     return payloads
+
+
+def _normalize_match_text(value: Optional[str]) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[^\w\s]", " ", (value or "").lower())).strip()
+
+
+def _anchor_from_segments(
+    text: Optional[str],
+    segments: List[Dict[str, Any]],
+    *,
+    preferred_speaker: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    normalized_text = _normalize_match_text(text)
+    if not normalized_text:
+        return None
+
+    tokens = [token for token in normalized_text.split() if len(token) >= 3][:8]
+    if not tokens:
+        return None
+
+    best_segment: Optional[Dict[str, Any]] = None
+    best_score = 0
+    preferred_normalized = _normalize_match_text(preferred_speaker) if preferred_speaker else None
+
+    for segment in segments or []:
+        segment_text = _normalize_match_text(segment.get("text"))
+        if not segment_text:
+            continue
+        score = sum(2 for token in tokens if token in segment_text)
+        if normalized_text and normalized_text[: min(len(normalized_text), 32)] in segment_text:
+            score += 3
+        if preferred_normalized and preferred_normalized in _normalize_match_text(segment.get("speaker_label")):
+            score += 1
+        if score > best_score:
+            best_score = score
+            best_segment = segment
+
+    if not best_segment or best_score <= 0:
+        return None
+
+    return {
+        "start_time": float(best_segment.get("start_time") or 0),
+        "end_time": float(best_segment.get("end_time") or best_segment.get("start_time") or 0),
+        "speaker_label": best_segment.get("speaker_label"),
+        "source_segment_ids": [best_segment.get("id")] if best_segment.get("id") else [],
+    }
+
+
+def build_anchored_text_items(
+    items: List[str],
+    segments: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    anchored_items: List[Dict[str, Any]] = []
+    for item in items or []:
+        text = str(item or "").strip()
+        if not text:
+            continue
+        anchored_items.append({
+            "text": text,
+            "anchor": _anchor_from_segments(text, segments),
+        })
+    return anchored_items
+
+
+def build_meeting_activity_payload(
+    meeting: models.Meeting,
+    *,
+    transcript_status: str,
+    has_transcript_draft: bool,
+    audio_status: str,
+    summary_status: Optional[str],
+    summary_error_text: Optional[str],
+    action_items: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    def _activity_timestamp_value(value: Any) -> float:
+        if value is None:
+            return 0.0
+        if isinstance(value, datetime):
+            return value.timestamp()
+        if isinstance(value, str):
+            normalized = value.strip()
+            if not normalized:
+                return 0.0
+            try:
+                return datetime.fromisoformat(normalized.replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                return 0.0
+        return 0.0
+
+    creator = meeting.created_by_user
+    creator_label = (
+        " ".join(part for part in [getattr(creator, "first_name", None), getattr(creator, "last_name", None)] if part).strip()
+        if creator else None
+    ) or getattr(creator, "username", None) or getattr(creator, "email", None) or "Hệ thống"
+
+    items: List[Dict[str, Any]] = [{
+        "id": f"meeting-created-{meeting.id}",
+        "type": "meeting.created",
+        "title": "Cuộc họp được tạo",
+        "description": f"{creator_label} đã tạo cuộc họp và chia sẻ ngữ cảnh ban đầu.",
+        "timestamp": meeting.created_at.isoformat() if meeting.created_at else None,
+        "tone": "neutral",
+        "actor": {
+            "id": getattr(creator, "id", None),
+            "displayName": creator_label,
+            "email": getattr(creator, "email", None),
+        },
+        "metadata": {"meeting_id": meeting.id},
+    }]
+
+    if meeting.actual_start or meeting.scheduled_start:
+        items.append({
+            "id": f"meeting-start-{meeting.id}",
+            "type": "meeting.started",
+            "title": "Cuộc họp bắt đầu",
+            "description": "Buổi họp đã bắt đầu và dữ liệu đang được thu thập.",
+            "timestamp": (meeting.actual_start or meeting.scheduled_start).isoformat() if (meeting.actual_start or meeting.scheduled_start) else None,
+            "tone": "info",
+            "metadata": {"meeting_id": meeting.id},
+        })
+
+    if meeting.actual_end:
+        items.append({
+            "id": f"meeting-end-{meeting.id}",
+            "type": "meeting.ended",
+            "title": "Cuộc họp kết thúc",
+            "description": "Bản ghi âm, transcript và AI Notes đã sẵn sàng cho giai đoạn xử lý sau họp.",
+            "timestamp": meeting.actual_end.isoformat(),
+            "tone": "neutral",
+            "metadata": {"meeting_id": meeting.id},
+        })
+
+    if transcript_status == "DRAFT" and has_transcript_draft:
+        items.append({
+            "id": f"transcript-draft-{meeting.id}",
+            "type": "transcript.draft_saved",
+            "title": "Transcript đang được lưu bản nháp",
+            "description": "Hệ thống đã giữ lại transcript gần realtime, kể cả khi AI Notes chưa hoàn tất.",
+            "timestamp": (meeting.updated_at or meeting.created_at).isoformat() if (meeting.updated_at or meeting.created_at) else None,
+            "tone": "info",
+            "metadata": {"meeting_id": meeting.id},
+        })
+    elif transcript_status == "COMPLETED":
+        items.append({
+            "id": f"transcript-complete-{meeting.id}",
+            "type": "transcript.completed",
+            "title": "Transcript đã hoàn tất",
+            "description": "Transcript chính thức đã sẵn sàng để tìm kiếm và nghe lại theo timeline.",
+            "timestamp": (meeting.updated_at or meeting.created_at).isoformat() if (meeting.updated_at or meeting.created_at) else None,
+            "tone": "success",
+            "metadata": {"meeting_id": meeting.id},
+        })
+
+    if audio_status == "PROCESSING":
+        items.append({
+            "id": f"audio-processing-{meeting.id}",
+            "type": "audio.processing",
+            "title": "Bản ghi âm đang được publish",
+            "description": "Raw audio đã có và hệ thống đang chuẩn bị player để phát lại trên giao diện.",
+            "timestamp": (meeting.updated_at or meeting.created_at).isoformat() if (meeting.updated_at or meeting.created_at) else None,
+            "tone": "warning",
+            "metadata": {"meeting_id": meeting.id},
+        })
+    elif audio_status == "READY":
+        items.append({
+            "id": f"audio-ready-{meeting.id}",
+            "type": "audio.ready",
+            "title": "Bản ghi âm đã sẵn sàng",
+            "description": "Bạn có thể phát lại audio full và nhảy tới từng mốc transcript.",
+            "timestamp": (meeting.updated_at or meeting.created_at).isoformat() if (meeting.updated_at or meeting.created_at) else None,
+            "tone": "success",
+            "metadata": {"meeting_id": meeting.id},
+        })
+
+    if summary_status == "COMPLETED":
+        items.append({
+            "id": f"summary-complete-{meeting.id}",
+            "type": "summary.completed",
+            "title": "AI Notes đã tạo xong",
+            "description": "Tóm tắt, quyết định và việc cần làm đã được tổng hợp.",
+            "timestamp": (meeting.updated_at or meeting.created_at).isoformat() if (meeting.updated_at or meeting.created_at) else None,
+            "tone": "success",
+            "metadata": {"meeting_id": meeting.id},
+        })
+    elif summary_status == "FAILED":
+        items.append({
+            "id": f"summary-failed-{meeting.id}",
+            "type": "summary.failed",
+            "title": "AI Notes cần được tạo lại",
+            "description": summary_error_text or "Bản tổng hợp AI chưa hoàn tất. Bạn có thể thử tạo lại từ tab AI Notes.",
+            "timestamp": (meeting.updated_at or meeting.created_at).isoformat() if (meeting.updated_at or meeting.created_at) else None,
+            "tone": "danger",
+            "metadata": {"meeting_id": meeting.id},
+        })
+
+    for action_item in action_items:
+        assignees = action_item.get("assignees") or []
+        completed_count = len([assignee for assignee in assignees if assignee.get("status") == "COMPLETED"])
+        assignee_summary = ", ".join(
+            item.get("display_name") or item.get("email") or ""
+            for item in assignees
+            if item.get("display_name") or item.get("email")
+        ) or "Chưa giao người phụ trách"
+        items.append({
+            "id": f"action-{action_item['id']}",
+            "type": "action_item.completed" if action_item.get("status") == "COMPLETED" else "action_item.updated",
+            "title": (
+                f"Hoàn tất việc: {action_item['title']}"
+                if action_item.get("status") == "COMPLETED"
+                else f"Cập nhật phân công: {action_item['title']}"
+                if assignees
+                else f"Backlog mới: {action_item['title']}"
+            ),
+            "description": (
+                f"{assignee_summary} · {completed_count}/{len(assignees)} đã xong"
+                if assignees
+                else "Task đang chờ người phụ trách nhận việc."
+            ),
+            "timestamp": action_item.get("completed_at") or action_item.get("updated_at") or action_item.get("created_at"),
+            "tone": "success" if action_item.get("status") == "COMPLETED" else "warning" if not assignees else "info",
+            "metadata": {
+                "meeting_id": meeting.id,
+                "task_id": action_item["id"],
+            },
+        })
+
+    return sorted(
+        items,
+        key=lambda item: _activity_timestamp_value(item.get("timestamp")),
+        reverse=True,
+    )[:12]
 
 
 def _extract_json_object(raw_text: str) -> Dict[str, Any]:
@@ -1329,6 +1615,18 @@ def build_meeting_detail_payload(
         else draft_payload.get("language") if draft_payload.get("language") not in {None, "", "auto"} else None
     )
     transcript_status = "COMPLETED" if latest_transcript else "DRAFT" if has_transcript_draft else "EMPTY"
+    key_points_text = summarize_json_items(latest_summary.key_points if latest_summary else None)
+    decisions_text = summarize_json_items(latest_summary.decisions if latest_summary else None)
+    timeline_highlights_text = summarize_json_items(latest_summary.timeline_highlights if latest_summary else None)
+    activity = build_meeting_activity_payload(
+        meeting,
+        transcript_status=transcript_status,
+        has_transcript_draft=has_transcript_draft,
+        audio_status=audio_status,
+        summary_status=summary_status,
+        summary_error_text=summary_error_text,
+        action_items=serialized_action_items,
+    )
 
     return {
         "id": meeting.id,
@@ -1367,12 +1665,16 @@ def build_meeting_detail_payload(
         "transcript_language": transcript_language,
         "transcript_status": transcript_status,
         "has_transcript_draft": has_transcript_draft,
+        "activity": activity,
         "meeting_summary_text": latest_summary.meeting_summary if latest_summary else None,
-        "key_points_text": summarize_json_items(latest_summary.key_points if latest_summary else None),
-        "decisions_text": summarize_json_items(latest_summary.decisions if latest_summary else None),
+        "key_points_text": key_points_text,
+        "key_points_items": build_anchored_text_items(key_points_text, transcript_segments),
+        "decisions_text": decisions_text,
+        "decisions_items": build_anchored_text_items(decisions_text, transcript_segments),
         "risks_text": summarize_json_items(latest_summary.risks if latest_summary else None),
         "open_questions_text": summarize_json_items(latest_summary.open_questions if latest_summary else None),
-        "timeline_highlights_text": summarize_json_items(latest_summary.timeline_highlights if latest_summary else None),
+        "timeline_highlights_text": timeline_highlights_text,
+        "timeline_highlights_items": build_anchored_text_items(timeline_highlights_text, transcript_segments),
         "speaker_summaries_text": summarize_json_items(latest_summary.speaker_summaries if latest_summary else None),
         "summary_status": summary_status,
         "summary_error_text": summary_error_text,
@@ -1519,6 +1821,14 @@ def serialize_action_item_payload(action_item: models.ActionItem) -> Dict[str, A
         ),
     )
     first_assignee = assignees[0] if assignees else None
+    meeting = getattr(action_item, "meeting", None)
+    speaker_map = {
+        mapping.speaker_label: mapping.display_name
+        for mapping in (meeting.speaker_mappings or [])
+        if mapping.display_name
+    } if meeting else {}
+    transcript = _latest_processed_record(meeting.transcripts or []) if meeting else None
+    transcript_segments = transcript_segment_response_payloads(transcript, speaker_map) if transcript else []
     return {
         "id": action_item.id,
         "meeting_id": action_item.meeting_id,
@@ -1526,6 +1836,11 @@ def serialize_action_item_payload(action_item: models.ActionItem) -> Dict[str, A
         "assignee_options": getattr(action_item, "assignee_options", []),
         "assignees": [serialize_action_item_assignee_payload(item) for item in assignees],
         "summary_id": action_item.summary_id,
+        "anchor": _anchor_from_segments(
+            action_item.title,
+            transcript_segments,
+            preferred_speaker=first_assignee.display_name if first_assignee else None,
+        ),
         "title": action_item.title,
         "description": action_item.description,
         "assigned_to": first_assignee.user_id if first_assignee else action_item.assigned_to,
@@ -2530,6 +2845,81 @@ def change_password(
         raise HTTPException(status_code=400, detail="Current password is incorrect")
     update_user(db, current_user.id, {"password": req.new_password})
     return {"message": "Password changed successfully"}
+
+
+def _avatar_extension_for_upload(file: UploadFile) -> Optional[str]:
+    content_type = (file.content_type or "").lower()
+    if content_type in {"image/jpeg", "image/jpg"}:
+        return ".jpg"
+    if content_type == "image/png":
+        return ".png"
+    if content_type == "image/webp":
+        return ".webp"
+    filename = (file.filename or "").lower()
+    if filename.endswith((".jpg", ".jpeg")):
+        return ".jpg"
+    if filename.endswith(".png"):
+        return ".png"
+    if filename.endswith(".webp"):
+        return ".webp"
+    return None
+
+
+def _avatar_file_path(user_id: str) -> Optional[str]:
+    for extension in (".jpg", ".png", ".webp"):
+        candidate = os.path.join(AVATAR_UPLOAD_DIR, f"{user_id}{extension}")
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+
+@app.get("/api/users/{user_id}/avatar")
+def get_user_avatar(user_id: str, db: Session = Depends(get_db)):
+    user = get_user_by_id(db, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    avatar_path = _avatar_file_path(user_id)
+    if not avatar_path:
+        raise HTTPException(status_code=404, detail="Avatar not found")
+    return FileResponse(
+        avatar_path,
+        media_type="image/webp" if avatar_path.endswith(".webp") else "image/png" if avatar_path.endswith(".png") else "image/jpeg",
+        filename=os.path.basename(avatar_path),
+    )
+
+
+@app.post("/api/profile/avatar")
+async def upload_profile_avatar(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user = Depends(auth.get_current_user),
+):
+    extension = _avatar_extension_for_upload(file)
+    if not extension:
+        raise HTTPException(status_code=400, detail="Chỉ chấp nhận ảnh JPG, PNG hoặc WEBP")
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="File ảnh đang trống")
+    if len(content) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Ảnh đại diện tối đa 5MB")
+
+    os.makedirs(AVATAR_UPLOAD_DIR, exist_ok=True)
+    for existing_extension in (".jpg", ".png", ".webp"):
+        existing_path = os.path.join(AVATAR_UPLOAD_DIR, f"{current_user.id}{existing_extension}")
+        if os.path.exists(existing_path):
+            try:
+                os.remove(existing_path)
+            except OSError:
+                pass
+
+    avatar_path = os.path.join(AVATAR_UPLOAD_DIR, f"{current_user.id}{extension}")
+    with open(avatar_path, "wb") as avatar_file:
+        avatar_file.write(content)
+
+    avatar_url = f"/api/users/{current_user.id}/avatar?v={int(time.time())}"
+    user = update_user(db, current_user.id, {"avatar_url": avatar_url})
+    return format_user_payload(user)
 
 # Organization Endpoints
 @app.api_route("/api/organizations", methods=["GET", "POST"], response_model=Any)
@@ -5992,7 +6382,12 @@ def get_notifications(db: Session = Depends(get_db), current_user = Depends(auth
                 "message": f'"{m.title}" đã được tạo thành công.',
                 "timestamp": created_at.isoformat(),
                 "isRead": False,
-                "metadata": {"group": m.group.name if m.group else None, "meeting_id": m.id},
+                "metadata": normalize_notification_metadata({
+                    "entity_type": "meeting",
+                    "meeting_id": m.id,
+                    "group_id": m.group_id,
+                    "organization_id": m.organization_id,
+                }),
             })
 
         # Notification: upcoming scheduled meeting
@@ -6007,7 +6402,12 @@ def get_notifications(db: Session = Depends(get_db), current_user = Depends(auth
                     "message": f'"{m.title}" sẽ bắt đầu trong {int(diff_start * 60)} phút.',
                     "timestamp": m.scheduled_start.isoformat(),
                     "isRead": False,
-                    "metadata": {"group": m.group.name if m.group else None, "meeting_id": m.id},
+                    "metadata": normalize_notification_metadata({
+                        "entity_type": "meeting",
+                        "meeting_id": m.id,
+                        "group_id": m.group_id,
+                        "organization_id": m.organization_id,
+                    }),
                 })
 
         # Notification: completed meeting
@@ -6022,11 +6422,20 @@ def get_notifications(db: Session = Depends(get_db), current_user = Depends(auth
                     "message": f'"{m.title}" đã hoàn thành. AI đang xử lý biên bản.',
                     "timestamp": m.scheduled_end.isoformat(),
                     "isRead": True,
-                    "metadata": {"group": m.group.name if m.group else None, "meeting_id": m.id},
+                    "metadata": normalize_notification_metadata({
+                        "entity_type": "meeting",
+                        "meeting_id": m.id,
+                        "group_id": m.group_id,
+                        "organization_id": m.organization_id,
+                    }),
                 })
 
     runtime_for_user = [
-        item for item in RUNTIME_NOTIFICATIONS if item.get("recipient_user_id") == current_user.id
+        {
+            **item,
+            "metadata": normalize_notification_metadata(item.get("metadata")),
+        }
+        for item in RUNTIME_NOTIFICATIONS if item.get("recipient_user_id") == current_user.id
     ]
     notifications.extend(runtime_for_user)
 
@@ -6087,6 +6496,162 @@ def dismiss_notification(
     db.delete(notification)
     db.commit()
     return {"message": "Notification dismissed"}
+
+
+@app.get("/api/search", response_model=List[schemas.SearchResult])
+def search_entities(
+    q: str = Query(..., min_length=2),
+    db: Session = Depends(get_db),
+    current_user = Depends(auth.get_current_user),
+):
+    term = q.strip()
+    if len(term) < 2:
+        return []
+
+    lowered = f"%{term.lower()}%"
+    results: List[Dict[str, Any]] = []
+
+    meeting_query = db.query(models.Meeting)
+    if current_user.role != "system-admin":
+        org_ids = user_org_ids(current_user)
+        participant_ids = meeting_participant_meeting_ids_for_user(db, current_user)
+        if not org_ids:
+            meeting_query = meeting_query.filter(models.Meeting.id.in_(participant_ids))
+        else:
+            meeting_query = meeting_query.filter(
+                or_(
+                    models.Meeting.organization_id.in_(org_ids),
+                    models.Meeting.id.in_(participant_ids),
+                )
+            )
+
+    meetings = meeting_query.filter(
+        or_(
+            func.lower(models.Meeting.title).like(lowered),
+            func.lower(func.coalesce(models.Meeting.description, "")).like(lowered),
+        )
+    ).order_by(models.Meeting.updated_at.desc(), models.Meeting.created_at.desc()).limit(8).all()
+    for meeting in meetings:
+        results.append({
+            "id": meeting.id,
+            "type": "meeting",
+            "title": meeting.title,
+            "subtitle": meeting.group.name if meeting.group else meeting.organization.name if meeting.organization else "Cuộc họp",
+            "route": f"/meetings/{meeting.id}",
+            "context": {"initial_tab": "summary"},
+        })
+
+    group_query = db.query(models.Group)
+    if current_user.role != "system-admin":
+        org_ids = user_org_ids(current_user)
+        if not org_ids:
+            group_query = group_query.filter(models.Group.id == "__none__")
+        else:
+            group_query = group_query.filter(models.Group.organization_id.in_(org_ids))
+    groups = group_query.filter(
+        or_(
+            func.lower(models.Group.name).like(lowered),
+            func.lower(func.coalesce(models.Group.description, "")).like(lowered),
+        )
+    ).order_by(models.Group.updated_at.desc(), models.Group.created_at.desc()).limit(6).all()
+    for group in groups:
+        results.append({
+            "id": group.id,
+            "type": "group",
+            "title": group.name,
+            "subtitle": group.description or "Nhóm làm việc",
+            "route": f"/groups/{group.id}",
+            "context": {},
+        })
+
+    action_items = db.query(models.ActionItem).options(
+        joinedload(models.ActionItem.meeting),
+        joinedload(models.ActionItem.assignees),
+    ).order_by(models.ActionItem.updated_at.desc(), models.ActionItem.created_at.desc()).limit(200).all()
+    task_hits = 0
+    for item in action_items:
+        haystack = " ".join([
+            item.title or "",
+            item.description or "",
+            item.meeting.title if item.meeting else "",
+            " ".join(filter(None, [assignee.display_name or assignee.email for assignee in (item.assignees or [])])),
+        ]).lower()
+        if term.lower() not in haystack:
+            continue
+        if not action_item_visible_to_user(db, item, current_user):
+            continue
+        results.append({
+            "id": item.id,
+            "type": "task",
+            "title": item.title,
+            "subtitle": item.meeting.title if item.meeting else "Việc cá nhân",
+            "route": f"/meetings/{item.meeting_id}" if item.meeting_id else "/actions",
+            "context": {
+                "initial_tab": "actions" if item.meeting_id else None,
+                "meeting_id": item.meeting_id,
+                "transcript_anchor": serialize_action_item_payload(item).get("anchor"),
+            },
+        })
+        task_hits += 1
+        if task_hits >= 8:
+            break
+
+    transcript_query = db.query(models.TranscriptSegment, models.Transcript, models.Meeting).join(
+        models.Transcript, models.Transcript.id == models.TranscriptSegment.transcript_id,
+    ).join(
+        models.Meeting, models.Meeting.id == models.Transcript.meeting_id,
+    )
+    if current_user.role != "system-admin":
+        org_ids = user_org_ids(current_user)
+        participant_ids = meeting_participant_meeting_ids_for_user(db, current_user)
+        if not org_ids:
+            transcript_query = transcript_query.filter(models.Meeting.id.in_(participant_ids))
+        else:
+            transcript_query = transcript_query.filter(
+                or_(
+                    models.Meeting.organization_id.in_(org_ids),
+                    models.Meeting.id.in_(participant_ids),
+                )
+            )
+    transcript_hits = transcript_query.filter(
+        func.lower(models.TranscriptSegment.text).like(lowered)
+    ).order_by(models.TranscriptSegment.created_at.desc()).limit(8).all()
+    for segment, transcript, meeting in transcript_hits:
+        speaker_label = normalize_speaker_label(segment.speaker_label or "Speaker_01")
+        display_name = next(
+            (mapping.display_name for mapping in (meeting.speaker_mappings or []) if mapping.speaker_label == speaker_label and mapping.display_name),
+            speaker_label,
+        )
+        snippet = (segment.text or "").strip()
+        if len(snippet) > 120:
+            snippet = snippet[:117].rstrip() + "..."
+        results.append({
+            "id": f"segment:{segment.id}",
+            "type": "transcript",
+            "title": meeting.title,
+            "subtitle": f"{display_name}: {snippet}",
+            "route": f"/meetings/{meeting.id}",
+            "context": {
+                "meeting_id": meeting.id,
+                "initial_tab": "transcript",
+                "transcript_anchor": {
+                    "start_time": float(segment.start_time or 0),
+                    "end_time": float(segment.end_time or 0),
+                    "speaker_label": display_name,
+                    "source_segment_ids": [segment.id],
+                },
+            },
+        })
+
+    deduped: List[Dict[str, Any]] = []
+    seen = set()
+    for item in results:
+        key = (item["type"], item["id"])
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped[:20]
 
 
 def require_system_admin_user(current_user: models.User) -> None:

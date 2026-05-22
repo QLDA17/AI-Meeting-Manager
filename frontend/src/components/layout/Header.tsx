@@ -22,7 +22,7 @@ import api from '../../services/api';
 
 const Header: React.FC = () => {
   const { user, logout } = useAuth();
-  const { isDarkMode, setDarkMode, setMobileSidebarOpen, mobileSidebarOpen } = useUIStore();
+  const { isDarkMode, setDarkMode, setMobileSidebarOpen, mobileSidebarOpen, setCommandPaletteOpen } = useUIStore();
   const navigate = useNavigate();
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [hasUnreadNotifications, setHasUnreadNotifications] = useState(false);
@@ -88,17 +88,20 @@ const Header: React.FC = () => {
         {/* Right: Search, Theme, Notifications, User */}
         <div className="flex items-center gap-2">
           {/* Search */}
-          <div className="relative hidden md:block">
+          <button
+            type="button"
+            onClick={() => setCommandPaletteOpen(true)}
+            className="relative hidden h-10 w-80 items-center rounded-xl border border-gray-200 bg-white pl-10 pr-3 text-left text-sm text-gray-400 transition hover:border-primary-300 hover:text-gray-500 focus:border-primary-400 focus:ring-2 focus:ring-primary-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400 dark:focus:ring-primary-900/30 md:flex"
+          >
             <Search
               className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"
               size={16}
             />
-            <input
-              type="text"
-              placeholder="Tìm kiếm..."
-              className="h-10 w-80 rounded-xl border border-gray-200 bg-white pl-10 pr-3 text-sm text-gray-700 outline-none transition focus:border-primary-400 focus:ring-2 focus:ring-primary-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:focus:ring-primary-900/30"
-            />
-          </div>
+            <span className="truncate">Tìm cuộc họp, nhóm, việc cần làm...</span>
+            <span className="ml-auto rounded-lg bg-gray-100 px-2 py-1 text-[10px] font-black uppercase tracking-widest text-gray-500 dark:bg-slate-800 dark:text-slate-400">
+              ⌘K
+            </span>
+          </button>
 
           {/* Theme Toggle */}
           <button

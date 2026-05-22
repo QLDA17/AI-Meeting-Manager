@@ -20,9 +20,11 @@ import {
 import { useAuth } from '../context/AuthContext';
 import { useOrgStore } from '../stores';
 import api from '../services/api';
+import { PageState } from '../components/ui';
 
 type NotificationType = 'meeting' | 'mention' | 'system' | 'user' | 'invitation';
 type NotificationPriority = 'urgent' | 'today' | 'recent';
+type NotificationFilter = 'all' | NotificationType;
 
 interface Notification {
   id: string;
@@ -34,17 +36,18 @@ interface Notification {
   isRead: boolean;
   actions?: Array<{ label: string; variant: 'primary' | 'secondary'; onClick?: () => void }>;
   metadata?: {
-    group?: string;
-    org?: string;
     dueDate?: string;
     assignedBy?: string;
+    entity_type?: 'meeting' | 'task' | 'group' | 'invitation' | 'system';
     meeting_id?: string;
-    meetingId?: string;
     invitationId?: string;
-    organizationId?: string;
+    organization_id?: string;
     organizationName?: string;
     role?: string;
-    type?: string;
+    task_id?: string;
+    group_id?: string;
+    action_label?: string;
+    [key: string]: unknown;
   };
 }
 
@@ -55,6 +58,45 @@ const Notifications: React.FC = () => {
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [filterType, setFilterType] = useState<NotificationFilter>('all');
+  const [showSettings, setShowSettings] = useState(false);
+
+  const resolveNotificationRoute = useCallback(
+    (notification: Notification) => {
+      const metadata = notification.metadata || {};
+      const meetingId = metadata.meeting_id;
+      const groupId = metadata.group_id;
+      const taskId = metadata.task_id;
+
+      if (meetingId && taskId) {
+        return {
+          to: `/meetings/${meetingId}`,
+          state: { initialTab: 'actions' as const },
+          label: metadata.action_label || 'Mở việc',
+        };
+      }
+      if (meetingId) {
+        return {
+          to: `/meetings/${meetingId}`,
+          label: metadata.action_label || 'Mở cuộc họp',
+        };
+      }
+      if (groupId) {
+        return {
+          to: `/groups/${groupId}`,
+          label: metadata.action_label || 'Mở nhóm',
+        };
+      }
+      if (taskId) {
+        return {
+          to: '/actions',
+          label: metadata.action_label || 'Mở việc',
+        };
+      }
+      return null;
+    },
+    [],
+  );
 
   const fetchNotifications = useCallback(async (showLoading = false) => {
     if (!session?.token) {
@@ -73,41 +115,53 @@ const Notifications: React.FC = () => {
           ...n,
           metadata,
           timestamp: new Date(n.timestamp),
-          actions: n.type === 'invitation' ? [
-            {
-              label: 'Chấp nhận',
-              variant: 'primary' as const,
-              onClick: async () => {
-                const invitationId = metadata.invitationId;
-                const organizationId = metadata.organizationId;
-                if (!invitationId) return;
+          actions:
+            n.type === 'invitation'
+              ? [
+                  {
+                    label: 'Chấp nhận',
+                    variant: 'primary' as const,
+                    onClick: async () => {
+                      const invitationId = metadata.invitationId;
+                      const organizationId = metadata.organization_id;
+                      if (!invitationId) return;
 
-                await api.post(`/api/invitations/${invitationId}/accept`);
-                await refreshUser();
-                if (organizationId) {
-                  setCurrentOrg(organizationId);
-                }
-                await api.patch(`/api/notifications/${n.id}/read`);
-                setNotifications((prev) => prev.filter((item) => item.id !== n.id));
-                navigate('/dashboard');
-              },
-            },
-            {
-              label: 'Ẩn',
-              variant: 'secondary' as const,
-              onClick: async () => {
-                await api.delete(`/api/notifications/${n.id}`);
-                setNotifications((prev) => prev.filter((item) => item.id !== n.id));
-              },
-            },
-          ] : n.type === 'meeting' ? [{
-            label: 'Xem cuộc họp',
-            variant: 'primary' as const,
-            onClick: () => {
-              const meetingId = metadata.meeting_id || metadata.meetingId;
-              if (meetingId) navigate(`/meetings/${meetingId}`);
-            },
-          }] : [],
+                      await api.post(`/api/invitations/${invitationId}/accept`);
+                      await refreshUser();
+                      if (organizationId) {
+                        setCurrentOrg(organizationId);
+                      }
+                      await api.patch(`/api/notifications/${n.id}/read`);
+                      setNotifications((prev) => prev.filter((item) => item.id !== n.id));
+                      navigate('/dashboard');
+                    },
+                  },
+                  {
+                    label: 'Ẩn',
+                    variant: 'secondary' as const,
+                    onClick: async () => {
+                      await api.delete(`/api/notifications/${n.id}`);
+                      setNotifications((prev) => prev.filter((item) => item.id !== n.id));
+                    },
+                  },
+                ]
+              : (() => {
+                  const route = resolveNotificationRoute({
+                    ...n,
+                    metadata,
+                    timestamp: new Date(n.timestamp),
+                    isRead: Boolean(n.isRead),
+                  } as Notification);
+                  return route
+                    ? [
+                        {
+                          label: route.label,
+                          variant: 'primary' as const,
+                          onClick: () => navigate(route.to, route.state ? { state: route.state } : undefined),
+                        },
+                      ]
+                    : [];
+                })(),
         };
       });
       setNotifications(mapped);
@@ -125,21 +179,19 @@ const Notifications: React.FC = () => {
   }, [fetchNotifications]);
 
 
-  const [filterType, setFilterType] = useState<string>('all');
-  const [showSettings, setShowSettings] = useState(false);
+  const filteredNotifications = useMemo(
+    () =>
+      filterType === 'all' ? notifications : notifications.filter((notification) => notification.type === filterType),
+    [filterType, notifications],
+  );
 
-  // Group notifications by priority
   const groupedNotifications = useMemo(() => {
-    const filtered = filterType === 'all' 
-      ? notifications 
-      : notifications.filter((n) => n.priority === filterType);
-
-    const urgent = filtered.filter((n) => n.priority === 'urgent');
-    const today = filtered.filter((n) => n.priority === 'today');
-    const recent = filtered.filter((n) => n.priority === 'recent');
+    const urgent = filteredNotifications.filter((n) => n.priority === 'urgent');
+    const today = filteredNotifications.filter((n) => n.priority === 'today');
+    const recent = filteredNotifications.filter((n) => n.priority === 'recent');
 
     return { urgent, today, recent };
-  }, [notifications, filterType]);
+  }, [filteredNotifications]);
 
   const unreadCount = notifications.filter((n) => !n.isRead).length;
   const urgentCount = groupedNotifications.urgent.length;
@@ -208,6 +260,7 @@ const Notifications: React.FC = () => {
       const normalizedMessage = (notification.message || '').toLowerCase();
       const isDeleteRequest =
         normalizedTitle.includes('yeu cau xoa') || normalizedMessage.includes('yeu cau xoa');
+      const route = resolveNotificationRoute(notification);
 
       return (
     <motion.div
@@ -222,7 +275,12 @@ const Notifications: React.FC = () => {
           ? 'border-gray-200 bg-white dark:border-slate-700 dark:bg-slate-900'
           : 'border-primary-200 bg-primary-50/50 dark:border-primary-900/40 dark:bg-primary-900/10'
       }`}
-      onClick={() => void handleMarkRead(notification.id)}
+      onClick={() => {
+        void handleMarkRead(notification.id);
+        if (route) {
+          navigate(route.to, route.state ? { state: route.state } : undefined);
+        }
+      }}
     >
       <div className="flex items-start gap-3">
         {/* Icon */}
@@ -255,8 +313,11 @@ const Notifications: React.FC = () => {
               {/* Metadata */}
               {notification.metadata && (
                 <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-gray-500 dark:text-slate-500">
-                  {notification.metadata.group && (
+                  {typeof notification.metadata.group === 'string' && notification.metadata.group && (
                     <span className="flex items-center gap-1"><FolderOpen size={10} /> {notification.metadata.group}</span>
+                  )}
+                  {typeof notification.metadata.organizationName === 'string' && notification.metadata.organizationName && (
+                    <span>{notification.metadata.organizationName}</span>
                   )}
                   {notification.metadata.dueDate && (
                     <span className="flex items-center gap-1">
@@ -340,18 +401,26 @@ const Notifications: React.FC = () => {
     );
   };
 
-  if (loading) return (
-    <div className="flex items-center justify-center py-24">
-      <Loader2 size={32} className="animate-spin text-primary-500" />
-    </div>
-  );
+  if (loading) return <PageState title="Đang tải thông báo" description="Hệ thống đang đồng bộ các thông báo mới nhất cho bạn." tone="loading" compact />;
 
-  if (error) return (
-    <div className="rounded-xl border border-red-200 bg-red-50 p-8 text-center dark:border-red-900/40 dark:bg-red-900/10">
-      <AlertCircle size={32} className="mx-auto mb-3 text-red-500" />
-      <p className="text-sm font-semibold text-red-700 dark:text-red-400">{error}</p>
-    </div>
-  );
+  if (error) {
+    return (
+      <PageState
+        title="Không tải được thông báo"
+        description={error}
+        tone="error"
+        compact
+        action={(
+          <button
+            onClick={() => void fetchNotifications(true)}
+            className="rounded-xl bg-red-600 px-5 py-2.5 text-sm font-bold text-white transition hover:bg-red-700"
+          >
+            Tải lại
+          </button>
+        )}
+      />
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -390,8 +459,8 @@ const Notifications: React.FC = () => {
         <motion.div
           initial={{ opacity: 0, y: -8 }}
           animate={{ opacity: 1, y: 0 }}
-          className="rounded-xl border border-gray-200 bg-white p-5 dark:border-slate-700 dark:bg-slate-900"
-        >
+            className="rounded-xl border border-gray-200 bg-white p-5 dark:border-slate-700 dark:bg-slate-900"
+          >
           <h3 className="mb-3 text-sm font-semibold text-gray-900 dark:text-slate-100">
             Notification Preferences
           </h3>
@@ -423,16 +492,17 @@ const Notifications: React.FC = () => {
       )}
 
       {/* Filter Tabs */}
-      <div className="flex gap-2">
+      <div className="flex flex-wrap gap-2">
         {[
-          { key: 'all', label: 'All', count: notifications.length },
-          { key: 'urgent', label: 'Khẩn cấp', count: urgentCount },
-          { key: 'today', label: 'Hôm nay', count: groupedNotifications.today.length },
-          { key: 'recent', label: 'Gần đây', count: groupedNotifications.recent.length },
+          { key: 'all', label: 'Tất cả', count: notifications.length },
+          { key: 'meeting', label: 'Cuộc họp', count: notifications.filter((n) => n.type === 'meeting').length },
+          { key: 'invitation', label: 'Lời mời', count: notifications.filter((n) => n.type === 'invitation').length },
+          { key: 'mention', label: 'Nhắc đến', count: notifications.filter((n) => n.type === 'mention').length },
+          { key: 'system', label: 'Hệ thống', count: notifications.filter((n) => n.type === 'system').length },
         ].map((tab) => (
           <button
             key={tab.key}
-            onClick={() => setFilterType(tab.key)}
+            onClick={() => setFilterType(tab.key as NotificationFilter)}
             className={`rounded-lg px-3 py-1.5 text-sm font-medium transition ${
               filterType === tab.key
                 ? 'bg-primary-600 text-white'
@@ -451,6 +521,12 @@ const Notifications: React.FC = () => {
             )}
           </button>
         ))}
+      </div>
+
+      <div className="rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm text-gray-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
+        {filterType === 'all'
+          ? 'Tập trung vào thông báo chưa đọc và bấm trực tiếp để mở đúng ngữ cảnh cần xử lý.'
+          : `Đang lọc theo loại ${filterType}. Các thẻ thông báo có thể mở thẳng meeting, nhóm hoặc việc liên quan.`}
       </div>
 
       {/* Thông báo List */}
@@ -476,16 +552,17 @@ const Notifications: React.FC = () => {
           items={groupedNotifications.recent}
         />
 
-        {notifications.length === 0 && (
-          <div className="rounded-xl border border-dashed border-gray-300 p-12 text-center dark:border-slate-700">
-            <Bell size={40} className="mx-auto mb-4 text-gray-400 dark:text-slate-500" />
-            <p className="text-lg font-semibold text-gray-700 dark:text-slate-300">
-              Không có thông báo
-            </p>
-            <p className="mt-1 text-sm text-gray-500 dark:text-slate-400">
-              Bạn đã xem hết thông báo! Chúng tôi sẽ thông báo khi có nội dung mới.
-            </p>
-          </div>
+        {filteredNotifications.length === 0 && (
+          <PageState
+            title={notifications.length === 0 ? 'Không có thông báo' : 'Không có thông báo phù hợp bộ lọc'}
+            description={
+              notifications.length === 0
+                ? 'Bạn đã xem hết thông báo. Khi có cuộc họp, lời mời, việc cần làm hoặc cập nhật hệ thống mới, chúng sẽ xuất hiện ở đây.'
+                : 'Hãy đổi bộ lọc để xem thêm thông báo ở ngữ cảnh khác.'
+            }
+            tone="empty"
+            compact
+          />
         )}
       </div>
     </div>

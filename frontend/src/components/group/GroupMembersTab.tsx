@@ -302,8 +302,14 @@ const GroupMembersTab: React.FC<GroupMembersTabProps> = ({
             <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-gray-50 text-gray-400 dark:bg-slate-800">
               <Search size={32} />
             </div>
-            <h3 className="text-lg font-bold text-gray-900 dark:text-white">Không tìm thấy kết quả</h3>
-            <p className="text-sm text-gray-500">Thử thay đổi từ khóa tìm kiếm hoặc bộ lọc.</p>
+            <h3 className="text-lg font-bold text-gray-900 dark:text-white">
+              {members.length === 0 ? 'Nhóm chưa có thành viên nào' : 'Không tìm thấy kết quả'}
+            </h3>
+            <p className="text-sm text-gray-500">
+              {members.length === 0
+                ? 'Hãy mời thành viên từ tổ chức vào nhóm để bắt đầu cộng tác và giao việc.'
+                : 'Thử thay đổi từ khóa tìm kiếm hoặc bộ lọc.'}
+            </p>
           </div>
         )}
       </div>

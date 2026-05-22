@@ -8,11 +8,12 @@ import {
   Plus,
   Radio,
   Upload,
-  AlertCircle,
   Loader2,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 import { useAppStore, useOrgStore } from '../stores';
-import { AnimatedCounter, StatCard } from '../components/ui';
+import { AnimatedCounter, PageState, StatCard } from '../components/ui';
 import EditMeetingModal from '../components/meeting/EditMeetingModal';
 import MeetingCard from '../components/meeting/MeetingCard';
 import MeetingFilters from '../components/meeting/MeetingFilters';
@@ -23,7 +24,7 @@ import type { Meeting } from '../types';
 
 type SortOption = 'newest' | 'oldest' | 'longest' | 'most-attendees';
 
-const COMPLETED_PREVIEW_COUNT = 6;
+const COMPLETED_PAGE_SIZE = 6;
 
 interface MeetingSection {
   key: string;
@@ -49,7 +50,7 @@ const MeetingList: React.FC = () => {
   const [editingMeeting, setEditingMeeting] = useState<any>(null);
   const [isLoadingMeetings, setIsLoadingMeetings] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [showAllCompleted, setShowAllCompleted] = useState(false);
+  const [completedPage, setCompletedPage] = useState(1);
   const targetOrgId = currentOrg?.id || currentOrgId;
 
   React.useEffect(() => {
@@ -85,7 +86,11 @@ const MeetingList: React.FC = () => {
       result = result.filter(m => m.title.toLowerCase().includes(term) || m.description?.toLowerCase().includes(term));
     }
     if (groupFilter !== 'all') result = result.filter(m => m.groupId === groupFilter);
-    if (statusFilter !== 'all') result = result.filter(m => m.status === statusFilter);
+    if (statusFilter !== 'all') {
+      if (statusFilter === 'live_upcoming') result = result.filter(m => m.status === 'live' || m.status === 'upcoming');
+      else if (statusFilter === 'processing') result = result.filter(m => m.status === 'processing' || m.status === 'queued');
+      else if (statusFilter === 'done') result = result.filter(m => m.status === 'completed' || m.status === 'failed' || m.status === 'canceled');
+    }
 
     switch (sortBy) {
       case 'newest': result.sort((a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime()); break;
@@ -97,18 +102,14 @@ const MeetingList: React.FC = () => {
   }, [orgMeetings, searchTerm, groupFilter, statusFilter, sortBy]);
 
   const sections: MeetingSection[] = useMemo(() => {
-    const live = filteredMeetings.filter(m => m.status === 'live');
-    const upcoming = filteredMeetings.filter(m => m.status === 'upcoming');
+    const liveUpcoming = filteredMeetings.filter(m => m.status === 'live' || m.status === 'upcoming');
     const processing = filteredMeetings.filter(m => m.status === 'processing' || m.status === 'queued');
-    const completed = filteredMeetings.filter(m => m.status === 'completed');
-    const failed = filteredMeetings.filter(m => m.status === 'failed');
+    const done = filteredMeetings.filter(m => m.status === 'completed' || m.status === 'failed' || m.status === 'canceled');
 
     return [
-      { key: 'live', label: 'Đang diễn ra', icon: <Radio size={16} className="text-red-500 animate-pulse stroke-[2.5]" />, accent: 'border-red-500', badge: 'bg-red-100 text-red-700', meetings: live },
-      { key: 'upcoming', label: 'Sắp tới', icon: <Clock size={16} />, accent: 'border-teal-500', badge: 'bg-teal-50 text-teal-700 border border-teal-100/30', meetings: upcoming },
-      { key: 'processing', label: 'Cần xử lý', icon: <Loader2 size={16} className="animate-spin" />, accent: 'border-amber-500', badge: 'bg-amber-100 text-amber-700', meetings: processing },
-      { key: 'completed', label: 'Đã hoàn tất', icon: <CheckCircle2 size={16} />, accent: 'border-emerald-500', badge: 'bg-emerald-100 text-emerald-700', meetings: completed, collapsible: true },
-      { key: 'failed', label: 'Lỗi', icon: <AlertCircle size={16} />, accent: 'border-rose-500', badge: 'bg-rose-100 text-rose-700', meetings: failed },
+      { key: 'live_upcoming', label: 'Sắp tới / Đang diễn ra', icon: <Radio size={16} className="text-teal-500 animate-pulse stroke-[2.5]" />, accent: 'border-teal-500', badge: 'bg-teal-50 text-teal-700 border border-teal-100/30', meetings: liveUpcoming },
+      { key: 'processing', label: 'Đang xử lý', icon: <Loader2 size={16} className="animate-spin" />, accent: 'border-amber-500', badge: 'bg-amber-100 text-amber-700', meetings: processing },
+      { key: 'done', label: 'Đã xong', icon: <CheckCircle2 size={16} />, accent: 'border-emerald-500', badge: 'bg-emerald-100 text-emerald-700', meetings: done, collapsible: true },
     ].filter(s => s.meetings.length > 0);
   }, [filteredMeetings]);
 
@@ -188,11 +189,11 @@ const MeetingList: React.FC = () => {
         <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }} className="sticky top-0 z-20 -mx-4 px-4 py-3 backdrop-blur-md lg:mx-0 lg:px-0">
           <div className="rounded-[1.5rem] border border-gray-100 bg-white/80 p-3 shadow-xl shadow-gray-200/20">
             <MeetingFilters
-              searchTerm={searchTerm} setSearchTerm={setSearchTerm}
-              sortBy={sortBy} setSortBy={setSortBy}
-              groupFilter={groupFilter} setGroupFilter={setGroupFilter}
+              searchTerm={searchTerm} setSearchTerm={(v) => { setSearchTerm(v); setCompletedPage(1); }}
+              sortBy={sortBy} setSortBy={(v) => { setSortBy(v); setCompletedPage(1); }}
+              groupFilter={groupFilter} setGroupFilter={(v) => { setGroupFilter(v); setCompletedPage(1); }}
               uniqueGroups={uniqueGroups}
-              statusFilter={statusFilter} setStatusFilter={setStatusFilter}
+              statusFilter={statusFilter} setStatusFilter={(v) => { setStatusFilter(v); setCompletedPage(1); }}
             />
           </div>
         </motion.div>
@@ -200,30 +201,69 @@ const MeetingList: React.FC = () => {
         {/* Content */}
         <AnimatePresence mode="wait">
           {isLoadingMeetings ? (
-            <motion.div key="loading" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex flex-col items-center justify-center rounded-[2.5rem] border border-gray-100 bg-white py-24 shadow-sm">
-              <div className="mb-4 h-10 w-10 animate-spin rounded-full border-4 border-primary-500 border-t-transparent" />
-              <p className="text-sm font-black text-gray-400 uppercase tracking-widest">Đang tải...</p>
+            <motion.div key="loading" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+              <PageState
+                title="Đang tải danh sách cuộc họp"
+                description="Hệ thống đang đồng bộ lịch họp, trạng thái xử lý và các meeting liên quan tới tổ chức của bạn."
+                tone="loading"
+              />
             </motion.div>
           ) : loadError ? (
-            <motion.div key="error" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex flex-col items-center justify-center rounded-[2.5rem] border border-red-100 bg-red-50/30 py-20 text-center">
-              <div className="mb-4 p-4 bg-red-100 text-red-600 rounded-full"><AlertCircle size={32} /></div>
-              <p className="text-lg font-black text-red-900">{loadError}</p>
-              <button onClick={() => targetOrgId && loadMeetings(targetOrgId)} className="mt-6 rounded-xl bg-red-600 px-8 py-3 text-sm font-black text-white hover:bg-red-700 shadow-lg shadow-red-600/20 transition-all">Tải lại</button>
+            <motion.div key="error" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+              <PageState
+                title="Không tải được danh sách cuộc họp"
+                description={loadError}
+                tone="error"
+                action={
+                  <button
+                    onClick={() => targetOrgId && loadMeetings(targetOrgId)}
+                    className="rounded-xl bg-red-600 px-8 py-3 text-sm font-black text-white transition hover:bg-red-700 shadow-lg shadow-red-600/20"
+                  >
+                    Tải lại
+                  </button>
+                }
+              />
             </motion.div>
           ) : filteredMeetings.length === 0 ? (
-            <motion.div key="empty" initial={{ opacity: 0, scale: 0.97 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0 }} className="flex flex-col items-center justify-center rounded-[2.5rem] border-2 border-dashed border-gray-100 bg-white py-24 text-center">
-              <div className="mb-6 flex h-20 w-20 items-center justify-center rounded-3xl bg-gray-50 text-gray-200"><FileText size={40} /></div>
-              <p className="text-xl font-black text-gray-900">{orgMeetings.length === 0 ? 'Chưa có cuộc họp nào' : 'Không tìm thấy kết quả'}</p>
-              <p className="mt-2 max-w-xs text-sm font-bold text-gray-400 leading-relaxed uppercase tracking-tight">{orgMeetings.length === 0 ? 'Tạo cuộc họp live hoặc tải âm thanh để bắt đầu.' : 'Thử thay đổi từ khóa hoặc bộ lọc.'}</p>
-              <button onClick={() => navigate(orgMeetings.length === 0 ? '/meetings/create' : '/upload')} className="mt-10 inline-flex items-center gap-2 rounded-2xl bg-gray-900 px-8 py-4 text-sm font-black text-white shadow-xl shadow-gray-900/20 transition-all hover:-translate-y-1">
-                <Plus size={18} className="stroke-[3]" />{orgMeetings.length === 0 ? 'Tạo cuộc họp' : 'Tải âm thanh'}
-              </button>
+            <motion.div key="empty" initial={{ opacity: 0, scale: 0.97 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0 }}>
+              <PageState
+                title={orgMeetings.length === 0 ? 'Chưa có cuộc họp nào trong tổ chức này' : 'Không tìm thấy kết quả phù hợp'}
+                description={
+                  orgMeetings.length === 0
+                    ? isViewer
+                      ? 'Bạn đang ở chế độ chỉ xem. Hãy tham gia bằng mã phòng hoặc chờ quản trị viên tạo cuộc họp đầu tiên.'
+                      : 'Bắt đầu bằng một cuộc họp live, tải ghi âm hoặc mời mọi người tham gia bằng mã phòng.'
+                    : 'Thử thay đổi từ khóa, nhóm hoặc trạng thái để mở rộng danh sách kết quả.'
+                }
+                tone="empty"
+                action={
+                  <div className="flex flex-wrap justify-center gap-3">
+                    {!isViewer && (
+                      <button
+                        onClick={() => navigate('/meetings/create')}
+                        className="inline-flex items-center gap-2 rounded-2xl bg-gray-900 px-8 py-4 text-sm font-black text-white shadow-xl shadow-gray-900/20 transition-all hover:-translate-y-1"
+                      >
+                        <Plus size={18} className="stroke-[3]" />
+                        Tạo cuộc họp
+                      </button>
+                    )}
+                    <button
+                      onClick={() => navigate(orgMeetings.length === 0 ? '/join' : '/upload')}
+                      className="inline-flex items-center gap-2 rounded-2xl border border-gray-200 bg-white px-8 py-4 text-sm font-black text-gray-700 shadow-sm transition-all hover:-translate-y-1 hover:bg-gray-50"
+                    >
+                      {orgMeetings.length === 0 ? <Radio size={18} /> : <Upload size={18} />}
+                      {orgMeetings.length === 0 ? 'Tham gia bằng mã' : 'Tải âm thanh'}
+                    </button>
+                  </div>
+                }
+              />
             </motion.div>
           ) : (
             <motion.div key="sections" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-12">
               {sections.map((section) => {
-                const displayMeetings = section.collapsible && !showAllCompleted
-                  ? section.meetings.slice(0, COMPLETED_PREVIEW_COUNT)
+                const totalPages = section.collapsible ? Math.ceil(section.meetings.length / COMPLETED_PAGE_SIZE) : 1;
+                const displayMeetings = section.collapsible
+                  ? section.meetings.slice((completedPage - 1) * COMPLETED_PAGE_SIZE, completedPage * COMPLETED_PAGE_SIZE)
                   : section.meetings;
 
                 return (
@@ -245,11 +285,35 @@ const MeetingList: React.FC = () => {
                       ))}
                     </div>
 
-                    {/* Show more for completed */}
-                    {section.collapsible && section.meetings.length > COMPLETED_PREVIEW_COUNT && (
-                      <div className="mt-6 flex justify-center">
-                        <button onClick={() => setShowAllCompleted(!showAllCompleted)} className="inline-flex items-center gap-2 rounded-xl bg-gray-50 px-6 py-2.5 text-xs font-black text-gray-600 transition-all hover:bg-primary-50 hover:text-primary-700">
-                          {showAllCompleted ? 'Thu gọn' : `Xem thêm ${section.meetings.length - COMPLETED_PREVIEW_COUNT} cuộc họp`}
+                    {/* Pagination for completed */}
+                    {section.collapsible && totalPages > 1 && (
+                      <div className="mt-6 flex items-center justify-center gap-2">
+                        <button
+                          onClick={() => setCompletedPage((p) => Math.max(1, p - 1))}
+                          disabled={completedPage === 1}
+                          className="rounded-lg border border-gray-200 p-2 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          <ChevronLeft size={16} />
+                        </button>
+                        {Array.from({ length: totalPages }, (_, i) => i + 1).map((page) => (
+                          <button
+                            key={page}
+                            onClick={() => setCompletedPage(page)}
+                            className={`rounded-lg px-3 py-2 text-sm font-medium transition ${
+                              completedPage === page
+                                ? 'bg-primary-600 text-white'
+                                : 'text-gray-600 hover:bg-gray-50'
+                            }`}
+                          >
+                            {page}
+                          </button>
+                        ))}
+                        <button
+                          onClick={() => setCompletedPage((p) => Math.min(totalPages, p + 1))}
+                          disabled={completedPage === totalPages}
+                          className="rounded-lg border border-gray-200 p-2 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          <ChevronRight size={16} />
                         </button>
                       </div>
                     )}
