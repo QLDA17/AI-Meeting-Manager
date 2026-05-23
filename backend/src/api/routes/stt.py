@@ -21,7 +21,7 @@ from src.api.core.meetings_support import (
     estimate_segment_end,
     normalize_speaker_label,
 )
-from src.api.core.meeting_operations import get_ws_user, meeting_room_manager
+from src.api.core.meeting_operations import ensure_speaker_identity_mapping, get_ws_user, meeting_room_manager
 from src.api.core.upload_jobs import (
     UploadMeetingJob,
     normalize_upload_language,
@@ -39,7 +39,7 @@ from src.api.core.nlp_support import (
 )
 from src.api.core.transcript_support import build_transcript_from_drafts, serialize_transcript_draft_chunks
 from src.api.core.tasks_support import _extract_json_object, _normalize_analysis_payload
-from src.api.core.user_payloads import ensure_speaker_mapping, get_meeting_by_id, require_meeting_room_access
+from src.api.core.user_payloads import get_meeting_by_id, require_meeting_room_access
 from src.api.crud import add_meeting_participant, create_audio_file, create_meeting, update_meeting
 from src.api.database import SessionLocal, get_db
 from src.cost.cost_logger import CostLogger
@@ -47,6 +47,10 @@ from src.api.core.admin_operations import ADMIN_PROMPTS
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["stt"])
+MAX_FINAL_BUFFER_SECONDS = 4.5
+MAX_FINAL_BUFFER_WORDS = 18
+MIN_FINAL_BUFFER_WORDS = 6
+FINAL_GAP_SECONDS = 0.8
 
 
 def parse_bool_form(value: Any, default: bool = True) -> bool:
@@ -69,7 +73,6 @@ def parse_optional_form_datetime(raw_value: Optional[str]) -> Optional[datetime]
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=timezone.utc)
     return parsed
-
 def upsert_transcript_draft(
     db: Session,
     meeting_id: str,
@@ -483,18 +486,44 @@ def build_stream_segment(
     user_display_name: str,
     language: str,
     confidence: Optional[float],
+    start_seconds: float = 0.0,
+    duration_seconds: Optional[float] = None,
 ) -> Dict[str, Any]:
     speaker_label = normalize_speaker_label(user_display_name)
+    start = max(0.0, float(start_seconds or 0.0))
+    end = start + max(0.0, float(duration_seconds or 0.0))
+    if end <= start:
+        end = estimate_segment_end(start, text)
     return {
         "speaker": user_display_name,
         "speaker_label": speaker_label,
         "speaker_display_name": user_display_name,
-        "start": 0,
-        "end": estimate_segment_end(0, text),
+        "start": start,
+        "end": end,
         "text": text,
         "language": language,
         "confidence": confidence,
     }
+
+
+def should_flush_final_buffer(parts: List[Dict[str, Any]], latest_payload: Dict[str, Any]) -> bool:
+    if not parts:
+        return False
+    if latest_payload.get("speech_final") or latest_payload.get("from_finalize"):
+        return True
+    total_words = sum(len(str(part.get("text") or "").split()) for part in parts)
+    first_start = float(parts[0].get("start") or 0.0)
+    latest_start = float(latest_payload.get("start") or 0.0)
+    latest_duration = float(latest_payload.get("duration") or 0.0)
+    total_duration = max(0.0, latest_start + latest_duration - first_start)
+    if total_words >= MAX_FINAL_BUFFER_WORDS or total_duration >= MAX_FINAL_BUFFER_SECONDS:
+        return True
+    if len(parts) >= 2 and total_words >= MIN_FINAL_BUFFER_WORDS:
+        previous = parts[-2]
+        previous_end = float(previous.get("start") or 0.0) + float(previous.get("duration") or 0.0)
+        if latest_start - previous_end >= FINAL_GAP_SECONDS:
+            return True
+    return False
 
 
 def next_transcript_chunk_index(db: Session, meeting_id: str, user_id: str) -> int:
@@ -530,7 +559,7 @@ async def test_stt_stream(websocket: WebSocket, token: Optional[str] = Query(Non
             bridge.send_media(first_bytes)
 
         chunk_index = 0
-        final_parts: List[str] = []
+        final_parts: List[Dict[str, Any]] = []
         final_confidence: Optional[float] = None
         user_display_name = " ".join(part for part in [current_user.first_name, current_user.last_name] if part).strip() or current_user.username
 
@@ -553,17 +582,26 @@ async def test_stt_stream(websocket: WebSocket, token: Optional[str] = Query(Non
                     bridge.close()
                     break
 
-        async def emit_final(text: str, confidence: Optional[float]) -> None:
+        async def emit_final(parts: List[Dict[str, Any]], confidence: Optional[float]) -> None:
             nonlocal chunk_index
-            normalized_text = text.strip()
+            normalized_parts = [part for part in parts if str(part.get("text") or "").strip()]
+            if not normalized_parts:
+                return
+            normalized_text = " ".join(str(part.get("text") or "").strip() for part in normalized_parts).strip()
+            first_start = float(normalized_parts[0].get("start") or 0.0)
             if not normalized_text:
                 return
-            segments = [build_stream_segment(
-                text=normalized_text,
-                user_display_name=user_display_name,
-                language=language,
-                confidence=confidence,
-            )]
+            segments = [
+                build_stream_segment(
+                    text=str(part.get("text") or "").strip(),
+                    user_display_name=user_display_name,
+                    language=language,
+                    confidence=part.get("confidence") or confidence,
+                    start_seconds=float(part.get("start") or 0.0),
+                    duration_seconds=float(part.get("duration") or 0.0),
+                )
+                for part in normalized_parts
+            ]
             nlp_metadata = None
             if phobert_enabled_for(language):
                 try:
@@ -585,6 +623,7 @@ async def test_stt_stream(websocket: WebSocket, token: Optional[str] = Query(Non
                 "provider": "deepgram",
                 "model": os.getenv("DEEPGRAM_MODEL", "nova-3"),
                 "nlp_metadata": nlp_metadata,
+                "startMs": int(round(first_start * 1000)),
                 "created_at": datetime.now(timezone.utc).isoformat(),
             })
             chunk_index += 1
@@ -596,7 +635,7 @@ async def test_stt_stream(websocket: WebSocket, token: Optional[str] = Query(Non
                 kind = payload.get("kind")
                 if kind == "status":
                     if payload.get("status") == "closed" and final_parts:
-                        await emit_final(" ".join(final_parts), final_confidence)
+                        await emit_final(final_parts, final_confidence)
                         final_parts = []
                         final_confidence = None
                     await websocket.send_json({"type": "stt.status", "status": payload.get("status")})
@@ -614,14 +653,17 @@ async def test_stt_stream(websocket: WebSocket, token: Optional[str] = Query(Non
                     if not text:
                         continue
                     if payload.get("is_final"):
-                        final_parts.append(text)
+                        final_parts.append(payload)
                         final_confidence = payload.get("confidence") or final_confidence
-                        if payload.get("speech_final") or payload.get("from_finalize"):
-                            await emit_final(" ".join(final_parts), final_confidence)
+                        if should_flush_final_buffer(final_parts, payload):
+                            await emit_final(final_parts, final_confidence)
                             final_parts = []
                             final_confidence = None
                     else:
-                        interim_text = " ".join([*final_parts, text]).strip()
+                        interim_text = " ".join([
+                            *(str(part.get("text") or "").strip() for part in final_parts),
+                            text,
+                        ]).strip()
                         await websocket.send_json({
                             "type": "test_stt.interim",
                             "text": interim_text,
@@ -630,7 +672,7 @@ async def test_stt_stream(websocket: WebSocket, token: Optional[str] = Query(Non
                             "timestamp": datetime.now(timezone.utc).isoformat(),
                         })
                 elif kind == "utterance_end" and final_parts:
-                    await emit_final(" ".join(final_parts), final_confidence)
+                    await emit_final(final_parts, final_confidence)
                     final_parts = []
                     final_confidence = None
 
@@ -730,10 +772,16 @@ async def meeting_stt_stream(
             raw_audio_file.write(first_bytes)
 
         chunk_index = next_transcript_chunk_index(db, meeting_id, current_user.id)
-        stream_started_at = time.time()
-        final_parts: List[str] = []
+        final_parts: List[Dict[str, Any]] = []
         final_confidence: Optional[float] = None
         user_display_name = " ".join(part for part in [current_user.first_name, current_user.last_name] if part).strip() or current_user.username
+        ensure_speaker_identity_mapping(
+            db,
+            meeting_id,
+            user_display_name,
+            display_name=user_display_name,
+            user_id=current_user.id,
+        )
 
         async def receive_loop() -> None:
             while True:
@@ -755,17 +803,25 @@ async def meeting_stt_stream(
                     bridge.close()
                     break
 
-        async def emit_final(text: str, confidence: Optional[float]) -> None:
+        async def emit_final(parts: List[Dict[str, Any]], confidence: Optional[float]) -> None:
             nonlocal chunk_index
-            normalized_text = text.strip()
+            normalized_parts = [part for part in parts if str(part.get("text") or "").strip()]
+            if not normalized_parts:
+                return
+            normalized_text = " ".join(str(part.get("text") or "").strip() for part in normalized_parts).strip()
             if not normalized_text:
                 return
-            segments = [build_stream_segment(
-                text=normalized_text,
-                user_display_name=user_display_name,
-                language=language,
-                confidence=confidence,
-            )]
+            segments = [
+                build_stream_segment(
+                    text=str(part.get("text") or "").strip(),
+                    user_display_name=user_display_name,
+                    language=language,
+                    confidence=part.get("confidence") or confidence,
+                    start_seconds=float(part.get("start") or 0.0),
+                    duration_seconds=float(part.get("duration") or 0.0),
+                )
+                for part in normalized_parts
+            ]
             nlp_metadata = None
             if phobert_enabled_for(language):
                 try:
@@ -778,7 +834,7 @@ async def meeting_stt_stream(
                 except Exception as nlp_error:
                     logger.warning("PhoBERT meeting stream post-processing skipped: %s", nlp_error)
 
-            start_ms = int(max(0, time.time() - stream_started_at) * 1000)
+            start_ms = int(round(float(normalized_parts[0].get("start") or 0.0) * 1000))
             upsert_transcript_draft(
                 db,
                 meeting_id=meeting_id,
@@ -816,7 +872,7 @@ async def meeting_stt_stream(
                 kind = payload.get("kind")
                 if kind == "status":
                     if payload.get("status") == "closed" and final_parts:
-                        await emit_final(" ".join(final_parts), final_confidence)
+                        await emit_final(final_parts, final_confidence)
                         final_parts = []
                         final_confidence = None
                     await websocket.send_json({"type": "stt.status", "status": payload.get("status")})
@@ -834,14 +890,17 @@ async def meeting_stt_stream(
                     if not text:
                         continue
                     if payload.get("is_final"):
-                        final_parts.append(text)
+                        final_parts.append(payload)
                         final_confidence = payload.get("confidence") or final_confidence
-                        if payload.get("speech_final") or payload.get("from_finalize"):
-                            await emit_final(" ".join(final_parts), final_confidence)
+                        if should_flush_final_buffer(final_parts, payload):
+                            await emit_final(final_parts, final_confidence)
                             final_parts = []
                             final_confidence = None
                     else:
-                        interim_text = " ".join([*final_parts, text]).strip()
+                        interim_text = " ".join([
+                            *(str(part.get("text") or "").strip() for part in final_parts),
+                            text,
+                        ]).strip()
                         interim_payload = {
                             "type": "transcript.interim",
                             "meeting_id": meeting_id,
@@ -854,7 +913,7 @@ async def meeting_stt_stream(
                         await websocket.send_json(interim_payload)
                         await meeting_room_manager.broadcast(meeting_id, interim_payload)
                 elif kind == "utterance_end" and final_parts:
-                    await emit_final(" ".join(final_parts), final_confidence)
+                    await emit_final(final_parts, final_confidence)
                     final_parts = []
                     final_confidence = None
 
@@ -1177,7 +1236,13 @@ async def transcribe_chunk(
             normalized_segments = []
             for segment in result.get("segments", []):
                 raw_label = normalize_speaker_label(user_display_name)
-                mapping = ensure_speaker_mapping(db, meeting_id, raw_label, display_name=user_display_name)
+                ensure_speaker_identity_mapping(
+                    db,
+                    meeting_id,
+                    raw_label,
+                    display_name=user_display_name,
+                    user_id=current_user.id,
+                )
                 normalized_segments.append({
                     "speaker": user_display_name,
                     "speaker_label": raw_label,
@@ -1190,7 +1255,13 @@ async def transcribe_chunk(
                 })
             text = result.get("text", "")
             if text.strip() and not normalized_segments:
-                mapping = ensure_speaker_mapping(db, meeting_id, user_display_name, display_name=user_display_name)
+                ensure_speaker_identity_mapping(
+                    db,
+                    meeting_id,
+                    user_display_name,
+                    display_name=user_display_name,
+                    user_id=current_user.id,
+                )
                 normalized_segments = [{
                     "speaker": user_display_name,
                     "speaker_label": normalize_speaker_label(user_display_name),
@@ -1284,8 +1355,6 @@ async def transcribe_chunk(
                 os.unlink(audio_path)
             except Exception as e:
                 logger.warning(f"Failed to cleanup audio file: {e}")
-
-
 @router.get("/api/meetings/{meeting_id}/transcript-draft")
 def get_transcript_draft(
     meeting_id: str,
@@ -1325,6 +1394,31 @@ def stream_audio_file(
         audio_file.file_path = resolved_path
         db.commit()
         db.refresh(audio_file)
+
+    # Convert WAV to MP3 for better browser compatibility (16kHz WAV plays too fast in some browsers)
+    if audio_file.format and audio_file.format.upper() == "WAV":
+        mp3_path = os.path.splitext(resolved_path)[0] + ".mp3"
+        if not os.path.exists(mp3_path):
+            try:
+                subprocess.run(
+                    ["ffmpeg", "-y", "-i", resolved_path, "-ar", "44100", "-ac", "1", "-b:a", "128k", mp3_path],
+                    capture_output=True, timeout=60,
+                )
+            except Exception as e:
+                logger.warning("ffmpeg conversion failed for %s: %s, serving original WAV", audio_id, e)
+                return FileResponse(
+                    resolved_path,
+                    media_type="audio/wav",
+                    filename=audio_file.original_filename or "recording.wav",
+                )
+        serve_path = mp3_path if os.path.exists(mp3_path) else resolved_path
+        media_type = "audio/mpeg" if serve_path.endswith(".mp3") else "audio/wav"
+        return FileResponse(
+            serve_path,
+            media_type=media_type,
+            filename=os.path.basename(serve_path),
+        )
+
     return FileResponse(
         resolved_path,
         media_type="audio/wav",

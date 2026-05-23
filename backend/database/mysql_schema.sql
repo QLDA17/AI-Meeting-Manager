@@ -410,6 +410,7 @@ CREATE TABLE IF NOT EXISTS glossary_terms (
     id VARCHAR(36) PRIMARY KEY,
     organization_id VARCHAR(36),
     term VARCHAR(255) NOT NULL,
+    aliases JSON DEFAULT NULL,
     translation_vi VARCHAR(255),
     translation_en VARCHAR(255),
     translation_ja VARCHAR(255),
@@ -426,10 +427,36 @@ CREATE TABLE IF NOT EXISTS glossary_terms (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ----------------------------
+-- Table structure for glossary_suggestions
+-- ----------------------------
+CREATE TABLE IF NOT EXISTS glossary_suggestions (
+    id VARCHAR(36) PRIMARY KEY,
+    organization_id VARCHAR(36) NOT NULL,
+    status VARCHAR(20) DEFAULT 'PENDING',
+    canonical_term_candidate VARCHAR(255) NOT NULL,
+    alias_candidates JSON DEFAULT NULL,
+    category_hint VARCHAR(100),
+    source_meeting_ids JSON DEFAULT NULL,
+    evidence_examples JSON DEFAULT NULL,
+    occurrence_count INT DEFAULT 0,
+    confidence_score FLOAT DEFAULT 0.0,
+    suggestion_type VARCHAR(30) DEFAULT 'UNKNOWN_TERM',
+    reviewed_by VARCHAR(36),
+    reviewed_at DATETIME,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    CONSTRAINT fk_glossary_suggestion_org FOREIGN KEY (organization_id) REFERENCES organizations (id) ON DELETE CASCADE,
+    CONSTRAINT fk_glossary_suggestion_reviewer FOREIGN KEY (reviewed_by) REFERENCES users (id) ON DELETE SET NULL,
+    CONSTRAINT check_glossary_suggestion_status CHECK (status IN ('PENDING', 'APPROVED', 'REJECTED', 'APPLIED')),
+    CONSTRAINT check_glossary_suggestion_type CHECK (suggestion_type IN ('UNKNOWN_TERM', 'VARIANT_CLUSTER', 'PROPER_NOUN', 'ABBREVIATION'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ----------------------------
 -- Indexes for performance
 -- ----------------------------
 CREATE INDEX idx_users_email ON users(email);
 CREATE INDEX idx_transcripts_meeting_id ON transcripts(meeting_id);
 CREATE INDEX idx_action_items_assigned_to ON action_items(assigned_to);
+CREATE INDEX idx_glossary_suggestions_org_status ON glossary_suggestions(organization_id, status);
 
 SET FOREIGN_KEY_CHECKS = 1;

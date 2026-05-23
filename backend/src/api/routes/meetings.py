@@ -12,11 +12,13 @@ from src.api.core.meeting_operations import (
     broadcast_participant_list_event,
     build_meeting_detail_payload,
     build_room_snapshot,
+    compute_meeting_duration_minutes,
     ensure_speaker_mapping,
     format_meeting_message_payload,
     format_meeting_participant_payload,
     format_user_payload,
     get_meeting_access_mode,
+    get_attended_participants,
     get_ws_user,
     mark_participant_attended,
     meeting_room_manager,
@@ -39,6 +41,14 @@ from src.api.core.transcript_support import finalize_meeting_transcript
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["meetings"])
+
+
+def _coerce_utc_aware(value: Optional[datetime]) -> Optional[datetime]:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 @router.get("/api/meetings", response_model=List[schemas.Meeting])
 def list_meetings(
@@ -102,6 +112,9 @@ def list_meetings(
         m.group_name = m.group.name if m.group else None
         m.organization_name = m.organization.name if m.organization else None
         m.action_items_count = len(m.action_items) if m.action_items else 0
+        m.attended_participants = get_attended_participants(m)
+        m.attended_participants_count = len(m.attended_participants)
+        m.duration = compute_meeting_duration_minutes(m)
         if m.summaries:
             # Prefer summary in user's language, fall back to any
             lang_match = [s for s in m.summaries if (s.language or "vi") == user_lang]
@@ -133,9 +146,7 @@ def get_meeting_by_code(
     ).filter(models.Meeting.code == meeting_code).first()
     if not meeting:
         raise HTTPException(status_code=404, detail="Meeting not found")
-    participant = require_meeting_room_access(db, current_user, meeting)
-    mark_participant_attended(db, participant)
-    db.commit()
+    require_meeting_room_access(db, current_user, meeting)
     user_lang = getattr(current_user, "language", None) or "vi"
     return schemas.MeetingDetailResponse.model_validate(
         build_meeting_detail_payload(
@@ -156,9 +167,7 @@ def get_meeting(
     meeting = get_meeting_by_id(db, meeting_id)
     if not meeting:
         raise HTTPException(status_code=404, detail="Meeting not found")
-    participant = require_meeting_room_access(db, current_user, meeting)
-    mark_participant_attended(db, participant)
-    db.commit()
+    require_meeting_room_access(db, current_user, meeting)
     user_lang = getattr(current_user, "language", None) or "vi"
     return schemas.MeetingDetailResponse.model_validate(
         build_meeting_detail_payload(
@@ -318,8 +327,18 @@ async def meeting_room_stream(
             await websocket.close(code=1008, reason="Meeting not found")
             return
         participant = require_meeting_room_access(db, current_user, meeting)
-        mark_participant_attended(db, participant)
-        db.commit()
+        try:
+            mark_participant_attended(db, participant)
+            db.commit()
+        except Exception as attendance_exc:
+            logger.warning(
+                "Failed to mark participant attended for meeting %s and user %s: %s",
+                meeting_id,
+                getattr(current_user, "id", None),
+                attendance_exc,
+                exc_info=True,
+            )
+            db.rollback()
         user_payload = format_user_payload(current_user)
         await meeting_room_manager.connect(meeting_id, websocket, user_payload)
         connected = True
@@ -640,8 +659,8 @@ async def end_meeting_endpoint(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
 
-    start = meeting.actual_start or meeting.scheduled_start or meeting.created_at or now
-    duration = max(0, int((now - start).total_seconds() / 60))
+    start = _coerce_utc_aware(meeting.actual_start) or _coerce_utc_aware(meeting.scheduled_start) or _coerce_utc_aware(meeting.created_at) or now
+    duration = compute_meeting_duration_minutes(meeting, now)
     updates = {
         "actual_end": now,
         "duration": duration,
@@ -866,4 +885,3 @@ def get_meeting_dialect(
         "correction_count": metadata.get("correction_count", 0),
         "nlp_metadata": metadata,
     }
-

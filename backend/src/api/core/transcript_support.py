@@ -158,6 +158,38 @@ def normalize_segment_payload(segment: Dict[str, Any], default_language: str = "
 # ─── Transcript Finalization ────────────────────────────────────────────────
 
 
+def _is_wav_16k_mono(path: str) -> bool:
+    """Check if a WAV file is already 16kHz mono PCM."""
+    if not path.lower().endswith(".wav"):
+        return False
+    try:
+        import wave
+        with wave.open(path, "rb") as w:
+            return w.getframerate() == 16000 and w.getnchannels() == 1
+    except Exception:
+        return False
+
+
+def _normalize_chunks_for_concat(chunk_files: list[str], temp_dir: str) -> list[str]:
+    """Normalize each chunk to WAV 16kHz mono for safe concatenation."""
+    normalized = []
+    for cf in chunk_files:
+        if _is_wav_16k_mono(cf):
+            normalized.append(cf)
+        else:
+            base = os.path.splitext(os.path.basename(cf))[0]
+            out_path = os.path.join(temp_dir, f"{base}_norm.wav")
+            try:
+                subprocess.run(
+                    ["ffmpeg", "-y", "-i", cf, "-ar", "16000", "-ac", "1", "-acodec", "pcm_s16le", out_path],
+                    capture_output=True, timeout=60, check=True,
+                )
+                normalized.append(out_path)
+            except Exception as e:
+                logger.warning("Failed to normalize chunk %s: %s", cf, e)
+    return normalized
+
+
 async def finalize_meeting_transcript(
     meeting_id: str,
     db: Session,
@@ -365,51 +397,63 @@ async def finalize_meeting_transcript(
             chunk_files = sorted(glob.glob(os.path.join(perm_dir, "chunk_*")) + glob.glob(os.path.join(perm_dir, "stream_*.wav")))
             if chunk_files:
                 logger.info(f"Concatenating {len(chunk_files)} audio chunks for meeting {meeting_id}")
-                concat_list_path = os.path.join(perm_dir, "concat.txt")
-                with open(concat_list_path, "w") as f:
-                    for cf in chunk_files:
-                        f.write(f"file '{cf}'\n")
+                normalized_files = _normalize_chunks_for_concat(chunk_files, perm_dir)
+                files_to_concat = normalized_files if normalized_files else chunk_files
+                try:
+                    concat_list_path = os.path.join(perm_dir, "concat.txt")
+                    with open(concat_list_path, "w") as f:
+                        for cf in files_to_concat:
+                            f.write(f"file '{cf}'\n")
 
-                output_filename = f"recording_{meeting_id}.wav"
-                output_path = os.path.join(perm_dir, output_filename)
-                subprocess.run(
-                    ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_list_path,
-                     "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", output_path],
-                    capture_output=True, timeout=120, check=True,
-                )
-                if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
-                    file_size = os.path.getsize(output_path)
-                    audio_record = create_audio_file(db, {
-                        "meeting_id": meeting_id,
-                        "filename": output_filename,
-                        "original_filename": "meeting_recording.wav",
-                        "file_path": output_path,
-                        "file_size": file_size,
-                        "format": "WAV",
-                        "sample_rate": 16000,
-                        "channels": 1,
-                        "upload_status": "PROCESSED",
-                    })
-                    audio_file_id = audio_record.id
-                    audio_stream_url = f"/api/audio-files/{audio_file_id}/stream"
-                    update_meeting(db, meeting_id, {
-                        "audio_url": audio_stream_url,
-                        "recording_url": audio_stream_url,
-                    })
-                    db.commit()
-                    logger.info(f"Audio recording saved: {output_path} ({file_size} bytes)")
+                    output_filename = f"recording_{meeting_id}.wav"
+                    output_path = os.path.join(perm_dir, output_filename)
+                    subprocess.run(
+                        ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_list_path,
+                         "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", output_path],
+                        capture_output=True, timeout=120, check=True,
+                    )
+                    if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                        file_size = os.path.getsize(output_path)
+                        audio_record = create_audio_file(db, {
+                            "meeting_id": meeting_id,
+                            "filename": output_filename,
+                            "original_filename": "meeting_recording.wav",
+                            "file_path": output_path,
+                            "file_size": file_size,
+                            "format": "WAV",
+                            "sample_rate": 16000,
+                            "channels": 1,
+                            "upload_status": "PROCESSED",
+                        })
+                        audio_file_id = audio_record.id
+                        audio_stream_url = f"/api/audio-files/{audio_file_id}/stream"
+                        update_meeting(db, meeting_id, {
+                            "audio_url": audio_stream_url,
+                            "recording_url": audio_stream_url,
+                        })
+                        db.commit()
+                        logger.info(f"Audio recording saved: {output_path} ({file_size} bytes)")
 
-                    for cf in chunk_files:
+                        for cf in chunk_files:
+                            try:
+                                os.unlink(cf)
+                            except OSError:
+                                pass
                         try:
-                            os.unlink(cf)
+                            os.unlink(concat_list_path)
                         except OSError:
                             pass
-                    try:
-                        os.unlink(concat_list_path)
-                    except OSError:
-                        pass
-                else:
-                    logger.warning(f"ffmpeg concat produced empty output for meeting {meeting_id}")
+                    else:
+                        logger.warning(f"ffmpeg concat produced empty output for meeting {meeting_id}")
+                finally:
+                    # Clean up temp normalized files (not the originals)
+                    norm_set = set(normalized_files)
+                    for nf in norm_set:
+                        if nf not in chunk_files:
+                            try:
+                                os.unlink(nf)
+                            except OSError:
+                                pass
             else:
                 logger.info(f"No audio chunks found for meeting {meeting_id}")
         else:
@@ -451,7 +495,11 @@ async def finalize_meeting_transcript(
         "content",
         "Create a concise executive meeting brief. Focus on outcomes, explicit decisions, and next steps only.",
     )
-    glossary_context = build_glossary_context(db, meeting.organization_id) if enable_glossary else {}
+    try:
+        glossary_context = build_glossary_context(db, meeting.organization_id) if enable_glossary else {}
+    except Exception as glossary_err:
+        logger.warning("Glossary context skipped: %s", glossary_err)
+        glossary_context = {}
     speaker_map = get_speaker_mapping_dict(db, meeting_id)
     speaker_aware_transcript = build_speaker_aware_transcript(full_text, segments_to_save, speaker_map)
     system_prompt, user_prompt = build_structured_summary_prompts(

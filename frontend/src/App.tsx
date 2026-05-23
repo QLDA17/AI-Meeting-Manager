@@ -23,6 +23,7 @@ const JoinMeeting = React.lazy(() => import('./pages/JoinMeeting'));
 const UploadAudio = React.lazy(() => import('./pages/meeting/UploadAudio'));
 const Notifications = React.lazy(() => import('./pages/Notifications'));
 const ActionItems = React.lazy(() => import('./pages/ActionItems'));
+const GlossaryView = React.lazy(() => import('./pages/GlossaryView'));
 const NotFound = React.lazy(() => import('./pages/NotFound'));
 const Forbidden = React.lazy(() => import('./pages/Forbidden'));
 const GroupDetail = React.lazy(() => import('./pages/group/GroupDetail'));
@@ -295,6 +296,14 @@ const AppRoutes: React.FC = () => {
           element={
             <React.Suspense fallback={<PageLoader />}>
               <ActionItems />
+            </React.Suspense>
+          }
+        />
+        <Route
+          path="/glossary"
+          element={
+            <React.Suspense fallback={<PageLoader />}>
+              <GlossaryView />
             </React.Suspense>
           }
         />

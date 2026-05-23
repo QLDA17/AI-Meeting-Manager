@@ -39,6 +39,9 @@ const AudioPlayer = forwardRef<AudioPlayerHandle, AudioPlayerProps>(({ src, onTi
     if (audioRef.current) {
       audioRef.current.volume = isMuted ? 0 : volume;
       audioRef.current.playbackRate = playbackRate;
+      if ("preservesPitch" in audioRef.current) {
+        (audioRef.current as HTMLAudioElement & { preservesPitch?: boolean }).preservesPitch = true;
+      }
     }
   }, [volume, isMuted, playbackRate]);
 
@@ -46,6 +49,7 @@ const AudioPlayer = forwardRef<AudioPlayerHandle, AudioPlayerProps>(({ src, onTi
     setIsPlaying(false);
     setCurrentTime(0);
     setDuration(0);
+    setPlaybackRate(1);
     setError(null);
     onReady?.(false);
   }, [src, onReady]);

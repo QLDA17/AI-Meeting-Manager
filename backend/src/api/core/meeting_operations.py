@@ -23,6 +23,7 @@ from src.api.core.app_state import (
 from src.api.crud import get_user_by_username
 from src.api.core.meetings_support import estimate_segment_end, normalize_speaker_label
 from src.api.core.transcript_support import (
+    _normalize_chunks_for_concat,
     build_transcript_from_drafts,
     serialize_transcript_draft_chunks,
 )
@@ -137,6 +138,8 @@ def require_meeting_room_access(db: Session, user: models.User, meeting: models.
 def mark_participant_attended(db: Session, participant: Optional[models.MeetingParticipant]) -> None:
     if not participant:
         return
+    if participant.attended and participant.joined_at:
+        return
     if participant.invite_status == "pending":
         participant.invite_status = "accepted"
     participant.attended = True
@@ -144,15 +147,22 @@ def mark_participant_attended(db: Session, participant: Optional[models.MeetingP
     db.flush()
 
 
-def format_meeting_participant_payload(participant: models.MeetingParticipant) -> Dict[str, Any]:
+def participant_display_name(participant: models.MeetingParticipant) -> str:
     user = participant.user
-    display_name = (
+    return (
         participant.name
-        or (" ".join(part for part in [getattr(user, "first_name", None), getattr(user, "last_name", None)] if part).strip() if user else "")
+        or (" ".join(
+            part for part in [getattr(user, "first_name", None), getattr(user, "last_name", None)] if part
+        ).strip() if user else "")
         or getattr(user, "username", None)
         or participant.email
         or "Thành viên"
     )
+
+
+def format_meeting_participant_payload(participant: models.MeetingParticipant) -> Dict[str, Any]:
+    user = participant.user
+    display_name = participant_display_name(participant)
     return {
         "id": participant.user_id or participant.id,
         "participant_id": participant.id,
@@ -166,6 +176,45 @@ def format_meeting_participant_payload(participant: models.MeetingParticipant) -
         "joined_at": participant.joined_at.isoformat() if participant.joined_at else None,
         "left_at": participant.left_at.isoformat() if participant.left_at else None,
     }
+
+
+def coerce_utc_datetime(value: Optional[datetime]) -> Optional[datetime]:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def compute_meeting_duration_minutes(meeting: models.Meeting, now: Optional[datetime] = None) -> int:
+    current = coerce_utc_datetime(now) or datetime.now(timezone.utc)
+    start = (
+        coerce_utc_datetime(meeting.actual_start)
+        or coerce_utc_datetime(meeting.scheduled_start)
+        or coerce_utc_datetime(meeting.created_at)
+    )
+    end = coerce_utc_datetime(meeting.actual_end)
+    if start is None:
+        return int(meeting.duration or 0)
+    effective_end = end or (current if meeting.status == "live" else None)
+    if effective_end is None:
+        return int(meeting.duration or 0)
+    return max(0, int((effective_end - start).total_seconds() / 60))
+
+
+def get_attended_participants(meeting: models.Meeting) -> List[models.MeetingParticipant]:
+    participants = list(meeting.participants or [])
+    attended = [participant for participant in participants if participant.attended]
+    def _sort_value(value: Optional[datetime]) -> float:
+        normalized = coerce_utc_datetime(value)
+        return normalized.timestamp() if normalized else float("inf")
+    attended.sort(
+        key=lambda participant: (
+            _sort_value(participant.joined_at),
+            participant.id,
+        )
+    )
+    return attended
 
 
 def get_meeting_access_mode(db: Session, user: models.User, meeting: models.Meeting) -> str:
@@ -284,6 +333,7 @@ def speaker_mapping_payload(mapping: models.MeetingSpeakerMapping) -> Dict[str, 
         "speaker_label": mapping.speaker_label,
         "display_name": mapping.display_name,
         "user_id": mapping.user_id,
+        "user": format_user_payload(mapping.user) if getattr(mapping, "user", None) else None,
         "created_at": mapping.created_at.isoformat() if mapping.created_at else None,
         "updated_at": mapping.updated_at.isoformat() if mapping.updated_at else None,
     }
@@ -717,43 +767,6 @@ def ensure_meeting_audio_published(db: Session, meeting: models.Meeting) -> str:
     output_filename = f"recording_{meeting.id}.wav"
     output_path = os.path.join(perm_dir, output_filename)
 
-    if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
-        existing = db.query(models.AudioFile).filter(
-            models.AudioFile.meeting_id == meeting.id,
-            or_(
-                models.AudioFile.file_path == output_path,
-                models.AudioFile.filename == output_filename,
-            ),
-        ).order_by(models.AudioFile.updated_at.desc(), models.AudioFile.created_at.desc()).first()
-        if existing:
-            existing.file_path = output_path
-            existing.filename = output_filename
-            existing.original_filename = existing.original_filename or "meeting_recording.wav"
-            existing.file_size = os.path.getsize(output_path)
-            existing.format = "WAV"
-            existing.sample_rate = existing.sample_rate or 16000
-            existing.channels = existing.channels or 1
-            existing.upload_status = "PROCESSED"
-            audio_record = existing
-        else:
-            audio_record = models.AudioFile(
-                meeting_id=meeting.id,
-                filename=output_filename,
-                original_filename="meeting_recording.wav",
-                file_path=output_path,
-                file_size=os.path.getsize(output_path),
-                format="WAV",
-                sample_rate=16000,
-                channels=1,
-                upload_status="PROCESSED",
-            )
-            db.add(audio_record)
-            db.flush()
-        _sync_meeting_audio_urls(db, meeting, audio_record)
-        db.commit()
-        db.refresh(meeting)
-        return "READY"
-
     candidate_files = sorted(
         path for path in (glob.glob(os.path.join(perm_dir, "chunk_*")) + glob.glob(os.path.join(perm_dir, "stream_*.wav")))
         if os.path.isfile(path) and os.path.getsize(path) > 0 and os.path.abspath(path) != os.path.abspath(output_path)
@@ -765,18 +778,20 @@ def ensure_meeting_audio_published(db: Session, meeting: models.Meeting) -> str:
         os.makedirs(canonical_perm_dir, exist_ok=True)
         output_path = os.path.join(canonical_perm_dir, output_filename)
 
+    normalized_files = _normalize_chunks_for_concat(candidate_files, perm_dir)
+    files_to_concat = normalized_files if normalized_files else candidate_files
     concat_list_path = os.path.join(perm_dir, "concat_publish.txt")
     try:
-        if len(candidate_files) == 1:
+        if len(files_to_concat) == 1:
             subprocess.run(
-                ["ffmpeg", "-y", "-i", candidate_files[0], "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", output_path],
+                ["ffmpeg", "-y", "-i", files_to_concat[0], "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", output_path],
                 capture_output=True,
                 timeout=120,
                 check=True,
             )
         else:
             with open(concat_list_path, "w") as concat_file:
-                for candidate in candidate_files:
+                for candidate in files_to_concat:
                     concat_file.write(f"file '{candidate}'\n")
             subprocess.run(
                 ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_list_path, "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", output_path],
@@ -840,6 +855,14 @@ def ensure_meeting_audio_published(db: Session, meeting: models.Meeting) -> str:
         logger.error("Unexpected audio publish failure for meeting %s: %s", meeting.id, exc, exc_info=True)
         return "FAILED"
     finally:
+        # Clean up temp normalized files (not the originals)
+        norm_set = set(normalized_files)
+        for nf in norm_set:
+            if nf not in candidate_files:
+                try:
+                    os.unlink(nf)
+                except OSError:
+                    pass
         if os.path.exists(concat_list_path):
             try:
                 os.unlink(concat_list_path)
@@ -895,6 +918,7 @@ def build_meeting_detail_payload(
     key_points_text = summarize_json_items(latest_summary.key_points if latest_summary else None)
     decisions_text = summarize_json_items(latest_summary.decisions if latest_summary else None)
     timeline_highlights_text = summarize_json_items(latest_summary.timeline_highlights if latest_summary else None)
+    attended_participants = get_attended_participants(meeting)
     activity = build_meeting_activity_payload(
         meeting,
         transcript_status=transcript_status,
@@ -915,7 +939,7 @@ def build_meeting_detail_payload(
         "scheduled_end": meeting.scheduled_end,
         "actual_start": meeting.actual_start,
         "actual_end": meeting.actual_end,
-        "duration": meeting.duration,
+        "duration": compute_meeting_duration_minutes(meeting),
         "location": meeting.location,
         "meeting_type": meeting.meeting_type,
         "status": meeting.status,
@@ -932,6 +956,8 @@ def build_meeting_detail_payload(
         "group": enrich_group_payload(meeting.group) if meeting.group else None,
         "created_by_user": format_user_payload(meeting.created_by_user) if meeting.created_by_user else None,
         "participants": meeting.participants or [],
+        "attended_participants": attended_participants,
+        "attended_participants_count": len(attended_participants),
         "audio_files": meeting.audio_files or [],
         "transcripts": meeting.transcripts or [],
         "transcript_segments": transcript_segments,
@@ -970,8 +996,7 @@ def build_room_snapshot(db: Session, meeting_id: str, current_user: models.User)
     meeting = get_meeting_by_id(db, meeting_id)
     if not meeting:
         raise HTTPException(status_code=404, detail="Meeting not found")
-    participant = require_meeting_room_access(db, current_user, meeting)
-    mark_participant_attended(db, participant)
+    require_meeting_room_access(db, current_user, meeting)
 
     messages = db.query(models.MeetingMessage).options(
         joinedload(models.MeetingMessage.user)
@@ -1082,6 +1107,23 @@ def ensure_speaker_mapping(db: Session, meeting_id: str, speaker_label: str, dis
         display_name=display_name or normalized_label,
     )
     db.add(mapping)
+    db.flush()
+    return mapping
+
+
+def ensure_speaker_identity_mapping(
+    db: Session,
+    meeting_id: str,
+    speaker_label: str,
+    *,
+    display_name: Optional[str] = None,
+    user_id: Optional[str] = None,
+) -> models.MeetingSpeakerMapping:
+    mapping = ensure_speaker_mapping(db, meeting_id, speaker_label, display_name=display_name)
+    if user_id and mapping.user_id != user_id:
+        mapping.user_id = user_id
+    if display_name and (not mapping.display_name or mapping.display_name == mapping.speaker_label):
+        mapping.display_name = display_name
     db.flush()
     return mapping
 

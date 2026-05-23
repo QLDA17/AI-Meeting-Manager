@@ -107,6 +107,22 @@ const safeDate = (value: string) => {
   return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
 };
 
+const getEffectiveDurationMinutes = (meeting: Meeting) => {
+  if (meeting.status === 'live' && meeting.actual_start) {
+    const liveStart = new Date(meeting.actual_start);
+    if (!Number.isNaN(liveStart.getTime())) {
+      return Math.max(0, Math.floor((Date.now() - liveStart.getTime()) / 60000));
+    }
+  }
+  if (meeting.duration) {
+    return Math.max(0, meeting.duration);
+  }
+  if (meeting.startTime && meeting.endTime) {
+    return Math.max(0, Math.round((safeDate(meeting.endTime).getTime() - safeDate(meeting.startTime).getTime()) / 60000));
+  }
+  return 0;
+};
+
 const getInitials = (user: User) => {
   if (user.displayName) return user.displayName.substring(0, 2).toUpperCase();
   if (user.firstName && user.lastName) return `${user.firstName[0]}${user.lastName[0]}`.toUpperCase();
@@ -148,6 +164,7 @@ const MeetingCard: React.FC<MeetingCardProps> = ({
 }) => {
   const status = statusConfig[meeting.status] || statusConfig.upcoming;
   const start = safeDate(meeting.startTime);
+  const durationMinutes = getEffectiveDurationMinutes(meeting);
   const hasTranscript = Boolean(meeting.transcriptUrl || meeting.audioUrl || meeting.status === 'completed');
   const hasAiNotes = Boolean(meeting.summary || meeting.keyPoints?.length || meeting.decisions?.length);
   const insightCount = (meeting.keyPoints?.length || 0) + (meeting.decisions?.length || 0);
@@ -269,13 +286,7 @@ const MeetingCard: React.FC<MeetingCardProps> = ({
             {/* Duration */}
             <div className="flex items-center gap-1 text-[11px] font-semibold text-gray-600">
               <Clock size={12} className="text-gray-400" />
-              <span>{
-                meeting.duration
-                  ? `${meeting.duration} phút`
-                  : (meeting.startTime && meeting.endTime)
-                    ? `${Math.round((safeDate(meeting.endTime).getTime() - safeDate(meeting.startTime).getTime()) / 60000)} phút`
-                    : '--'
-              }</span>
+              <span>{durationMinutes > 0 ? `${durationMinutes} phút` : '--'}</span>
             </div>
           </div>
 

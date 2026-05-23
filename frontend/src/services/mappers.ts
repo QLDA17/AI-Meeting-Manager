@@ -189,6 +189,42 @@ export const normalizeActionItem = (actionItem: any): ActionItem => ({
   updated_at: asIsoString(actionItem.updated_at),
 });
 
+const normalizeMeetingParticipantUser = (participant: any): User => {
+  const u = participant.user;
+  const name = participant.name
+    ?? (u ? `${u.first_name || ''} ${u.last_name || ''}`.trim() || u.username || u.email : null)
+    ?? participant.email
+    ?? 'Thành viên';
+  return {
+    id: participant.user_id ?? participant.id ?? participant.email ?? `participant-${Math.random().toString(36).slice(2)}`,
+    username: name,
+    email: participant.email ?? u?.email ?? '',
+    firstName: u?.first_name ?? participant.name ?? '',
+    lastName: u?.last_name ?? '',
+    displayName: name,
+    avatarUrl: u?.avatar_url,
+    createdAt: asIsoString(participant.created_at ?? u?.created_at),
+    updatedAt: asIsoString(participant.updated_at ?? u?.updated_at),
+    isActive: true,
+    isVerified: false,
+    orgMemberships: [],
+    groupMemberships: [],
+    systemRole: 'member',
+  };
+};
+
+const normalizeMeetingAttendees = (meeting: any): User[] => {
+  if (Array.isArray(meeting.attendees)) {
+    return meeting.attendees.map(normalizeUser);
+  }
+  const attendedParticipants = Array.isArray(meeting.attended_participants)
+    ? meeting.attended_participants
+    : Array.isArray(meeting.participants)
+      ? meeting.participants.filter((participant: any) => participant?.attended)
+      : [];
+  return attendedParticipants.map(normalizeMeetingParticipantUser);
+};
+
 export const normalizeMeeting = (meeting: any): Meeting => ({
   id: meeting.id,
   orgId: meeting.orgId ?? meeting.organization_id ?? '',
@@ -210,33 +246,15 @@ export const normalizeMeeting = (meeting: any): Meeting => ({
   transcriptUrl: meeting.transcriptUrl ?? meeting.transcript_url ?? undefined,
   audioUrl: meeting.audioUrl ?? meeting.audio_url ?? undefined,
   audioStatus: meeting.audioStatus ?? meeting.audio_status ?? undefined,
-  attendees: Array.isArray(meeting.attendees)
-    ? meeting.attendees.map(normalizeUser)
-    : Array.isArray(meeting.participants)
-      ? meeting.participants.map((participant: any) => {
-          const u = participant.user;
-          const name = participant.name
-            ?? (u ? `${u.first_name || ''} ${u.last_name || ''}`.trim() || u.username || u.email : null)
-            ?? participant.email
-            ?? 'Thành viên';
-          return {
-            id: participant.user_id ?? participant.id ?? participant.email ?? `participant-${Math.random().toString(36).slice(2)}`,
-            username: name,
-            email: participant.email ?? u?.email ?? '',
-            firstName: u?.first_name ?? participant.name ?? '',
-            lastName: u?.last_name ?? '',
-            displayName: name,
-            avatarUrl: u?.avatar_url,
-            createdAt: asIsoString(participant.created_at ?? u?.created_at),
-            updatedAt: asIsoString(participant.updated_at ?? u?.updated_at),
-            isActive: true,
-            isVerified: false,
-            orgMemberships: [],
-            groupMemberships: [],
-            systemRole: 'member',
-          };
-        })
-      : [],
+  attendees: normalizeMeetingAttendees(meeting),
+  attendedParticipantsCount: asNumber(
+    meeting.attended_participants_count ?? meeting.attendedParticipantsCount,
+    Array.isArray(meeting.attended_participants)
+      ? meeting.attended_participants.length
+      : Array.isArray(meeting.participants)
+        ? meeting.participants.filter((participant: any) => participant?.attended).length
+        : 0,
+  ),
   createdBy: meeting.createdBy ?? meeting.created_by ?? '',
   createdAt: asIsoString(meeting.createdAt ?? meeting.created_at),
   updatedAt: asIsoString(meeting.updatedAt ?? meeting.updated_at),
@@ -276,6 +294,7 @@ export const normalizeMeetingDetail = (meeting: any): MeetingDetail => ({
         text: segment.text ?? '',
         language: segment.language ?? 'auto',
         confidenceScore: segment.confidence_score != null ? asNumber(segment.confidence_score) : undefined,
+        nlpMetadata: segment.nlp_metadata ?? segment.nlpMetadata ?? undefined,
       }))
     : [],
   speakerMappings: Array.isArray(meeting.speaker_mappings)
@@ -285,6 +304,7 @@ export const normalizeMeetingDetail = (meeting: any): MeetingDetail => ({
         speakerLabel: mapping.speaker_label ?? mapping.speakerLabel ?? 'Speaker_01',
         displayName: mapping.display_name ?? mapping.displayName ?? mapping.speaker_label ?? 'Speaker_01',
         userId: mapping.user_id ?? mapping.userId ?? undefined,
+        user: mapping.user ? normalizeUser(mapping.user) : undefined,
         createdAt: mapping.created_at ? asIsoString(mapping.created_at) : undefined,
         updatedAt: mapping.updated_at ? asIsoString(mapping.updated_at) : undefined,
       }))
@@ -302,6 +322,7 @@ export const normalizeMeetingDetail = (meeting: any): MeetingDetail => ({
         speakerSummaries: summary.speaker_summaries ?? summary.speakerSummaries ?? [],
         processingStatus: summary.processing_status ?? undefined,
         createdAt: asIsoString(summary.created_at),
+        language: summary.language ?? 'vi',
       }))
     : [],
   actionItems: Array.isArray(meeting.action_items) ? meeting.action_items.map(normalizeActionItem) : [],

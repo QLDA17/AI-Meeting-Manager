@@ -11,6 +11,7 @@ import {
   Bell,
   CheckCircle2,
   Mic,
+  BookOpen,
 } from 'lucide-react';
 
 interface QuickAccessItem {
@@ -49,6 +50,11 @@ const QuickAccess: React.FC = () => {
       path: '/upload',
       icon: <Upload size={16} />,
     },
+    {
+      label: 'Từ điển',
+      path: '/glossary',
+      icon: <BookOpen size={16} />,
+    },
   ];
 
   const isActive = (path: string) => {
@@ -56,6 +62,7 @@ const QuickAccess: React.FC = () => {
     if (path === '/meetings/create' && location.pathname === '/meetings/create') return true;
     if (path === '/actions' && location.pathname.startsWith('/actions')) return true;
     if (path === '/notifications' && location.pathname.startsWith('/notifications')) return true;
+    if (path === '/glossary' && location.pathname.startsWith('/glossary')) return true;
     return location.pathname === path;
   };
 

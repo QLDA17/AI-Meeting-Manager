@@ -154,6 +154,7 @@ export interface Meeting {
   audioUrl?: string;
   audioStatus?: 'NONE' | 'PROCESSING' | 'READY' | 'FAILED';
   attendees: User[];
+  attendedParticipantsCount?: number;
   createdBy: string;
   createdAt: string;
   updatedAt: string;
@@ -186,6 +187,13 @@ export interface MeetingTranscriptSegment {
   text: string;
   language: string;
   confidenceScore?: number;
+  nlpMetadata?: {
+    corrections?: Array<{
+      wrong: string;
+      right: string;
+      source: string;
+    }>;
+  };
 }
 
 export interface MeetingSummaryRecord {
@@ -200,6 +208,7 @@ export interface MeetingSummaryRecord {
   speakerSummaries?: unknown[];
   processingStatus?: string;
   createdAt: string;
+  language?: string;
 }
 
 export interface ActivityFeedItem {
@@ -258,6 +267,7 @@ export interface MeetingSpeakerMapping {
   speakerLabel: string;
   displayName: string;
   userId?: string;
+  user?: User;
   createdAt?: string;
   updatedAt?: string;
 }

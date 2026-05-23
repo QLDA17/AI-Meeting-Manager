@@ -824,7 +824,6 @@ const MeetingRoomInner: React.FC = () => {
         : aiNotesStatus === "PROCESSING"
           ? "Đang tạo bản tổng hợp"
           : "Chưa có bản tổng hợp";
-
   if (isMeetingLoading) {
     return (
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#020617] p-6">

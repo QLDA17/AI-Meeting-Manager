@@ -156,7 +156,7 @@ export function useAudioRecorder(
 
   const rebuildTranscriptState = useCallback(() => {
     const orderedTranscripts = Array.from(chunksByIndexRef.current.values()).sort(
-      (a, b) => a.timestamp - b.timestamp || a.chunkIndex - b.chunkIndex
+      (a, b) => a.chunkIndex - b.chunkIndex || a.timestamp - b.timestamp
     );
     const orderedSegments = orderedTranscripts.flatMap((item) => item.segments);
     const nextFullTranscript = orderedTranscripts.map((item) => item.text).join("\n");
@@ -262,22 +262,29 @@ export function useAudioRecorder(
     [meetingId, mergeTranscriptChunk]
   );
 
-  const startChunkRecording = useCallback(async () => {
+  const startChunkRecording = useCallback(async (preserveTranscriptState = false) => {
     if (!localStream) {
       setError("No audio stream available");
       return;
     }
 
     setError(null);
-    chunkCounterRef.current = 0;
-    fullTranscriptRef.current = "";
-    allSegmentsRef.current = [];
-    chunksByIndexRef.current.clear();
-    segmentsByIndexRef.current.clear();
-    setLiveTranscripts([]);
-    setFullTranscript("");
-    setAllSegments([]);
-    setInterimTranscript("");
+    if (!preserveTranscriptState) {
+      chunkCounterRef.current = 0;
+      fullTranscriptRef.current = "";
+      allSegmentsRef.current = [];
+      chunksByIndexRef.current.clear();
+      segmentsByIndexRef.current.clear();
+      setLiveTranscripts([]);
+      setFullTranscript("");
+      setAllSegments([]);
+      setInterimTranscript("");
+    } else {
+      chunkCounterRef.current = Array.from(chunksByIndexRef.current.values()).reduce(
+        (maxIndex, item) => Math.max(maxIndex, item.chunkIndex),
+        -1,
+      ) + 1;
+    }
 
     try {
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
@@ -423,7 +430,7 @@ export function useAudioRecorder(
       } catch {}
       setSttStatus("fallback");
       if (message) setError(message);
-      await startChunkRecording();
+      await startChunkRecording(true);
     };
 
     const bindWsHandlers = (socket: WebSocket) => {
@@ -511,7 +518,7 @@ export function useAudioRecorder(
         resolve();
       };
     });
-  }, [isRecording, localStream, meetingId, mergeTranscriptChunk, setupStreamingAudio, startChunkRecording]);
+  }, [localStream, meetingId, mergeTranscriptChunk, setupStreamingAudio, startChunkRecording]);
 
   const flushRecording = useCallback(async () => {
     if (!workletNodeRef.current) return;

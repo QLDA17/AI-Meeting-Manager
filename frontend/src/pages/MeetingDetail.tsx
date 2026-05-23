@@ -6,6 +6,7 @@ import {
   AlertCircle,
   ArrowDownWideNarrow,
   ArrowLeft,
+  BookOpen,
   Calendar,
   CheckCircle2,
   Clock,
@@ -32,7 +33,7 @@ import AudioPlayer, { type AudioPlayerHandle } from '../components/meeting/Audio
 import ActionItemComposer from '../components/meeting/ActionItemComposer';
 import MeetingActionItemCard from '../components/meeting/MeetingActionItemCard';
 import { useAuth } from '../context/AuthContext';
-import { showToast, EditTitleModal, PageState } from '../components/ui';
+import { showToast, EditTitleModal, Modal, PageState } from '../components/ui';
 import type { ActionItemAssigneeOption, TranscriptAnchor } from '../types/actionItem';
 
 type DetailTab = 'summary' | 'transcript' | 'actions' | 'ai-notes';
@@ -46,6 +47,7 @@ type TranscriptGroup = {
   endTime: number;
   languages: string[];
   texts: string[];
+  corrections: Array<{ wrong: string; right: string; source: string }>;
 };
 
 type ActionEditDraft = {
@@ -55,6 +57,9 @@ type ActionEditDraft = {
   status: string;
   priority: string;
 };
+
+type ExportFormat = 'pdf' | 'docx';
+type ExportLanguage = 'vi' | 'en' | 'ja' | 'zh' | 'ko';
 
 type ActivityFeedItem = {
   id: string;
@@ -85,6 +90,9 @@ const groupTranscriptSegments = (segments: MeetingTranscriptSegment[]): Transcri
       if (!lastGroup.languages.includes(language)) {
         lastGroup.languages.push(language);
       }
+      if (segment.nlpMetadata?.corrections) {
+        lastGroup.corrections.push(...segment.nlpMetadata.corrections);
+      }
       return groups;
     }
 
@@ -96,6 +104,7 @@ const groupTranscriptSegments = (segments: MeetingTranscriptSegment[]): Transcri
       endTime: segment.endTime || segment.startTime,
       languages: [language],
       texts: [segment.text.trim()],
+      corrections: segment.nlpMetadata?.corrections ? [...segment.nlpMetadata.corrections] : [],
     });
     return groups;
   }, []);
@@ -106,6 +115,11 @@ const formatTimelineDate = (value?: string) => {
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return 'Chưa có mốc thời gian';
   return format(parsed, 'HH:mm · dd/MM/yyyy');
+};
+
+const getApiErrorDetail = (error: unknown, fallback: string) => {
+  const axiosError = error as AxiosError<{ detail?: string }>;
+  return axiosError.response?.data?.detail || fallback;
 };
 
 const buildMeetingActivityFeed = (meeting: MeetingDetailType | undefined, actionItems: ActionItem[]): ActivityFeedItem[] => {
@@ -259,7 +273,14 @@ const MeetingDetail: React.FC = () => {
   const [activeTab, setActiveTab] = useState<DetailTab>('summary');
   const [isRegenerating, setIsRegenerating] = useState(false);
   const [summaryLanguage, setSummaryLanguage] = useState<string>('vi');
+  const [languageInitialized, setLanguageInitialized] = useState(false);
   const [isEditTitleOpen, setIsEditTitleOpen] = useState(false);
+  const [isExportModalOpen, setIsExportModalOpen] = useState(false);
+  const [exportFormat, setExportFormat] = useState<ExportFormat>('pdf');
+  const [exportLanguage, setExportLanguage] = useState<ExportLanguage>('vi');
+  const [exportLanguageInitialized, setExportLanguageInitialized] = useState(false);
+  const [includeTranscriptAppendix, setIncludeTranscriptAppendix] = useState(true);
+  const [isExporting, setIsExporting] = useState(false);
   const [selectedTranscriptSpeaker, setSelectedTranscriptSpeaker] = useState('all');
   const [editingSpeakerLabel, setEditingSpeakerLabel] = useState<string | null>(null);
   const [speakerNameInput, setSpeakerNameInput] = useState('');
@@ -300,8 +321,9 @@ const MeetingDetail: React.FC = () => {
   const query = useQuery({
     queryKey: ['meeting-detail', id],
     enabled: Boolean(id),
-    refetchInterval: 3000,
-    refetchIntervalInBackground: true,
+    refetchInterval: 30000,
+    refetchIntervalInBackground: false,
+    staleTime: 10000,
     queryFn: async (): Promise<MeetingDetailType> => {
       const response = await api.get(`/api/meetings/${id}`);
       return normalizeMeetingDetail(response.data);
@@ -309,7 +331,40 @@ const MeetingDetail: React.FC = () => {
   });
 
   const meeting = query.data;
-  const actionItems = meeting?.actionItems || [];
+  const selectedSummary = meeting?.summaries?.find((s) => s.language === summaryLanguage);
+  const actionItems = (meeting?.actionItems || []).filter(
+    (item) => !selectedSummary?.id || item.summary_id === selectedSummary.id,
+  );
+
+  const sectionLabels: Record<string, Record<string, string>> = {
+    vi: { summary: 'Tóm tắt', keyPoints: 'Điểm chính', decisions: 'Quyết định',
+      actions: 'Việc cần làm', risks: 'Rủi ro / điểm nghẽn', questions: 'Câu hỏi mở',
+      timeline: 'Dòng thời gian nổi bật', speakers: 'Theo người nói',
+      statusSuffix: 'điểm chính / quyết định / việc cần làm', meetingSummary: 'Tóm tắt cuộc họp',
+      keyPointsDesc: 'Điểm chính thảo luận', decisionsDesc: 'Quyết định đã thống nhất' },
+    en: { summary: 'Summary', keyPoints: 'Key Points', decisions: 'Decisions',
+      actions: 'Action Items', risks: 'Risks / Bottlenecks', questions: 'Open Questions',
+      timeline: 'Timeline Highlights', speakers: 'By Speaker',
+      statusSuffix: 'key points / decisions / action items', meetingSummary: 'Meeting Summary',
+      keyPointsDesc: 'Key Discussion Points', decisionsDesc: 'Decisions Agreed' },
+    zh: { summary: '摘要', keyPoints: '要点', decisions: '决定',
+      actions: '待办事项', risks: '风险 / 瓶颈', questions: '开放问题',
+      timeline: '时间线亮点', speakers: '按发言人',
+      statusSuffix: '要点 / 决定 / 待办事项', meetingSummary: '会议摘要',
+      keyPointsDesc: '讨论要点', decisionsDesc: '已达成决定' },
+    ja: { summary: '要約', keyPoints: '要点', decisions: '決定事項',
+      actions: 'アクションアイテム', risks: 'リスク / ボトルネック', questions: '未解決の質問',
+      timeline: 'タイムラインハイライト', speakers: '話者別',
+      statusSuffix: '要点 / 決定事項 / アクションアイテム', meetingSummary: '会議要約',
+      keyPointsDesc: '議論の要点', decisionsDesc: '合意された決定事項' },
+    ko: { summary: '요약', keyPoints: '핵심 포인트', decisions: '결정 사항',
+      actions: '할 일', risks: '위험 / 병목', questions: '미해결 질문',
+      timeline: '타임라인 하이라이트', speakers: '발언자별',
+      statusSuffix: '핵심 포인트 / 결정 사항 / 할 일', meetingSummary: '회의 요약',
+      keyPointsDesc: '핵심 논의 포인트', decisionsDesc: '합의된 결정 사항' },
+  };
+  const L = sectionLabels[summaryLanguage] || sectionLabels.vi;
+
   const assigneeOptions = useMemo<ActionItemAssigneeOption[]>(() => {
     const options = new Map<string, ActionItemAssigneeOption>();
     meeting?.attendees.forEach((attendee) => {
@@ -356,21 +411,37 @@ const MeetingDetail: React.FC = () => {
       setIsRsvpLoading(false);
     }
   };
-  const keyPoints = meeting?.keyPointsText?.length ? meeting.keyPointsText : meeting?.keyPoints || [];
-  const keyPointItems: AnchoredTextItem[] = meeting?.keyPointsItems?.length
+  const keyPoints = (selectedSummary?.keyPoints as string[])?.length
+    ? (selectedSummary.keyPoints as string[])
+    : summaryLanguage === 'vi'
+      ? (meeting?.keyPointsText?.length ? meeting.keyPointsText : meeting?.keyPoints || [])
+      : [];
+  const keyPointItems: AnchoredTextItem[] = meeting?.keyPointsItems?.length && summaryLanguage === 'vi'
     ? meeting.keyPointsItems
     : keyPoints.map((text) => ({ text }));
-  const decisions = meeting?.decisionsText?.length ? meeting.decisionsText : meeting?.decisions || [];
-  const decisionItems: AnchoredTextItem[] = meeting?.decisionsItems?.length
+  const decisions = (selectedSummary?.decisions as string[])?.length
+    ? (selectedSummary.decisions as string[])
+    : summaryLanguage === 'vi'
+      ? (meeting?.decisionsText?.length ? meeting.decisionsText : meeting?.decisions || [])
+      : [];
+  const decisionItems: AnchoredTextItem[] = meeting?.decisionsItems?.length && summaryLanguage === 'vi'
     ? meeting.decisionsItems
     : decisions.map((text) => ({ text }));
-  const risks = meeting?.risksText || [];
-  const openQuestions = meeting?.openQuestionsText || [];
-  const timelineHighlights = meeting?.timelineHighlightsText || [];
-  const timelineHighlightItems: AnchoredTextItem[] = meeting?.timelineHighlightsItems?.length
+  const risks = (selectedSummary?.risks as string[])?.length
+    ? (selectedSummary.risks as string[])
+    : summaryLanguage === 'vi' ? (meeting?.risksText || []) : [];
+  const openQuestions = (selectedSummary?.openQuestions as string[])?.length
+    ? (selectedSummary.openQuestions as string[])
+    : summaryLanguage === 'vi' ? (meeting?.openQuestionsText || []) : [];
+  const timelineHighlights = (selectedSummary?.timelineHighlights as string[])?.length
+    ? (selectedSummary.timelineHighlights as string[])
+    : summaryLanguage === 'vi' ? (meeting?.timelineHighlightsText || []) : [];
+  const timelineHighlightItems: AnchoredTextItem[] = meeting?.timelineHighlightsItems?.length && summaryLanguage === 'vi'
     ? meeting.timelineHighlightsItems
     : timelineHighlights.map((text) => ({ text }));
-  const speakerSummaries = meeting?.speakerSummariesText || [];
+  const speakerSummaries = (selectedSummary?.speakerSummaries as string[])?.length
+    ? (selectedSummary.speakerSummaries as string[])
+    : summaryLanguage === 'vi' ? (meeting?.speakerSummariesText || []) : [];
   const transcript = useMemo(() => {
     if (!meeting) return '';
     return meeting.transcriptContent || meeting.transcripts[0]?.content || '';
@@ -388,7 +459,8 @@ const MeetingDetail: React.FC = () => {
         : transcriptGroups.filter((group) => group.speakerLabel === selectedTranscriptSpeaker),
     [selectedTranscriptSpeaker, transcriptGroups],
   );
-  const summary = meeting?.meetingSummaryText || meeting?.summary || '';
+  const summary = selectedSummary?.meetingSummary
+    || (summaryLanguage === 'vi' ? (meeting?.meetingSummaryText || meeting?.summary || '') : '');
   const summaryFailed = meeting?.summaryStatus === 'FAILED';
   const summaryErrorText = meeting?.summaryErrorText || 'AgentRouter không tạo được AI Notes. Kiểm tra token, model hoặc log backend.';
   const currentLanguage = meeting?.transcriptLanguage || summaryLanguage;
@@ -482,6 +554,25 @@ const MeetingDetail: React.FC = () => {
     setPendingTranscriptAnchor(null);
   }, [pendingTranscriptAnchor, transcriptGroups, isAudioReady, hasMeetingAudio]);
 
+  useEffect(() => {
+    if (!languageInitialized && meeting?.transcriptLanguage) {
+      setSummaryLanguage(meeting.transcriptLanguage);
+      setLanguageInitialized(true);
+    }
+  }, [meeting?.transcriptLanguage, languageInitialized]);
+
+  useEffect(() => {
+    if (!exportLanguageInitialized) {
+      const nextLanguage = (meeting?.transcriptLanguage || meeting?.summaries?.[0]?.language || 'vi') as ExportLanguage;
+      if (['vi', 'en', 'ja', 'zh', 'ko'].includes(nextLanguage)) {
+        setExportLanguage(nextLanguage);
+      }
+      if (meeting?.transcriptLanguage || meeting?.summaries?.[0]?.language) {
+        setExportLanguageInitialized(true);
+      }
+    }
+  }, [meeting?.transcriptLanguage, meeting?.summaries, exportLanguageInitialized]);
+
   const nowMs = Date.now();
   const startMs = meeting ? new Date(meeting.startTime).getTime() : nowMs;
   const isUpcomingMeeting = meeting
@@ -555,8 +646,8 @@ const MeetingDetail: React.FC = () => {
       } else {
         showToast.error("Tạo AI Notes thất bại. Kiểm tra log backend.");
       }
-    } catch (err: any) {
-      showToast.error(err?.response?.data?.detail || "Lỗi khi tạo lại AI Notes");
+    } catch (err: unknown) {
+      showToast.error(getApiErrorDetail(err, "Lỗi khi tạo lại AI Notes"));
     } finally {
       setIsRegenerating(false);
     }
@@ -573,8 +664,8 @@ const MeetingDetail: React.FC = () => {
       setSpeakerNameInput('');
       await query.refetch();
       showToast.success("Đã cập nhật tên người nói");
-    } catch (err: any) {
-      showToast.error(err?.response?.data?.detail || "Không cập nhật được tên người nói");
+    } catch (err: unknown) {
+      showToast.error(getApiErrorDetail(err, "Không cập nhật được tên người nói"));
     }
   };
 
@@ -692,9 +783,9 @@ const MeetingDetail: React.FC = () => {
   }
 
   const tabs: Array<{ key: DetailTab; label: string; icon: React.ReactNode }> = [
-    { key: 'summary', label: 'Tóm tắt', icon: <FileText size={16} /> },
+    { key: 'summary', label: L.summary, icon: <FileText size={16} /> },
     { key: 'transcript', label: 'Bản ghi', icon: <MessageSquare size={16} /> },
-    { key: 'actions', label: 'Việc cần làm', icon: <CheckCircle2 size={16} /> },
+    { key: 'actions', label: L.actions, icon: <CheckCircle2 size={16} /> },
     { key: 'ai-notes', label: 'AI Notes', icon: <Sparkles size={16} /> },
   ];
 
@@ -708,8 +799,8 @@ const MeetingDetail: React.FC = () => {
       query.refetch();
       setIsEditTitleOpen(false);
       showToast.success('Đã cập nhật tiêu đề');
-    } catch (err: any) {
-      showToast.error(err?.response?.data?.detail || 'Không thể cập nhật cuộc họp');
+    } catch (err: unknown) {
+      showToast.error(getApiErrorDetail(err, 'Không thể cập nhật cuộc họp'));
     }
   };
 
@@ -719,16 +810,19 @@ const MeetingDetail: React.FC = () => {
     try {
       await api.delete(`/api/meetings/${meeting.id}`);
       navigate('/meetings');
-    } catch (err: any) {
-      window.alert(err?.response?.data?.detail || 'Khong the xoa cuoc hop');
+    } catch (err: unknown) {
+      window.alert(getApiErrorDetail(err, 'Khong the xoa cuoc hop'));
     }
   };
-  const handleExportMeeting = async (format: 'pdf' | 'docx') => {
+  const handleExportMeeting = async () => {
     if (!meeting) return;
+    setIsExporting(true);
     try {
       const res = await api.post('/api/export/generate', {
         meeting_id: meeting.id,
-        format,
+        format: exportFormat,
+        language: exportLanguage,
+        include_transcript_appendix: includeTranscriptAppendix,
         include_transcript: true,
         include_summary: true,
         include_action_items: true,
@@ -740,8 +834,21 @@ const MeetingDetail: React.FC = () => {
       a.download = res.data.filename;
       a.click();
       window.URL.revokeObjectURL(url);
-    } catch (err: any) {
-      showToast.error(err?.response?.data?.detail || 'Xuất file thất bại. Vui lòng thử lại.');
+      setIsExportModalOpen(false);
+      showToast.success('Đã tạo biên bản để tải xuống');
+    } catch (err: unknown) {
+      const axiosError = err as AxiosError<{ detail?: string }>;
+      const status = axiosError.response?.status;
+      const detail = axiosError.response?.data?.detail;
+      const message =
+        status === 404
+          ? 'Không tìm thấy cuộc họp hoặc file export.'
+          : status === 403
+            ? 'Bạn không có quyền xuất biên bản cuộc họp này.'
+            : detail || 'Xuất file thất bại. Vui lòng thử lại.';
+      showToast.error(message);
+    } finally {
+      setIsExporting(false);
     }
   };
   const handleCreateActionItem = async (event: React.FormEvent) => {
@@ -764,8 +871,8 @@ const MeetingDetail: React.FC = () => {
       setShowAdvancedCreateFields(false);
       await query.refetch();
       showToast.success('Đã tạo việc cần làm');
-    } catch (err: any) {
-      showToast.error(err?.response?.data?.detail || 'Không thể tạo việc cần làm');
+    } catch (err: unknown) {
+      showToast.error(getApiErrorDetail(err, 'Không thể tạo việc cần làm'));
     } finally {
       setIsCreatingAction(false);
     }
@@ -777,8 +884,8 @@ const MeetingDetail: React.FC = () => {
       await query.refetch();
       showToast.success('Đã cập nhật việc cần làm');
       return true;
-    } catch (err: any) {
-      showToast.error(err?.response?.data?.detail || 'Không thể cập nhật việc cần làm');
+    } catch (err: unknown) {
+      showToast.error(getApiErrorDetail(err, 'Không thể cập nhật việc cần làm'));
       return false;
     }
   };
@@ -816,8 +923,8 @@ const MeetingDetail: React.FC = () => {
       }
       await query.refetch();
       showToast.success('Đã xóa việc cần làm');
-    } catch (err: any) {
-      showToast.error(err?.response?.data?.detail || 'Không thể xóa việc cần làm');
+    } catch (err: unknown) {
+      showToast.error(getApiErrorDetail(err, 'Không thể xóa việc cần làm'));
     }
   };
 
@@ -826,8 +933,8 @@ const MeetingDetail: React.FC = () => {
       await api.patch(`/api/action-items/${item.id}/assignees/me`, { status });
       await query.refetch();
       showToast.success('Đã cập nhật tiến độ của bạn');
-    } catch (err: any) {
-      showToast.error(err?.response?.data?.detail || 'Không thể cập nhật tiến độ');
+    } catch (err: unknown) {
+      showToast.error(getApiErrorDetail(err, 'Không thể cập nhật tiến độ'));
     }
   };
 
@@ -923,19 +1030,11 @@ const MeetingDetail: React.FC = () => {
             )}
             <button
               disabled={isUpcomingMeeting}
-              onClick={() => handleExportMeeting('pdf')}
+              onClick={() => setIsExportModalOpen(true)}
               className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-sm font-bold text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800"
             >
               <Download size={16} />
-              PDF
-            </button>
-            <button
-              disabled={isUpcomingMeeting}
-              onClick={() => handleExportMeeting('docx')}
-              className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-sm font-bold text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800"
-            >
-              <Download size={16} />
-              DOCX
+              Xuất biên bản
             </button>
             <button
               onClick={() => {
@@ -1064,7 +1163,7 @@ const MeetingDetail: React.FC = () => {
                   {activeTab === 'summary' && (
                     <motion.div key="summary" initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 10 }} className="space-y-8">
                       <section>
-                        <h3 className="mb-4 text-lg font-black text-gray-900 dark:text-slate-100">Tóm tắt cuộc họp</h3>
+                        <h3 className="mb-4 text-lg font-black text-gray-900 dark:text-slate-100">{L.meetingSummary}</h3>
                         <div className="rounded-2xl border border-primary-100 bg-primary-50/30 p-6 leading-relaxed text-gray-800 dark:border-primary-900/20 dark:bg-primary-900/10 dark:text-slate-300">
                           {summary || 'Chưa có tóm tắt cho cuộc họp này.'}
                         </div>
@@ -1074,7 +1173,7 @@ const MeetingDetail: React.FC = () => {
                         <section>
                           <h3 className="mb-4 flex items-center gap-2 text-lg font-black text-gray-900 dark:text-slate-100">
                             <Key size={20} className="text-blue-500" />
-                            Điểm chính thảo luận
+                            {L.keyPointsDesc}
                           </h3>
                           <div className="grid gap-3">
                             {keyPointItems.map((point, index) => (
@@ -1104,7 +1203,7 @@ const MeetingDetail: React.FC = () => {
                         <section>
                           <h3 className="mb-4 flex items-center gap-2 text-lg font-black text-gray-900 dark:text-slate-100">
                             <Target size={20} className="text-green-500" />
-                            Quyết định đã thống nhất
+                            {L.decisionsDesc}
                           </h3>
                           <div className="space-y-3">
                             {decisionItems.map((decision, index) => (
@@ -1217,6 +1316,22 @@ const MeetingDetail: React.FC = () => {
                               <p className="whitespace-pre-wrap text-sm leading-7 text-gray-700 dark:text-slate-300">
                                 {group.texts.join(' ')}
                               </p>
+                              {group.corrections.length > 0 && (
+                                <div className="mt-2 flex flex-wrap gap-1.5">
+                                  {group.corrections
+                                    .filter((c) => c.source === 'glossary')
+                                    .map((c, idx) => (
+                                      <span
+                                        key={idx}
+                                        className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700 ring-1 ring-amber-200 dark:bg-amber-900/20 dark:text-amber-300 dark:ring-amber-800"
+                                        title={`Glossary: "${c.wrong}" → "${c.right}"`}
+                                      >
+                                        <BookOpen size={11} />
+                                        {c.wrong} → {c.right}
+                                      </span>
+                                    ))}
+                                </div>
+                              )}
                             </div>
                           ))}
                         </div>
@@ -1243,7 +1358,7 @@ const MeetingDetail: React.FC = () => {
                       {/* Clean Header & Filters */}
                       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between px-1">
                         <div className="flex items-center gap-3">
-                          <h3 className="text-xl font-black text-gray-900 tracking-tight">Việc cần làm</h3>
+                          <h3 className="text-xl font-black text-gray-900 tracking-tight">{L.actions}</h3>
                           <span className="flex h-6 min-w-[24px] items-center justify-center rounded-lg bg-gray-100 px-2 text-[11px] font-black text-gray-500 shadow-inner">
                             {actionItems.length}
                           </span>
@@ -1343,7 +1458,7 @@ const MeetingDetail: React.FC = () => {
                           AI Notes
                         </h3>
                         <p className="mt-1 text-xs font-semibold uppercase tracking-widest text-gray-400">
-                          {transcriptStatusLabel} / {aiNotesStatusLabel} / {currentLanguage || 'vi'} / {keyPoints.length} điểm chính / {decisions.length} quyết định / {actionItems.length} việc cần làm
+                          {transcriptStatusLabel} / {aiNotesStatusLabel} / {currentLanguage || 'vi'} / {keyPoints.length} {L.keyPoints} / {decisions.length} {L.decisions} / {actionItems.length} {L.actions}
                         </p>
                       </div>
 
@@ -1402,7 +1517,7 @@ const MeetingDetail: React.FC = () => {
                             <section className="rounded-2xl border border-primary-100 bg-primary-50/30 p-5 dark:border-primary-900/20 dark:bg-primary-900/10">
                               <h4 className="mb-3 flex items-center gap-2 text-sm font-black uppercase tracking-widest text-primary-700 dark:text-primary-300">
                                 <FileText size={16} />
-                                Tóm tắt
+                                {L.summary}
                               </h4>
                               <p className="max-w-3xl whitespace-pre-line text-sm leading-7 text-gray-800 dark:text-slate-300">{summary}</p>
                             </section>
@@ -1412,7 +1527,7 @@ const MeetingDetail: React.FC = () => {
                             <section className="space-y-3">
                               <h4 className="flex items-center gap-2 text-sm font-black uppercase tracking-widest text-blue-600 dark:text-blue-300">
                                 <Key size={16} />
-                                Điểm chính
+                                {L.keyPoints}
                               </h4>
                               {keyPointItems.map((point, index) => (
                                 <div key={`${point.text}-${index}`} className="flex items-start gap-3 rounded-xl border border-gray-100 bg-gray-50/60 p-4 dark:border-slate-800 dark:bg-slate-800/30">
@@ -1440,7 +1555,7 @@ const MeetingDetail: React.FC = () => {
                             <section className="space-y-3">
                               <h4 className="flex items-center gap-2 text-sm font-black uppercase tracking-widest text-emerald-600 dark:text-emerald-300">
                                 <Target size={16} />
-                                Quyết định
+                                {L.decisions}
                               </h4>
                               {decisionItems.map((decision, index) => (
                                 <div key={`${decision.text}-${index}`} className="flex items-start gap-3 rounded-xl border border-emerald-100 bg-emerald-50/40 p-4 dark:border-emerald-900/20 dark:bg-emerald-900/10">
@@ -1466,7 +1581,7 @@ const MeetingDetail: React.FC = () => {
                             <section className="space-y-3">
                               <h4 className="flex items-center gap-2 text-sm font-black uppercase tracking-widest text-violet-600 dark:text-violet-300">
                                 <Clock size={16} />
-                                Dòng thời gian nổi bật
+                                {L.timeline}
                               </h4>
                               {timelineHighlightItems.map((highlight, index) => (
                                 <div key={`${highlight.text}-${index}`} className="flex items-start gap-3 rounded-xl border border-violet-100 bg-violet-50/40 p-4 dark:border-violet-900/20 dark:bg-violet-900/10">
@@ -1492,7 +1607,7 @@ const MeetingDetail: React.FC = () => {
                             <section className="space-y-3">
                               <h4 className="flex items-center gap-2 text-sm font-black uppercase tracking-widest text-sky-600 dark:text-sky-300">
                                 <Users size={16} />
-                                Theo người nói
+                                {L.speakers}
                               </h4>
                               {speakerSummaries.map((item, index) => (
                                 <div key={`${item}-${index}`} className="rounded-xl border border-sky-100 bg-sky-50/40 p-4 dark:border-sky-900/20 dark:bg-sky-900/10">
@@ -1508,7 +1623,7 @@ const MeetingDetail: React.FC = () => {
                                 <div className="space-y-3">
                                   <h4 className="flex items-center gap-2 text-sm font-black uppercase tracking-widest text-red-600 dark:text-red-300">
                                     <AlertCircle size={16} />
-                                    Rủi ro / điểm nghẽn
+                                    {L.risks}
                                   </h4>
                                   {risks.map((risk, index) => (
                                     <div key={`${risk}-${index}`} className="rounded-xl border border-red-100 bg-red-50/40 p-4 dark:border-red-900/20 dark:bg-red-900/10">
@@ -1522,7 +1637,7 @@ const MeetingDetail: React.FC = () => {
                                 <div className="space-y-3">
                                   <h4 className="flex items-center gap-2 text-sm font-black uppercase tracking-widest text-orange-600 dark:text-orange-300">
                                     <MessageSquare size={16} />
-                                    Câu hỏi mở
+                                    {L.questions}
                                   </h4>
                                   {openQuestions.map((question, index) => (
                                     <div key={`${question}-${index}`} className="rounded-xl border border-orange-100 bg-orange-50/40 p-4 dark:border-orange-900/20 dark:bg-orange-900/10">
@@ -1538,7 +1653,7 @@ const MeetingDetail: React.FC = () => {
                             <section className="space-y-3">
                               <h4 className="flex items-center gap-2 text-sm font-black uppercase tracking-widest text-amber-600 dark:text-amber-300">
                                 <CheckCircle2 size={16} />
-                                Việc cần làm
+                                {L.actions}
                               </h4>
                               {actionItems.map((item) => (
                                 <div key={item.id} className="rounded-xl border border-gray-100 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
@@ -1734,6 +1849,95 @@ const MeetingDetail: React.FC = () => {
       onClose={() => setIsEditTitleOpen(false)}
       onSave={handleSaveTitle}
     />
+    <Modal
+      isOpen={isExportModalOpen}
+      onClose={() => !isExporting && setIsExportModalOpen(false)}
+      title="Xuất biên bản cuộc họp"
+      subtitle="Chọn định dạng, ngôn ngữ và cách đính kèm transcript."
+      size="md"
+    >
+      <div className="space-y-6">
+        <div className="space-y-3">
+          <p className="text-xs font-black uppercase tracking-widest text-gray-400">Định dạng</p>
+          <div className="grid grid-cols-2 gap-3">
+            {([
+              { value: 'pdf', label: 'PDF', desc: 'Phù hợp để in và gửi ngay' },
+              { value: 'docx', label: 'DOCX', desc: 'Dễ chỉnh sửa sau khi tải' },
+            ] as Array<{ value: ExportFormat; label: string; desc: string }>).map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                onClick={() => setExportFormat(option.value)}
+                className={`rounded-2xl border px-4 py-4 text-left transition ${
+                  exportFormat === option.value
+                    ? 'border-primary-500 bg-primary-50 text-primary-700 dark:bg-primary-900/20 dark:text-primary-200'
+                    : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800'
+                }`}
+              >
+                <p className="text-sm font-black">{option.label}</p>
+                <p className="mt-1 text-xs leading-5 opacity-80">{option.desc}</p>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="space-y-3">
+          <label className="text-xs font-black uppercase tracking-widest text-gray-400" htmlFor="export-language">
+            Ngôn ngữ biên bản
+          </label>
+          <select
+            id="export-language"
+            value={exportLanguage}
+            onChange={(event) => setExportLanguage(event.target.value as ExportLanguage)}
+            className="w-full rounded-2xl border border-gray-200 bg-white px-4 py-3 text-sm font-bold text-gray-700 outline-none transition focus:border-primary-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+          >
+            <option value="vi">Tiếng Việt</option>
+            <option value="en">English</option>
+            <option value="ja">日本語</option>
+            <option value="zh">中文</option>
+            <option value="ko">한국어</option>
+          </select>
+          <p className="text-xs leading-5 text-gray-500 dark:text-slate-400">
+            Hệ thống ưu tiên nội dung đúng ngôn ngữ đã chọn, nếu thiếu sẽ fallback sang dữ liệu hiện có.
+          </p>
+        </div>
+
+        <label className="flex items-start gap-3 rounded-2xl border border-gray-200 bg-gray-50/80 px-4 py-3 dark:border-slate-700 dark:bg-slate-800/40">
+          <input
+            type="checkbox"
+            checked={includeTranscriptAppendix}
+            onChange={(event) => setIncludeTranscriptAppendix(event.target.checked)}
+            className="mt-1 h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+          />
+          <div>
+            <p className="text-sm font-bold text-gray-800 dark:text-slate-100">Đính kèm phụ lục transcript</p>
+            <p className="mt-1 text-xs leading-5 text-gray-500 dark:text-slate-400">
+              Transcript toàn văn sẽ được đưa xuống phần phụ lục, không chen vào thân chính của biên bản.
+            </p>
+          </div>
+        </label>
+
+        <div className="flex justify-end gap-3">
+          <button
+            type="button"
+            onClick={() => setIsExportModalOpen(false)}
+            disabled={isExporting}
+            className="rounded-xl border border-gray-200 px-4 py-2.5 text-sm font-bold text-gray-600 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+          >
+            Hủy
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleExportMeeting()}
+            disabled={isExporting || !meeting}
+            className="inline-flex items-center gap-2 rounded-xl bg-primary-600 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {isExporting ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />}
+            {isExporting ? 'Đang tạo biên bản...' : 'Tải xuống'}
+          </button>
+        </div>
+      </div>
+    </Modal>
     </>
   );
 };

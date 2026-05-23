@@ -351,6 +351,8 @@ class Meeting(MeetingBase, TimestampMixin):
     group_id: Optional[str] = None
     created_by: str
     participants: List[MeetingParticipant] = Field(default_factory=list)
+    attended_participants: List[MeetingParticipant] = Field(default_factory=list)
+    attended_participants_count: int = 0
     group_name: Optional[str] = None
     organization_name: Optional[str] = None
     summary_text: Optional[str] = None
@@ -423,6 +425,7 @@ class MeetingSpeakerMapping(BaseSchema):
     speaker_label: str
     display_name: str
     user_id: Optional[str] = None
+    user: Optional[User] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 

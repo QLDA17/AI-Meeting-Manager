@@ -1,10 +1,12 @@
 import pytest
 from unittest.mock import patch
+from io import BytesIO
 from pathlib import Path
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
+from docx import Document
 from src.api.main import app
 from src.api.database import get_db, Base
 from src.api import models
@@ -370,3 +372,183 @@ def test_finalize_meeting_router_failure_marks_summary_failed(client, auth_conte
     assert detail["key_points_text"] == []
     assert detail["decisions_text"] == []
     assert detail["action_items"] == []
+
+
+def test_export_meeting_docx_minutes_with_transcript_appendix(client, auth_context):
+    create_response = client.post(
+        "/api/meetings",
+        headers=auth_context["headers"],
+        json=meeting_payload(auth_context, title="Export Minutes", status="completed"),
+    )
+    meeting_id = create_response.json()["id"]
+
+    db = TestingSessionLocal()
+    try:
+        user = db.query(models.User).filter(models.User.email == "test@example.com").first()
+        db.add(
+            models.MeetingParticipant(
+                meeting_id=meeting_id,
+                email="alice@example.com",
+                name="Alice Nguyen",
+                role="PARTICIPANT",
+            )
+        )
+        transcript = models.Transcript(
+            meeting_id=meeting_id,
+            content="Chung ta thong nhat rollout he thong moi.",
+            language="vi",
+            processing_status="COMPLETED",
+            stt_provider="deepgram",
+        )
+        db.add(transcript)
+        db.flush()
+        db.add(
+            models.TranscriptSegment(
+                transcript_id=transcript.id,
+                speaker_label="Speaker_01",
+                start_time=0,
+                end_time=5,
+                text="Chung ta thong nhat rollout he thong moi.",
+                language="vi",
+            )
+        )
+        summary = models.MeetingSummary(
+            meeting_id=meeting_id,
+            language="vi",
+            meeting_summary="Cuoc hop thong nhat rollout he thong moi.",
+            key_points=["Thong nhat timeline", "Chot owner"],
+            decisions=["Go live vao thu Hai"],
+            action_items=["Alice Nguyen cap nhat checklist"],
+            processing_status="COMPLETED",
+        )
+        db.add(summary)
+        db.flush()
+        db.add(
+            models.ActionItem(
+                meeting_id=meeting_id,
+                summary_id=summary.id,
+                title="Cap nhat checklist rollout",
+                created_by=user.id,
+                assigned_email="alice@example.com",
+                status="PENDING",
+                priority="HIGH",
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.post(
+        "/api/export/generate",
+        headers=auth_context["headers"],
+        json={
+            "meeting_id": meeting_id,
+            "format": "docx",
+            "language": "vi",
+            "include_transcript_appendix": True,
+            "include_summary": True,
+            "include_action_items": True,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["filename"].startswith("bien-ban-export-minutes-")
+    assert meeting_id in payload["filename"]
+    assert payload["filename"].endswith(".docx")
+
+    download_response = client.get(payload["download_url"], headers=auth_context["headers"])
+    assert download_response.status_code == 200
+
+    document = Document(BytesIO(download_response.content))
+    text = "\n".join(paragraph.text for paragraph in document.paragraphs)
+    assert "BIÊN BẢN CUỘC HỌP" in text
+    assert "Export Minutes" in text
+    assert "Tóm tắt cuộc họp" in text
+    assert "PHỤ LỤC A. TRANSCRIPT CUỘC HỌP" in text
+    assert "Chung ta thong nhat rollout he thong moi." in text
+
+
+def test_export_meeting_pdf_without_summary_still_succeeds(client, auth_context):
+    create_response = client.post(
+        "/api/meetings",
+        headers=auth_context["headers"],
+        json=meeting_payload(auth_context, title="PDF Export", status="completed"),
+    )
+    meeting_id = create_response.json()["id"]
+
+    response = client.post(
+        "/api/export/generate",
+        headers=auth_context["headers"],
+        json={
+            "meeting_id": meeting_id,
+            "format": "pdf",
+            "language": "en",
+            "include_transcript_appendix": False,
+            "include_summary": True,
+            "include_action_items": True,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["filename"].endswith(".pdf")
+
+    download_response = client.get(payload["download_url"], headers=auth_context["headers"])
+    assert download_response.status_code == 200
+    assert download_response.headers["content-type"] == "application/pdf"
+    assert download_response.content.startswith(b"%PDF")
+
+
+def test_export_download_rejects_invalid_filename_format(client, auth_context):
+    response = client.get(
+        "/api/export/download/bien-ban-cuoc-hop-not-a-real-id-20260523_161753.pdf",
+        headers=auth_context["headers"],
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Invalid filename"
+
+
+def test_export_placeholder_title_uses_clean_fallback_and_creator_participant(client, auth_context):
+    create_response = client.post(
+        "/api/meetings",
+        headers=auth_context["headers"],
+        json=meeting_payload(
+            auth_context,
+            title="cuộc họp",
+            status="completed",
+            scheduled_start="2026-05-23T09:00:00Z",
+        ),
+    )
+    meeting_id = create_response.json()["id"]
+
+    response = client.post(
+        "/api/export/generate",
+        headers=auth_context["headers"],
+        json={
+            "meeting_id": meeting_id,
+            "format": "docx",
+            "language": "vi",
+            "include_transcript_appendix": False,
+            "include_summary": True,
+            "include_action_items": True,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["filename"].startswith("bien-ban-chua-cap-nhat-ten-")
+    assert meeting_id in payload["filename"]
+
+    download_response = client.get(payload["download_url"], headers=auth_context["headers"])
+    assert download_response.status_code == 200
+
+    document = Document(BytesIO(download_response.content))
+    text = "\n".join(paragraph.text for paragraph in document.paragraphs)
+    assert "Chưa cập nhật tên cuộc họp" in text
+    assert "Bắt đầu: 23/05/2026 09:00" in text
+    assert "Kết thúc: Chưa có dữ liệu" in text
+    assert "testuser - test@example.com (Người tạo cuộc họp)" in text
+    assert "HOST" not in text
+    assert "N/A" not in text
