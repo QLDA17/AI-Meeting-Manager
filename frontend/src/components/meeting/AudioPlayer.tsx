@@ -133,7 +133,7 @@ const AudioPlayer = forwardRef<AudioPlayerHandle, AudioPlayerProps>(({ src, onTi
   if (!src) return null;
 
   return (
-    <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+    <div className="rounded-2xl border border-gray-200/80 bg-white/95 p-4 shadow-md backdrop-blur-md dark:border-slate-800/85 dark:bg-slate-900/95 transition-all">
       {error ? (
         <div className="flex items-center gap-3 py-3 text-center">
           <div className="flex-1">
