@@ -392,8 +392,6 @@ def create_invitation_payload(
             source_type="invitation",
             source_id=invitation.id,
         )
-    elif not email_sent:
-        raise HTTPException(status_code=500, detail="Failed to send invitation email")
     append_admin_audit_log(
         actor=current_user.username,
         action="CREATE_ORG_INVITATION" if not target_user else "CREATE_REGISTERED_USER_INVITATION",
@@ -402,13 +400,65 @@ def create_invitation_payload(
     )
 
     return {
-        "message": "Invitation email sent successfully",
+        "message": "Invitation created successfully" if not email_sent else "Invitation email sent successfully",
         "email": invite_email,
         "organization_id": inv_data.organization_id,
         "expires_at": expires_at,
         "invitation_id": invitation.id,
         "emailSent": email_sent,
         "alreadyPending": False,
+    }
+
+
+def create_bulk_invitations_payload(
+    bulk_data: schemas.BulkInvitationCreate,
+    db: Session,
+    current_user: models.User,
+) -> Dict[str, Any]:
+    auth.require_org_admin(db, current_user, bulk_data.organization_id)
+    results = []
+    invited_count = 0
+    skipped_count = 0
+    error_count = 0
+
+    for raw_email in bulk_data.emails:
+        email = raw_email.strip().lower()
+        if not email or "@" not in email:
+            results.append({"email": raw_email, "status": "error", "message": "Invalid email format", "invitation_id": None})
+            error_count += 1
+            continue
+
+        try:
+            inv_data = schemas.InvitationCreate(
+                email=email,
+                organization_id=bulk_data.organization_id,
+                group_id=bulk_data.group_id,
+                role=bulk_data.role,
+            )
+            result = create_invitation_payload(inv_data, db, current_user)
+            if result.get("alreadyPending"):
+                results.append({"email": email, "status": "already_pending", "message": "Invitation already pending", "invitation_id": result.get("invitation_id")})
+                skipped_count += 1
+            else:
+                results.append({"email": email, "status": "invited", "message": "Invitation created", "invitation_id": result.get("invitation_id")})
+                invited_count += 1
+        except HTTPException as exc:
+            if exc.status_code == 409:
+                results.append({"email": email, "status": "already_member", "message": "Already a member", "invitation_id": None})
+                skipped_count += 1
+            else:
+                results.append({"email": email, "status": "error", "message": exc.detail or "Failed", "invitation_id": None})
+                error_count += 1
+        except Exception as exc:
+            results.append({"email": email, "status": "error", "message": str(exc), "invitation_id": None})
+            error_count += 1
+
+    return {
+        "results": results,
+        "total": len(bulk_data.emails),
+        "invited": invited_count,
+        "skipped": skipped_count,
+        "errors": error_count,
     }
 
 

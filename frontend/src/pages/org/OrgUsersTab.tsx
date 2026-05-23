@@ -319,6 +319,15 @@ interface SearchableUser {
   avatarUrl?: string;
 }
 
+interface BulkResult {
+  email: string;
+  status: string;
+  message: string;
+  invitation_id?: string;
+}
+
+const isValidEmail = (email: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+
 const InviteModal: React.FC<{ orgId: string; onClose: () => void; onInvited: () => void }> = ({
   orgId,
   onClose,
@@ -326,18 +335,17 @@ const InviteModal: React.FC<{ orgId: string; onClose: () => void; onInvited: () 
 }) => {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchableUser[]>([]);
-  const [selectedUser, setSelectedUser] = useState<SearchableUser | null>(null);
+  const [tags, setTags] = useState<string[]>([]);
   const [role, setRole] = useState<'member' | 'viewer' | 'org-admin'>('member');
   const [loading, setLoading] = useState(false);
   const [searching, setSearching] = useState(false);
   const [success, setSuccess] = useState(false);
-  const [emailSent, setEmailSent] = useState(false);
-  const [alreadyPending, setAlreadyPending] = useState(false);
+  const [bulkResults, setBulkResults] = useState<BulkResult[]>([]);
   const [error, setError] = useState('');
 
   useEffect(() => {
     const term = query.trim();
-    if (selectedUser || term.length < 2) {
+    if (term.length < 2) {
       setResults([]);
       setSearching(false);
       return;
@@ -366,15 +374,6 @@ const InviteModal: React.FC<{ orgId: string; onClose: () => void; onInvited: () 
         }
       } catch (err: any) {
         if (!cancelled) {
-          const detail = err.response?.data?.detail;
-          const status = err.response?.status;
-          setError(
-            detail
-              ? `${detail}`
-              : status
-                ? `Không tìm được người dùng. API trả lỗi ${status}.`
-                : 'Không tìm được người dùng. Kiểm tra backend đã reload chưa.',
-          );
           setResults([]);
         }
       } finally {
@@ -388,25 +387,64 @@ const InviteModal: React.FC<{ orgId: string; onClose: () => void; onInvited: () 
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [orgId, query, selectedUser]);
+  }, [orgId, query]);
+
+  const addTag = (email: string) => {
+    const normalized = email.trim().toLowerCase();
+    if (!normalized) return;
+    if (!isValidEmail(normalized)) {
+      setError(`"${normalized}" không phải email hợp lệ`);
+      return;
+    }
+    if (tags.includes(normalized)) {
+      setError('Email này đã được thêm');
+      return;
+    }
+    setTags((prev) => [...prev, normalized]);
+    setQuery('');
+    setResults([]);
+    setError('');
+  };
+
+  const removeTag = (email: string) => {
+    setTags((prev) => prev.filter((t) => t !== email));
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter' || e.key === ',') {
+      e.preventDefault();
+      const val = query.trim().replace(/,+$/, '');
+      if (val) addTag(val);
+    } else if (e.key === 'Backspace' && !query && tags.length > 0) {
+      setTags((prev) => prev.slice(0, -1));
+    }
+  };
+
+  const handleSelectUser = (user: SearchableUser) => {
+    addTag(user.email);
+    setResults([]);
+  };
 
   const handleInvite = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    if (!selectedUser) {
-      setError('Vui lòng chọn một user đã đăng ký trong danh sách.');
+    const finalEmails = [...tags];
+    if (query.trim() && isValidEmail(query.trim())) {
+      finalEmails.push(query.trim().toLowerCase());
+    }
+    if (finalEmails.length === 0) {
+      setError('Vui lòng nhập ít nhất một email');
       return;
     }
 
     setLoading(true);
     setError('');
     try {
-      const response = await api.post('/api/invitations', {
-        email: selectedUser.email,
+      const response = await api.post(`/api/organizations/${orgId}/invitations/bulk`, {
+        emails: finalEmails,
         organization_id: orgId,
         role,
       });
-      setEmailSent(Boolean(response.data?.emailSent));
-      setAlreadyPending(Boolean(response.data?.alreadyPending));
+      setBulkResults(response.data?.results || []);
       setSuccess(true);
       onInvited();
     } catch (err: any) {
@@ -416,12 +454,16 @@ const InviteModal: React.FC<{ orgId: string; onClose: () => void; onInvited: () 
     }
   };
 
+  const invitedCount = bulkResults.filter((r) => r.status === 'invited').length;
+  const skippedCount = bulkResults.filter((r) => r.status === 'already_member' || r.status === 'already_pending').length;
+  const errorCount = bulkResults.filter((r) => r.status === 'error').length;
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
       <motion.div
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}
-        className="w-full max-w-md rounded-[2rem] bg-white p-8 shadow-2xl dark:bg-slate-900"
+        className="w-full max-w-lg rounded-[2rem] bg-white p-8 shadow-2xl dark:bg-slate-900"
       >
         <div className="mb-6 flex items-center justify-between">
           <h3 className="text-xl font-bold text-gray-900 dark:text-white">Mời thành viên</h3>
@@ -432,86 +474,96 @@ const InviteModal: React.FC<{ orgId: string; onClose: () => void; onInvited: () 
           <form onSubmit={handleInvite} className="space-y-4">
             {error && <div className="rounded-lg bg-red-50 p-3 text-xs font-bold text-red-600">{error}</div>}
             <div className="space-y-2">
-              <label className="ml-1 text-[10px] font-black uppercase tracking-widest text-slate-500">Tìm Gmail/user đã đăng ký</label>
+              <label className="ml-1 text-[10px] font-black uppercase tracking-widest text-slate-500">
+                Nhập email hoặc tìm user đã đăng ký (Enter để thêm nhiều)
+              </label>
+
+              {/* Tag chips */}
+              {tags.length > 0 && (
+                <div className="flex flex-wrap gap-2 rounded-xl border border-gray-100 bg-gray-50 p-3 dark:border-slate-800 dark:bg-slate-800/60">
+                  {tags.map((email) => (
+                    <span
+                      key={email}
+                      className="inline-flex items-center gap-1.5 rounded-full bg-primary-100 px-3 py-1 text-xs font-semibold text-primary-700 dark:bg-primary-900/30 dark:text-primary-300"
+                    >
+                      {email}
+                      <button
+                        type="button"
+                        onClick={() => removeTag(email)}
+                        className="ml-0.5 rounded-full p-0.5 hover:bg-primary-200 dark:hover:bg-primary-800"
+                      >
+                        &times;
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+
+              {/* Input */}
               <input
                 autoFocus
                 type="text"
-                placeholder="Nhập Gmail hoặc tên người dùng..."
+                placeholder="Nhập email rồi nhấn Enter..."
                 className="h-12 w-full rounded-xl border-gray-100 bg-gray-50 px-4 text-sm focus:border-primary-500 focus:bg-white focus:ring-4 focus:ring-primary-500/10 dark:border-slate-800 dark:bg-slate-800 dark:text-white"
-                value={selectedUser ? selectedUser.email : query}
+                value={query}
                 onChange={(e) => {
-                  setSelectedUser(null);
                   setQuery(e.target.value);
                   setError('');
                 }}
-                required
+                onKeyDown={handleKeyDown}
               />
-              <div className="min-h-[88px] rounded-xl border border-gray-100 bg-gray-50 p-2 dark:border-slate-800 dark:bg-slate-800/60">
-                {searching ? (
-                  <div className="flex h-16 items-center justify-center gap-2 text-xs font-semibold text-slate-500">
-                    <Loader2 size={14} className="animate-spin" />
-                    Đang tìm...
-                  </div>
-                ) : selectedUser ? (
-                  <div className="flex items-center justify-between rounded-lg bg-white p-3 dark:bg-slate-900">
-                    <div className="flex items-center gap-3">
-                      <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary-100 text-sm font-bold text-primary-700 dark:bg-primary-900/40 dark:text-primary-200">
-                        {(selectedUser.displayName?.[0] || selectedUser.email[0]).toUpperCase()}
-                      </div>
-                      <div>
-                        <p className="text-sm font-bold text-gray-900 dark:text-white">
-                          {selectedUser.displayName || selectedUser.email}
-                        </p>
-                        <p className="text-xs text-slate-500">{selectedUser.email}</p>
-                      </div>
+
+              {/* Search dropdown */}
+              {(searching || results.length > 0) && (
+                <div className="rounded-xl border border-gray-100 bg-gray-50 p-2 dark:border-slate-800 dark:bg-slate-800/60">
+                  {searching ? (
+                    <div className="flex h-12 items-center justify-center gap-2 text-xs font-semibold text-slate-500">
+                      <Loader2 size={14} className="animate-spin" />
+                      Đang tìm...
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSelectedUser(null);
-                        setQuery('');
-                      }}
-                      className="text-xs font-bold text-slate-500 hover:text-red-500"
-                    >
-                      Đổi
-                    </button>
-                  </div>
-                ) : query.trim().length < 2 ? (
-                  <div className="flex h-16 items-center justify-center text-xs text-slate-500">
-                    Nhập ít nhất 2 ký tự để tìm user.
-                  </div>
-                ) : results.length === 0 ? (
-                  <div className="flex h-16 items-center justify-center text-xs font-semibold text-slate-500">
-                    Chưa có user phù hợp, hoặc user này đã thuộc tổ chức.
-                  </div>
-                ) : (
-                  <div className="max-h-44 space-y-1 overflow-y-auto">
-                    {results.map((user) => (
-                      <button
-                        key={user.id}
-                        type="button"
-                        onClick={() => {
-                          setSelectedUser(user);
-                          setQuery(user.email);
-                          setResults([]);
-                        }}
-                        className="flex w-full items-center gap-3 rounded-lg p-2 text-left transition hover:bg-white dark:hover:bg-slate-900"
-                      >
-                        <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary-100 text-xs font-bold text-primary-700 dark:bg-primary-900/40 dark:text-primary-200">
-                          {(user.displayName?.[0] || user.email[0]).toUpperCase()}
-                        </div>
-                        <div className="min-w-0">
-                          <p className="truncate text-sm font-semibold text-gray-900 dark:text-white">
-                            {user.displayName || user.email}
-                          </p>
-                          <p className="truncate text-xs text-slate-500">{user.email}</p>
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
+                  ) : (
+                    <div className="max-h-40 space-y-1 overflow-y-auto">
+                      {results.map((user) => (
+                        <button
+                          key={user.id}
+                          type="button"
+                          onClick={() => handleSelectUser(user)}
+                          className="flex w-full items-center gap-3 rounded-lg p-2 text-left transition hover:bg-white dark:hover:bg-slate-900"
+                        >
+                          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary-100 text-xs font-bold text-primary-700 dark:bg-primary-900/40 dark:text-primary-200">
+                            {(user.displayName?.[0] || user.email[0]).toUpperCase()}
+                          </div>
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-semibold text-gray-900 dark:text-white">
+                              {user.displayName || user.email}
+                            </p>
+                            <p className="truncate text-xs text-slate-500">{user.email}</p>
+                          </div>
+                        </button>
+                      ))}
+                      {query.trim().length >= 2 && isValidEmail(query.trim()) && !results.some((u) => u.email === query.trim().toLowerCase()) && (
+                        <button
+                          type="button"
+                          onClick={() => addTag(query)}
+                          className="flex w-full items-center gap-3 rounded-lg border border-dashed border-primary-300 p-2 text-left transition hover:bg-primary-50 dark:border-primary-700 dark:hover:bg-primary-900/20"
+                        >
+                          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary-50 text-xs font-bold text-primary-600">
+                            <Mail size={14} />
+                          </div>
+                          <div>
+                            <p className="text-sm font-semibold text-primary-700 dark:text-primary-300">
+                              Mời {query.trim()}
+                            </p>
+                            <p className="text-xs text-slate-500">Email chưa đăng ký — vẫn gửi lời mời</p>
+                          </div>
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
+
             <div className="space-y-2">
               <label className="ml-1 text-[10px] font-black uppercase tracking-widest text-slate-500">Vai trò</label>
               <select
@@ -524,30 +576,53 @@ const InviteModal: React.FC<{ orgId: string; onClose: () => void; onInvited: () 
                 <option value="org-admin">Admin (Quản trị Org)</option>
               </select>
             </div>
+
             <button
               type="submit"
-              disabled={loading || !selectedUser}
+              disabled={loading || (tags.length === 0 && !query.trim())}
               className="h-12 w-full rounded-xl bg-primary-600 font-bold text-white transition-colors hover:bg-primary-700 disabled:opacity-50"
             >
-              {loading ? 'Đang gửi...' : 'Gửi lời mời'}
+              {loading ? 'Đang gửi...' : `Gửi lời mời${tags.length > 0 ? ` (${tags.length})` : ''}`}
             </button>
           </form>
         ) : (
-          <div className="space-y-6 text-center">
+          <div className="space-y-4">
             <div className="rounded-2xl bg-green-50 p-4 dark:bg-green-900/20">
               <p className="text-sm font-medium text-green-700 dark:text-green-400">
-                {alreadyPending ? 'User này đã có lời mời đang chờ.' : 'Lời mời đã được gửi thành công!'}
-              </p>
-              <p className="mt-1 text-xs text-slate-500">
-                Người nhận sẽ thấy thông báo trong app{emailSent ? ' và email mời.' : '.'}
+                Đã gửi {invitedCount} lời mời
+                {skippedCount > 0 && `, ${skippedCount} bỏ qua`}
+                {errorCount > 0 && `, ${errorCount} lỗi`}
               </p>
             </div>
-            <div className="rounded-xl border border-dashed border-gray-300 p-4 text-sm text-slate-600 dark:border-slate-700 dark:text-slate-300">
-              <div className="flex items-center justify-center gap-2 font-semibold">
-                <Mail size={14} />
-                {selectedUser?.email}
-              </div>
+
+            <div className="max-h-60 space-y-2 overflow-y-auto">
+              {bulkResults.map((result) => (
+                <div
+                  key={result.email}
+                  className={`flex items-center justify-between rounded-lg border px-3 py-2 text-xs ${
+                    result.status === 'invited'
+                      ? 'border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-900/20'
+                      : result.status === 'error'
+                        ? 'border-red-200 bg-red-50 dark:border-red-800 dark:bg-red-900/20'
+                        : 'border-gray-200 bg-gray-50 dark:border-slate-700 dark:bg-slate-800/50'
+                  }`}
+                >
+                  <span className="font-semibold text-gray-800 dark:text-slate-200">{result.email}</span>
+                  <span
+                    className={`font-bold ${
+                      result.status === 'invited'
+                        ? 'text-green-600 dark:text-green-400'
+                        : result.status === 'error'
+                          ? 'text-red-600 dark:text-red-400'
+                          : 'text-gray-500 dark:text-slate-400'
+                    }`}
+                  >
+                    {result.status === 'invited' ? 'Đã mời' : result.status === 'already_member' ? 'Đã là thành viên' : result.status === 'already_pending' ? 'Đã có lời mời' : result.message}
+                  </span>
+                </div>
+              ))}
             </div>
+
             <button
               onClick={onClose}
               className="h-12 w-full rounded-xl border border-gray-200 font-bold text-gray-600 hover:bg-gray-50"

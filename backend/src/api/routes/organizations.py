@@ -8,6 +8,7 @@ from src.api.core.organization_operations import (
     accept_invitation_by_id_payload,
     accept_invitation_by_token_payload,
     approve_organization_payload,
+    create_bulk_invitations_payload,
     create_invitation_payload,
     create_organization_payload,
     delete_organization_payload,
@@ -130,6 +131,17 @@ def create_invitation(
     current_user=Depends(auth.get_current_user),
 ):
     return create_invitation_payload(inv_data, db, current_user)
+
+
+@router.post("/api/organizations/{org_id}/invitations/bulk", response_model=schemas.BulkInvitationResponse)
+def bulk_create_invitations(
+    org_id: str,
+    bulk_data: schemas.BulkInvitationCreate,
+    db: Session = Depends(get_db),
+    current_user=Depends(auth.get_current_user),
+):
+    bulk_data.organization_id = org_id
+    return create_bulk_invitations_payload(bulk_data, db, current_user)
 
 
 @router.get("/api/invitations/preview", response_model=schemas.InvitationPreview)

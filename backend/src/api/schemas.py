@@ -246,6 +246,28 @@ class InvitationCreate(BaseSchema):
     role: str = Field(default="member", pattern="^(org-admin|group-admin|member|viewer)$")
 
 
+class BulkInvitationCreate(BaseSchema):
+    emails: List[str]
+    organization_id: str
+    group_id: Optional[str] = None
+    role: str = Field(default="member", pattern="^(org-admin|group-admin|member|viewer)$")
+
+
+class BulkInvitationResult(BaseSchema):
+    email: str
+    status: str  # "invited" | "already_member" | "already_pending" | "error"
+    message: str
+    invitation_id: Optional[str] = None
+
+
+class BulkInvitationResponse(BaseSchema):
+    results: List[BulkInvitationResult]
+    total: int
+    invited: int
+    skipped: int
+    errors: int
+
+
 class InvitationCreateResponse(BaseSchema):
     message: str
     email: EmailStr
