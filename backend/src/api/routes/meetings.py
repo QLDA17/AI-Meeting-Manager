@@ -91,6 +91,7 @@ def list_meetings(
         joinedload(models.Meeting.organization),
         joinedload(models.Meeting.group),
         joinedload(models.Meeting.created_by_user),
+        joinedload(models.Meeting.participants).joinedload(models.MeetingParticipant.user),
         joinedload(models.Meeting.summaries),
         joinedload(models.Meeting.action_items),
     ).order_by(models.Meeting.created_at.desc()).offset(skip).limit(limit).all()
@@ -865,5 +866,4 @@ def get_meeting_dialect(
         "correction_count": metadata.get("correction_count", 0),
         "nlp_metadata": metadata,
     }
-
 

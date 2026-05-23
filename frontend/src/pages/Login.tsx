@@ -23,7 +23,7 @@ const leftFeatures = [
 
 const testimonials = [
   {
-    text: "MultiMinutes AI tiết kiệm cho team chúng tôi hơn 10 giờ mỗi tuần. Thật sự kinh ngạc!",
+    text: "CONVIA tiết kiệm cho team chúng tôi hơn 10 giờ mỗi tuần. Thật sự kinh ngạc!",
     author: "Nguyễn Văn An",
     role: "CTO · TechViet Solutions"
   },
@@ -111,7 +111,7 @@ const Login: React.FC = () => {
           className="hidden lg:block space-y-12"
         >
           <div className="flex items-center gap-3">
-            <Logo variant="dark" className="scale-125 origin-left" />
+            <Logo variant="dark" size="sm" showSubtext={false} className="origin-left" />
           </div>
 
           <div className="space-y-8">
@@ -199,7 +199,7 @@ const Login: React.FC = () => {
             
             {/* Mobile Logo */}
             <div className="lg:hidden flex items-center gap-3 mb-10">
-              <Logo variant="dark" />
+              <Logo variant="dark" size="sm" showSubtext={false} />
             </div>
 
             <div className="mb-10">

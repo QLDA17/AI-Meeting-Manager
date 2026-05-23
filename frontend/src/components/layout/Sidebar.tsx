@@ -63,10 +63,11 @@ const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onClose }) => {
         <div className="flex h-full flex-col">
           {/* Logo & Close */}
           <div className="flex items-center justify-between border-b border-gray-100 px-4 py-4 dark:border-slate-800">
-            <Logo 
-              size="md" 
-              className="px-0" 
-              variant="light" 
+            <Logo
+              size="sm"
+              className="px-0"
+              variant="light"
+              showSubtext={false}
             />
             <button
               onClick={onClose}

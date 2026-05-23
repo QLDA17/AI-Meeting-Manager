@@ -12,12 +12,12 @@ def custom_openapi(app: FastAPI) -> Dict:
         return app.openapi_schema
     
     openapi_schema = get_openapi(
-        title="MultiMinutes AI API",
+        title="CONVIA API",
         version="1.0.0",
         description="""
-## MultiMinutes AI API Documentation
+## CONVIA API Documentation
 
-Hệ thống API cho MultiMinutes AI - Hệ thống Ghi Biên Bản & Tổng Hợp Nội Dung Cuộc Họp bằng AI.
+Hệ thống API cho CONVIA - Hệ thống Ghi Biên Bản & Tổng Hợp Nội Dung Cuộc Họp bằng AI.
 
 ### Features
 - **Speech-to-Text**: Chuyển đổi giọng nói thành văn bản với OpenAI Whisper
@@ -48,12 +48,12 @@ Hiện tại sử dụng mock authentication. Trong production sẽ sử dụng 
     
     # Custom OpenAPI extensions
     openapi_schema["info"]["x-logo"] = {
-        "url": "https://multiminutes.ai/logo.png",
-        "altText": "MultiMinutes AI Logo"
+        "url": "/brand/convia-logo.svg",
+        "altText": "CONVIA Logo"
     }
     
     openapi_schema["info"]["contact"] = {
-        "name": "MultiMinutes AI Team",
+        "name": "CONVIA Team",
         "email": "support@multiminutes.ai",
         "url": "https://multiminutes.ai"
     }

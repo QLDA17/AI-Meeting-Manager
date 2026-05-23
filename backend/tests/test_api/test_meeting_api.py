@@ -1,5 +1,6 @@
 import pytest
 from unittest.mock import patch
+from pathlib import Path
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -214,6 +215,55 @@ def test_get_meetings_with_filters(client, auth_context):
     assert response.status_code == 200
     data = response.json()
     assert all(m["status"] == "upcoming" for m in data)
+
+
+def test_upload_audio_creates_meeting_audio_and_job(client, auth_context, monkeypatch, tmp_path):
+    from src.api.routes import stt as stt_routes
+
+    monkeypatch.setattr(stt_routes, "ensure_audio_upload_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(stt_routes, "start_upload_job", lambda job: None)
+
+    response = client.post(
+        "/api/upload",
+        headers=auth_context["headers"],
+        files={"file": ("backup.wav", b"fake-wave-data", "audio/wav")},
+        data={
+            "organization_id": auth_context["org_id"],
+            "title": "Backup Upload",
+            "language": "auto",
+            "stt_provider": "deepgram",
+            "enable_diarization": "true",
+            "enable_glossary": "true",
+            "enable_summary": "true",
+            "enable_action_items": "true",
+            "enable_noise_cleanup": "true",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "queued"
+    assert payload["current_stage"] == "queued"
+    assert payload["progress_percent"] == 0
+
+    status_response = client.get(f"/api/upload/jobs/{payload['job_id']}", headers=auth_context["headers"])
+    assert status_response.status_code == 200
+    assert status_response.json()["meeting_id"] == payload["meeting_id"]
+
+    db = TestingSessionLocal()
+    try:
+        meeting = db.query(models.Meeting).filter(models.Meeting.id == payload["meeting_id"]).first()
+        assert meeting is not None
+        assert meeting.status == "queued"
+        assert meeting.audio_url
+        assert meeting.recording_url
+
+        audio_file = db.query(models.AudioFile).filter(models.AudioFile.meeting_id == meeting.id).first()
+        assert audio_file is not None
+        assert audio_file.upload_status == "UPLOADED"
+        assert Path(audio_file.file_path).exists()
+    finally:
+        db.close()
 
 
 def test_get_meetings_unauthorized(client):

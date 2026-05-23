@@ -14,6 +14,12 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, joinedload
 
 from src.api import auth, models
+from src.api.core.app_state import (
+    AUDIO_UPLOAD_DIR,
+    LEGACY_AUDIO_UPLOAD_DIR,
+    ensure_audio_upload_dir,
+    resolve_audio_storage_path,
+)
 from src.api.crud import get_user_by_username
 from src.api.core.meetings_support import estimate_segment_end, normalize_speaker_label
 from src.api.core.transcript_support import (
@@ -23,8 +29,6 @@ from src.api.core.transcript_support import (
 from src.api.core.user_payloads import format_user_payload
 
 logger = logging.getLogger(__name__)
-
-AUDIO_UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads", "audio")
 
 
 # ─── MeetingRoomConnectionManager ───────────────────────────────────────────
@@ -657,12 +661,16 @@ def build_meeting_activity_payload(
 def _valid_meeting_audio_records(meeting: models.Meeting) -> List[models.AudioFile]:
     records = []
     for audio_file in (meeting.audio_files or []):
+        resolved_path = resolve_audio_storage_path(audio_file.file_path)
         if (
-            audio_file.file_path
-            and os.path.exists(audio_file.file_path)
-            and os.path.getsize(audio_file.file_path) > 0
+            resolved_path
+            and os.path.exists(resolved_path)
+            and os.path.getsize(resolved_path) > 0
             and (audio_file.upload_status or "").upper() == "PROCESSED"
         ):
+            if resolved_path != audio_file.file_path:
+                logger.info("Resolved legacy audio path for record %s: %s -> %s", audio_file.id, audio_file.file_path, resolved_path)
+                audio_file.file_path = resolved_path
             records.append(audio_file)
     return sorted(records, key=lambda item: (item.updated_at or item.created_at or datetime.min, item.id))
 
@@ -683,6 +691,9 @@ def ensure_meeting_audio_published(db: Session, meeting: models.Meeting) -> str:
     valid_records = _valid_meeting_audio_records(meeting)
     if valid_records:
         latest_record = valid_records[-1]
+        if any(item in db.dirty for item in valid_records):
+            db.commit()
+            db.refresh(meeting)
         expected_url = f"/api/audio-files/{latest_record.id}/stream"
         if meeting.audio_url != expected_url or meeting.recording_url != expected_url:
             _sync_meeting_audio_urls(db, meeting, latest_record)
@@ -690,7 +701,12 @@ def ensure_meeting_audio_published(db: Session, meeting: models.Meeting) -> str:
             db.refresh(meeting)
         return "READY"
 
-    perm_dir = os.path.join(AUDIO_UPLOAD_DIR, meeting.id)
+    canonical_perm_dir = os.path.join(ensure_audio_upload_dir(), meeting.id)
+    legacy_perm_dir = os.path.join(LEGACY_AUDIO_UPLOAD_DIR, meeting.id)
+    perm_dir = canonical_perm_dir
+    if not os.path.isdir(perm_dir) and os.path.isdir(legacy_perm_dir):
+        logger.info("Falling back to legacy audio directory for meeting %s: %s", meeting.id, legacy_perm_dir)
+        perm_dir = legacy_perm_dir
     if not os.path.isdir(perm_dir):
         return "NONE"
 
@@ -744,6 +760,10 @@ def ensure_meeting_audio_published(db: Session, meeting: models.Meeting) -> str:
     )
     if not candidate_files:
         return "PROCESSING" if all_dir_files else "NONE"
+
+    if perm_dir != canonical_perm_dir:
+        os.makedirs(canonical_perm_dir, exist_ok=True)
+        output_path = os.path.join(canonical_perm_dir, output_filename)
 
     concat_list_path = os.path.join(perm_dir, "concat_publish.txt")
     try:

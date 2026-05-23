@@ -74,6 +74,10 @@ from .crud_system import (
     get_glossary_term_by_id,
     update_glossary_term,
     delete_glossary_term,
+    get_glossary_suggestion_by_id,
+    get_glossary_suggestions,
+    create_glossary_suggestion,
+    update_glossary_suggestion,
 )
 
 __all__ = [
@@ -146,4 +150,8 @@ __all__ = [
     "get_glossary_term_by_id",
     "update_glossary_term",
     "delete_glossary_term",
+    "get_glossary_suggestion_by_id",
+    "get_glossary_suggestions",
+    "create_glossary_suggestion",
+    "update_glossary_suggestion",
 ]

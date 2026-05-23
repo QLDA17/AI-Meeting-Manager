@@ -30,7 +30,7 @@ const CtaSection: React.FC = () => {
               Nâng tầm hiệu suất <br /> cuộc họp của bạn ngay hôm nay.
             </h2>
             <p className="text-xl text-primary-100 mb-12 leading-relaxed">
-              Tham gia cùng hàng ngàn chuyên gia đang sử dụng MultiMinutes AI để tối ưu hóa quy trình làm việc và không bao giờ bỏ lỡ một chi tiết quan trọng nào.
+              Tham gia cùng hàng ngàn chuyên gia đang sử dụng CONVIA để tối ưu hóa quy trình làm việc và không bao giờ bỏ lỡ một chi tiết quan trọng nào.
             </p>
 
             <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
@@ -52,76 +52,6 @@ const CtaSection: React.FC = () => {
           </div>
         </motion.div>
 
-        {/* Footer Area */}
-        <footer className="mt-24 pt-12 border-t border-gray-200">
-          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-12 mb-12">
-            <div className="col-span-2">
-              <Link to="/" className="flex items-center gap-2 mb-6">
-                <div className="w-8 h-8 bg-primary-600 rounded-lg flex items-center justify-center">
-                  <span className="text-white font-bold text-lg">M</span>
-                </div>
-                <span className="font-sans font-bold text-gray-900 text-xl tracking-tight">MultiMinutes</span>
-              </Link>
-              <p className="text-gray-500 text-sm leading-relaxed mb-6">
-                Nền tảng AI đột phá giúp doanh nghiệp ghi chép và phân tích cuộc họp tự động, bảo mật và hiệu quả nhất.
-              </p>
-              <div className="flex gap-4">
-                <a href="#" className="text-gray-400 hover:text-primary-600 transition-colors"><Share2 size={20} /></a>
-                <a href="#" className="text-gray-400 hover:text-primary-600 transition-colors"><Users size={20} /></a>
-                <a href="#" className="text-gray-400 hover:text-primary-600 transition-colors"><Mail size={20} /></a>
-              </div>
-            </div>
-
-            <div>
-              <h4 className="font-bold text-gray-900 mb-6 uppercase text-xs tracking-widest">Sản phẩm</h4>
-              <ul className="space-y-4 text-sm text-gray-600 font-medium">
-                <li><a href="#" className="hover:text-primary-600 transition-colors">Tính năng</a></li>
-                <li><a href="#" className="hover:text-primary-600 transition-colors">Bảng giá</a></li>
-                <li><a href="#" className="hover:text-primary-600 transition-colors">Bảo mật</a></li>
-                <li><a href="#" className="hover:text-primary-600 transition-colors">Roadmap</a></li>
-              </ul>
-            </div>
-
-            <div>
-              <h4 className="font-bold text-gray-900 mb-6 uppercase text-xs tracking-widest">Công ty</h4>
-              <ul className="space-y-4 text-sm text-gray-600 font-medium">
-                <li><a href="#" className="hover:text-primary-600 transition-colors">Về chúng tôi</a></li>
-                <li><a href="#" className="hover:text-primary-600 transition-colors">Tuyển dụng</a></li>
-                <li><a href="#" className="hover:text-primary-600 transition-colors">Blog</a></li>
-                <li><a href="#" className="hover:text-primary-600 transition-colors">Báo chí</a></li>
-              </ul>
-            </div>
-
-            <div>
-              <h4 className="font-bold text-gray-900 mb-6 uppercase text-xs tracking-widest">Hỗ trợ</h4>
-              <ul className="space-y-4 text-sm text-gray-600 font-medium">
-                <li><a href="#" className="hover:text-primary-600 transition-colors">Trung tâm trợ giúp</a></li>
-                <li><a href="#" className="hover:text-primary-600 transition-colors">Tài liệu API</a></li>
-                <li><a href="#" className="hover:text-primary-600 transition-colors">Cộng đồng</a></li>
-                <li><a href="#" className="hover:text-primary-600 transition-colors">Trạng thái</a></li>
-              </ul>
-            </div>
-
-            <div>
-              <h4 className="font-bold text-gray-900 mb-6 uppercase text-xs tracking-widest">Pháp lý</h4>
-              <ul className="space-y-4 text-sm text-gray-600 font-medium">
-                <li><a href="#" className="hover:text-primary-600 transition-colors">Điều khoản</a></li>
-                <li><a href="#" className="hover:text-primary-600 transition-colors">Bảo mật</a></li>
-                <li><a href="#" className="hover:text-primary-600 transition-colors">Cookie</a></li>
-              </ul>
-            </div>
-          </div>
-
-          <div className="flex flex-col md:flex-row items-center justify-between py-8 border-t border-gray-100 gap-4">
-            <p className="text-gray-400 text-xs">
-              © 2025 MultiMinutes AI. Đã đăng ký bản quyền.
-            </p>
-            <div className="flex items-center gap-6 text-xs text-gray-400 font-medium">
-              <a href="#" className="hover:text-gray-600">Vietnam (Tiếng Việt)</a>
-              <a href="#" className="hover:text-gray-600">English</a>
-            </div>
-          </div>
-        </footer>
       </div>
     </section>
   );

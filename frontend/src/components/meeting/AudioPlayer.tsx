@@ -31,6 +31,7 @@ const AudioPlayer = forwardRef<AudioPlayerHandle, AudioPlayerProps>(({ src, onTi
   const [volume, setVolume] = useState(0.8);
   const [isMuted, setIsMuted] = useState(false);
   const [playbackRate, setPlaybackRate] = useState(1);
+  const [error, setError] = useState<string | null>(null);
   
   const audioRef = useRef<HTMLAudioElement>(null);
 
@@ -45,6 +46,7 @@ const AudioPlayer = forwardRef<AudioPlayerHandle, AudioPlayerProps>(({ src, onTi
     setIsPlaying(false);
     setCurrentTime(0);
     setDuration(0);
+    setError(null);
     onReady?.(false);
   }, [src, onReady]);
 
@@ -124,8 +126,19 @@ const AudioPlayer = forwardRef<AudioPlayerHandle, AudioPlayerProps>(({ src, onTi
     }
   };
 
+  if (!src) return null;
+
   return (
     <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+      {error ? (
+        <div className="flex items-center gap-3 py-3 text-center">
+          <div className="flex-1">
+            <p className="text-sm font-medium text-red-600">{error}</p>
+            <p className="mt-1 text-xs text-gray-400">Vui lòng thử tải lại trang</p>
+          </div>
+        </div>
+      ) : (
+        <>
       <audio
         ref={audioRef}
         src={src}
@@ -134,6 +147,16 @@ const AudioPlayer = forwardRef<AudioPlayerHandle, AudioPlayerProps>(({ src, onTi
         onEnded={onEnded}
         onPlay={() => setIsPlaying(true)}
         onPause={() => setIsPlaying(false)}
+        onError={(e) => {
+          const audio = e.currentTarget;
+          const code = audio.error?.code;
+          const msg = code === 4 ? 'Audio không hỗ trợ định dạng này'
+            : code === 3 ? 'Lỗi decode audio'
+            : code === 2 ? 'Lỗi tải audio từ server'
+            : 'Không thể phát audio';
+          setError(msg);
+          console.error('Audio error:', audio.error, 'src:', audio.src);
+        }}
         controls={false}
       />
 
@@ -222,6 +245,8 @@ const AudioPlayer = forwardRef<AudioPlayerHandle, AudioPlayerProps>(({ src, onTi
           />
         </div>
       </div>
+        </>
+      )}
     </div>
   );
 });

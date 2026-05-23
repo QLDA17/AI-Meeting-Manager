@@ -297,7 +297,8 @@ def build_glossary_context(db: Session, organization_id: Optional[str]) -> str:
             ] if value
         ]
         suffix = f" => {', '.join(translations)}" if translations else ""
-        lines.append(f"- {term.term}{suffix}")
+        alias_suffix = f" [aliases: {', '.join(term.aliases or [])}]" if term.aliases else ""
+        lines.append(f"- {term.term}{suffix}{alias_suffix}")
     return "\n".join(lines)
 
 
@@ -314,13 +315,7 @@ def build_glossary_dict(db: Session, organization_id: Optional[str]) -> Dict[str
             continue
         canonical = term.term
         glossary[canonical] = canonical
-        for alias in [
-            term.translation_vi,
-            term.translation_en,
-            term.translation_ja,
-            term.translation_zh,
-            term.translation_ko,
-        ]:
+        for alias in sorted(term.aliases or [], key=lambda value: len(value or ""), reverse=True):
             if alias:
                 glossary[alias] = canonical
     return glossary

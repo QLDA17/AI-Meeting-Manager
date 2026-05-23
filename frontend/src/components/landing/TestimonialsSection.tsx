@@ -55,7 +55,7 @@ const TestimonialsSection: React.FC = () => {
               </span>
             </h2>
             <p className="text-xl text-primary-100/50 leading-relaxed mb-10 max-w-xl font-medium">
-              MultiMinutes AI được xây dựng trên nền tảng niềm tin. Chúng tôi sử dụng các công nghệ bảo mật tiên tiến nhất để bảo vệ mọi thông tin quan trọng trong cuộc họp của bạn.
+              CONVIA được xây dựng trên nền tảng niềm tin. Chúng tôi sử dụng các công nghệ bảo mật tiên tiến nhất để bảo vệ mọi thông tin quan trọng trong cuộc họp của bạn.
             </p>
             
             <div className="flex flex-wrap gap-3">

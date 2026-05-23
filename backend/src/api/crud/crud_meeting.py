@@ -1,10 +1,57 @@
+import logging
+import os
+import shutil
 from sqlalchemy.orm import Session, joinedload
-from typing import List, Optional
+from typing import List, Optional, Set
 from datetime import datetime
 import random
 import string
 import uuid
 from .. import models
+from ..core.app_state import AUDIO_UPLOAD_DIR, LEGACY_AUDIO_UPLOAD_DIR, resolve_audio_storage_path
+
+logger = logging.getLogger(__name__)
+
+
+def _is_within_audio_roots(path: str) -> bool:
+    normalized_path = os.path.normpath(path)
+    for root in (AUDIO_UPLOAD_DIR, LEGACY_AUDIO_UPLOAD_DIR):
+        normalized_root = os.path.normpath(root)
+        try:
+            if os.path.commonpath([normalized_path, normalized_root]) == normalized_root:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def _collect_meeting_audio_paths(meeting: models.Meeting) -> Set[str]:
+    paths: Set[str] = set()
+
+    for audio_file in meeting.audio_files:
+        resolved_path = resolve_audio_storage_path(audio_file.file_path)
+        if resolved_path and _is_within_audio_roots(resolved_path):
+            paths.add(resolved_path)
+
+    for root in (AUDIO_UPLOAD_DIR, LEGACY_AUDIO_UPLOAD_DIR):
+        meeting_dir = os.path.join(root, meeting.id)
+        if _is_within_audio_roots(meeting_dir):
+            paths.add(meeting_dir)
+
+    return paths
+
+
+def _cleanup_meeting_audio_storage(paths: Set[str]) -> None:
+    for path in sorted(paths, key=len, reverse=True):
+        try:
+            if os.path.isdir(path):
+                shutil.rmtree(path, ignore_errors=False)
+            elif os.path.isfile(path):
+                os.remove(path)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            logger.warning("Failed to remove meeting audio path %s: %s", path, exc)
 
 
 def generate_meeting_code(db: Session) -> str:
@@ -171,9 +218,12 @@ def delete_meeting(db: Session, meeting_id: str) -> bool:
     db_meeting = get_meeting_by_id(db, meeting_id)
     if not db_meeting:
         return False
-    
+
+    audio_paths = _collect_meeting_audio_paths(db_meeting)
+
     db.delete(db_meeting)
     db.commit()
+    _cleanup_meeting_audio_storage(audio_paths)
     return True
 
 

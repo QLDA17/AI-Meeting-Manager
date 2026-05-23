@@ -119,4 +119,4 @@ def test_feature_flags_endpoint(client: TestClient):
     response = client.get("/api/config/features", headers=auth_context["headers"])
 
     assert response.status_code == 200
-    assert response.json()["uploadEnabled"] is False
+    assert response.json()["uploadEnabled"] is True

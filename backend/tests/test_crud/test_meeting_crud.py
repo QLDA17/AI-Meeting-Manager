@@ -13,7 +13,10 @@ from src.api.crud import (
     update_meeting,
     delete_meeting,
     add_meeting_participant,
+    create_audio_file,
 )
+from src.api import models
+from src.api.crud import crud_meeting
 
 TEST_DATABASE_URL = "sqlite:///:memory:"
 engine = create_engine(TEST_DATABASE_URL, connect_args={"check_same_thread": False})
@@ -133,6 +136,45 @@ def test_delete_meeting(db, test_organization, test_user):
 
     assert success is True
     assert get_meeting_by_id(db, meeting.id) is None
+
+
+def test_delete_meeting_removes_audio_files_and_dirs(db, test_organization, test_user, tmp_path, monkeypatch):
+    canonical_root = tmp_path / "uploads" / "audio"
+    legacy_root = tmp_path / "data" / "meetings" / "audio"
+    monkeypatch.setattr(crud_meeting, "AUDIO_UPLOAD_DIR", str(canonical_root))
+    monkeypatch.setattr(crud_meeting, "LEGACY_AUDIO_UPLOAD_DIR", str(legacy_root))
+    monkeypatch.setattr(crud_meeting, "resolve_audio_storage_path", lambda path: path)
+
+    meeting = create_meeting(db, meeting_payload(test_organization), created_by=test_user.id)
+    canonical_dir = canonical_root / meeting.id
+    canonical_dir.mkdir(parents=True)
+    canonical_file = canonical_dir / "recording.wav"
+    canonical_file.write_bytes(b"audio")
+
+    legacy_dir = legacy_root / meeting.id
+    legacy_dir.mkdir(parents=True)
+    legacy_file = legacy_dir / "chunk-001.wav"
+    legacy_file.write_bytes(b"legacy-audio")
+
+    create_audio_file(db, {
+        "meeting_id": meeting.id,
+        "filename": canonical_file.name,
+        "original_filename": canonical_file.name,
+        "file_path": str(canonical_file),
+        "file_size": canonical_file.stat().st_size,
+        "format": "wav",
+        "upload_status": "UPLOADED",
+    })
+
+    success = delete_meeting(db, meeting.id)
+
+    assert success is True
+    assert get_meeting_by_id(db, meeting.id) is None
+    assert db.query(models.AudioFile).filter(models.AudioFile.meeting_id == meeting.id).count() == 0
+    assert not canonical_file.exists()
+    assert not canonical_dir.exists()
+    assert not legacy_file.exists()
+    assert not legacy_dir.exists()
 
 
 def test_add_meeting_participant(db, test_organization, test_user):

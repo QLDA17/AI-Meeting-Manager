@@ -382,9 +382,4 @@ const GroupDetail: React.FC = () => {
   );
 };
 
-// Simple clsx utility since we don't have it imported everywhere yet
-function clsx(...classes: any[]) {
-  return classes.filter(Boolean).join(' ');
-}
-
 export default GroupDetail;

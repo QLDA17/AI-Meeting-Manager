@@ -995,7 +995,25 @@ const MeetingDetail: React.FC = () => {
         </div>
       )}
 
-      {!isUpcomingMeeting && (
+      {!isUpcomingMeeting && meeting?.audioStatus === 'FAILED' && (
+        <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-2.5 text-xs font-bold text-red-700 dark:border-red-900/30 dark:bg-red-900/10 dark:text-red-300">
+          Lỗi xử lý audio. Vui lòng liên hệ quản trị viên.
+        </div>
+      )}
+
+      {!isUpcomingMeeting && meeting?.audioStatus === 'PROCESSING' && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-xs font-bold text-amber-700 dark:border-amber-900/30 dark:bg-amber-900/10 dark:text-amber-300">
+          Đang xử lý audio...
+        </div>
+      )}
+
+      {!isUpcomingMeeting && meeting?.audioStatus === 'NONE' && (
+        <div className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-2.5 text-xs font-bold text-gray-500 dark:border-slate-800 dark:bg-slate-900/10 dark:text-slate-400">
+          Cuộc họp này chưa có audio để phát lại.
+        </div>
+      )}
+
+      {!isUpcomingMeeting && meeting?.audioStatus === 'READY' && meeting.audioUrl && (
         <div className="sticky top-4 z-30">
           <AudioPlayer
             ref={audioPlayerRef}

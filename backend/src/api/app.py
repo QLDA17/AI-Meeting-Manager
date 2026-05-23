@@ -23,7 +23,7 @@ from src.api.routes.system import router as system_router
 
 def create_app() -> FastAPI:
     app = FastAPI(
-        title="MultiMinutes AI API",
+        title="CONVIA API",
         version="1.0.0-beta",
         description="AI-powered meeting minutes generation system",
         docs_url="/docs",

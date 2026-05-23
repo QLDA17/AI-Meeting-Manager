@@ -26,7 +26,13 @@ class DeepgramProvider:
         self.last_duration_seconds = 0.0
         self.last_model = ""
 
-    def transcribe(self, audio_path: str, model: str = None) -> Dict[str, Any]:
+    def transcribe(
+        self,
+        audio_path: str,
+        model: str = None,
+        language: Optional[str] = None,
+        diarize: bool = True,
+    ) -> Dict[str, Any]:
         """Transcribe audio file via Deepgram API.
 
         Args:
@@ -39,19 +45,21 @@ class DeepgramProvider:
             with open(audio_path, "rb") as audio:
                 source = audio.read()
 
-            # Deepgram SDK v7 - pass options as keyword arguments
-            # Force Vietnamese language
-            response = self.client.listen.v1.media.transcribe_file(
-                request=source,
-                model=model,
-                language="vi",
-                smart_format=True,
-                punctuate=True,
-                diarize=True,
-                utterances=True,
-                paragraphs=True,
-                filler_words=True,
-            )
+            request_options = {
+                "request": source,
+                "model": model,
+                "smart_format": True,
+                "punctuate": True,
+                "diarize": diarize,
+                "utterances": True,
+                "paragraphs": True,
+                "filler_words": True,
+            }
+            selected_language = (language or os.getenv("DEEPGRAM_LANGUAGE", "vi")).strip().lower() if language is not None else os.getenv("DEEPGRAM_LANGUAGE", "vi")
+            if selected_language and selected_language != "auto":
+                request_options["language"] = selected_language
+
+            response = self.client.listen.v1.media.transcribe_file(**request_options)
 
             # Extract usage metadata
             duration_seconds = 0.0
@@ -121,6 +129,7 @@ class DeepgramProvider:
                 "segments": segments,
                 "duration_seconds": duration_seconds,
                 "model": model,
+                "language": selected_language if selected_language != "auto" else None,
             }
 
         except Exception as e:

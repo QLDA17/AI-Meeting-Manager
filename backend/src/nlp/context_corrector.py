@@ -52,7 +52,8 @@ class ContextCorrectionPipeline:
             if count:
                 corrections.append(Correction(wrong, right, "rule"))
 
-        for term, canonical in (glossary or {}).items():
+        glossary_items = sorted((glossary or {}).items(), key=lambda item: len((item[0] or "").strip()), reverse=True)
+        for term, canonical in glossary_items:
             if not term or not canonical:
                 continue
             corrected, count = self._replace_phrase(corrected, term, canonical)

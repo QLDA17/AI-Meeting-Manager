@@ -179,7 +179,7 @@ const ForgotPassword: React.FC = () => {
           className="hidden lg:block space-y-12"
         >
           <div className="flex items-center gap-3">
-            <Logo variant="dark" className="scale-125 origin-left" />
+            <Logo variant="dark" size="sm" showSubtext={false} className="origin-left" />
           </div>
 
           <div className="space-y-8">
@@ -248,7 +248,7 @@ const ForgotPassword: React.FC = () => {
             
             {/* Mobile Logo */}
             <div className="lg:hidden flex items-center gap-3 mb-10">
-              <Logo variant="dark" />
+              <Logo variant="dark" size="sm" showSubtext={false} />
             </div>
 
             <div className="mb-8">

@@ -208,7 +208,7 @@ const Register: React.FC = () => {
           className="hidden space-y-12 lg:block"
         >
           <div className="flex items-center gap-3">
-            <Logo variant="dark" className="origin-left scale-125" />
+            <Logo variant="dark" size="sm" showSubtext={false} className="origin-left" />
           </div>
 
           <div className="space-y-8">
@@ -264,7 +264,7 @@ const Register: React.FC = () => {
             <div className="absolute left-0 right-0 top-0 h-[1px] bg-gradient-to-r from-transparent via-white/20 to-transparent" />
 
             <div className="mb-10 flex items-center gap-3 lg:hidden">
-              <Logo variant="dark" />
+              <Logo variant="dark" size="sm" showSubtext={false} />
             </div>
 
             <div className="mb-10">

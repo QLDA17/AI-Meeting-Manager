@@ -199,6 +199,9 @@ async def finalize_meeting_transcript(
     segments = body.get("segments", [])
     req_language = body.get("language", "")
     regenerate = bool(body.get("regenerate", False))
+    generate_summary = bool(body.get("generate_summary", True))
+    generate_action_items = bool(body.get("generate_action_items", True))
+    enable_glossary = bool(body.get("enable_glossary", True))
     errors: List[str] = []
 
     meeting = db.query(models.Meeting).filter(models.Meeting.id == meeting_id).first()
@@ -248,7 +251,7 @@ async def finalize_meeting_transcript(
     if phobert_enabled_for(language):
         try:
             processor = get_phobert_processor()
-            glossary = build_glossary_dict(db, meeting.organization_id)
+            glossary = build_glossary_dict(db, meeting.organization_id) if enable_glossary else {}
             processed = processor.process_finalize(full_text, segments if isinstance(segments, list) else [], glossary)
             full_text = str(processed.get("text") or full_text)
             segments = processed.get("segments") or segments
@@ -334,11 +337,30 @@ async def finalize_meeting_transcript(
 
     db.commit()
 
+    try:
+        from src.api.core.glossary_action_item_operations import generate_glossary_suggestions_for_transcript
+
+        if enable_glossary:
+            generate_glossary_suggestions_for_transcript(
+                db,
+                meeting.organization_id,
+                meeting_id,
+                full_text,
+                nlp_metadata if isinstance(nlp_metadata, dict) else None,
+            )
+    except Exception as suggestion_error:
+        logger.warning("Glossary suggestion generation skipped: %s", suggestion_error, exc_info=True)
+
     audio_file_id = None
     try:
-        from src.api.core.meeting_operations import AUDIO_UPLOAD_DIR
+        from src.api.core.meeting_operations import AUDIO_UPLOAD_DIR, LEGACY_AUDIO_UPLOAD_DIR
 
-        perm_dir = os.path.join(AUDIO_UPLOAD_DIR, meeting_id)
+        canonical_dir = os.path.join(AUDIO_UPLOAD_DIR, meeting_id)
+        legacy_dir = os.path.join(LEGACY_AUDIO_UPLOAD_DIR, meeting_id)
+        perm_dir = canonical_dir
+        if not os.path.isdir(perm_dir) and os.path.isdir(legacy_dir):
+            logger.info(f"Using legacy audio directory for meeting {meeting_id}: {legacy_dir}")
+            perm_dir = legacy_dir
         if os.path.isdir(perm_dir):
             chunk_files = sorted(glob.glob(os.path.join(perm_dir, "chunk_*")) + glob.glob(os.path.join(perm_dir, "stream_*.wav")))
             if chunk_files:
@@ -408,12 +430,28 @@ async def finalize_meeting_transcript(
     ai_provider_name = "router"
     router = RouterLLMAdapter()
 
+    if not generate_summary:
+        try:
+            update_meeting(db, meeting_id, {"status": "completed"})
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        db.commit()
+        return {
+            "meeting_id": meeting_id,
+            "transcript_status": "COMPLETED",
+            "summary_status": "SKIPPED",
+            "has_transcript_draft": has_transcript_draft,
+            "summary": None,
+            "nlp_metadata": nlp_metadata,
+            "errors": errors,
+        }
+
     prompt_key = f"summary_{language}"
     custom_instruction = ADMIN_PROMPTS.get(prompt_key, ADMIN_PROMPTS.get("summary_vi", {})).get(
         "content",
         "Create a concise executive meeting brief. Focus on outcomes, explicit decisions, and next steps only.",
     )
-    glossary_context = build_glossary_context(db, meeting.organization_id)
+    glossary_context = build_glossary_context(db, meeting.organization_id) if enable_glossary else {}
     speaker_map = get_speaker_mapping_dict(db, meeting_id)
     speaker_aware_transcript = build_speaker_aware_transcript(full_text, segments_to_save, speaker_map)
     system_prompt, user_prompt = build_structured_summary_prompts(
@@ -499,11 +537,12 @@ async def finalize_meeting_transcript(
         models.MeetingSummary.meeting_id == meeting_id,
         models.MeetingSummary.language == language,
     ).order_by(models.MeetingSummary.created_at.desc()).first()
+    summary_action_items = [item.model_dump() for item in summary_payload.action_items] if generate_action_items else []
     summary_data = {
         "language": language,
         "key_points": summary_payload.key_points,
         "decisions": summary_payload.decisions,
-        "action_items": [item.model_dump() for item in summary_payload.action_items],
+        "action_items": summary_action_items,
         "risks": summary_payload.risks,
         "open_questions": summary_payload.open_questions,
         "timeline_highlights": summary_payload.timeline_highlights,
@@ -521,7 +560,7 @@ async def finalize_meeting_transcript(
     else:
         summary_db = create_meeting_summary(db, {"meeting_id": meeting_id, **summary_data})
 
-    if summary_status == "COMPLETED":
+    if summary_status == "COMPLETED" and generate_action_items:
         for ai in summary_payload.action_items:
             owner = (ai.owner or "").strip() or None
             deadline = (ai.deadline or "").strip() or None

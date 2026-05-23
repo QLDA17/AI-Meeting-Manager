@@ -114,6 +114,13 @@ const getInitials = (user: User) => {
   return user.email.substring(0, 2).toUpperCase();
 };
 
+const getDisplayName = (user: User) => (
+  user.displayName
+  || `${user.firstName || ''} ${user.lastName || ''}`.trim()
+  || user.email
+  || 'Thành viên'
+);
+
 const getAvatarColor = (id: string) => {
   const colors = [
     'bg-blue-500 text-white',
@@ -225,20 +232,23 @@ const MeetingCard: React.FC<MeetingCardProps> = ({
                 {meeting.attendees.slice(0, 4).map((att) => (
                   <div
                     key={att.id}
-                    className={`inline-flex h-6 w-6 items-center justify-center rounded-full text-[9px] font-bold ring-2 ring-white transition-transform hover:scale-110 hover:z-10 cursor-pointer ${
+                    className={`group/avatar relative inline-flex h-6 w-6 items-center justify-center rounded-full text-[9px] font-bold ring-2 ring-white transition-transform hover:scale-110 hover:z-10 cursor-pointer ${
                       att.avatarUrl ? '' : getAvatarColor(att.id || att.email)
                     }`}
-                    title={att.displayName || `${att.firstName} ${att.lastName}` || att.email}
+                    title={getDisplayName(att)}
                   >
                     {att.avatarUrl ? (
                       <img
                         src={att.avatarUrl}
-                        alt={att.displayName || att.email}
+                        alt={getDisplayName(att)}
                         className="h-full w-full rounded-full object-cover"
                       />
                     ) : (
                       getInitials(att)
                     )}
+                    <div className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-2 hidden -translate-x-1/2 whitespace-nowrap rounded-lg bg-gray-900 px-2 py-1 text-[10px] font-bold text-white shadow-lg group-hover/avatar:block dark:bg-slate-100 dark:text-slate-900">
+                      {getDisplayName(att)}
+                    </div>
                   </div>
                 ))}
                 {meeting.attendees.length > 4 && (

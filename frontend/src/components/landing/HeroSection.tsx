@@ -147,7 +147,7 @@ const HeroSection: React.FC = () => {
               transition={{ duration: 0.5, delay: 0.2 }}
               className="text-lg text-gray-600 leading-relaxed mb-10 max-w-xl mx-auto lg:mx-0"
             >
-              MultiMinutes AI tự động phiên âm, nhận diện người nói và tổng hợp biên bản chính thức ngay trên trình duyệt. Bảo mật, nhanh chóng và không cần cài đặt.
+              CONVIA tự động phiên âm, nhận diện người nói và tổng hợp biên bản chính thức ngay trên trình duyệt. Bảo mật, nhanh chóng và không cần cài đặt.
             </motion.p>
 
             <motion.div 

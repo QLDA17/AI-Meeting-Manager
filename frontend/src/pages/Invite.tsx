@@ -96,7 +96,7 @@ const Invite: React.FC = () => {
                 <Building2 size={36} />
               </div>
               <h1 className="text-4xl font-black tracking-tight">Lời mời tham gia tổ chức</h1>
-              <p className="text-slate-400">Bạn đã được mời tham gia workspace trên MultiMinutes AI.</p>
+              <p className="text-slate-400">Bạn đã được mời tham gia workspace trên CONVIA.</p>
             </div>
 
             <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-6 space-y-4">

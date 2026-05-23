@@ -229,6 +229,7 @@ def create_glossary_term(db: Session, term_data: dict, created_by: str) -> model
         id=term_data.get("id", str(uuid.uuid4())),
         organization_id=term_data.get("organization_id"),
         term=term_data["term"],
+        aliases=term_data.get("aliases") or [],
         translation_vi=term_data.get("translation_vi"),
         translation_en=term_data.get("translation_en"),
         translation_ja=term_data.get("translation_ja"),
@@ -266,3 +267,60 @@ def delete_glossary_term(db: Session, term_id: str) -> bool:
     db.delete(db_term)
     db.commit()
     return True
+
+
+def get_glossary_suggestion_by_id(db: Session, suggestion_id: str) -> Optional[models.GlossarySuggestion]:
+    return db.query(models.GlossarySuggestion).filter(models.GlossarySuggestion.id == suggestion_id).first()
+
+
+def get_glossary_suggestions(
+    db: Session,
+    organization_id: str,
+    status: Optional[str] = None,
+    skip: int = 0,
+    limit: int = 100,
+) -> List[models.GlossarySuggestion]:
+    query = db.query(models.GlossarySuggestion).filter(models.GlossarySuggestion.organization_id == organization_id)
+    if status:
+        query = query.filter(models.GlossarySuggestion.status == status)
+    return query.order_by(
+        models.GlossarySuggestion.status.asc(),
+        models.GlossarySuggestion.occurrence_count.desc(),
+        models.GlossarySuggestion.updated_at.desc(),
+    ).offset(skip).limit(limit).all()
+
+
+def create_glossary_suggestion(db: Session, suggestion_data: dict) -> models.GlossarySuggestion:
+    db_suggestion = models.GlossarySuggestion(
+        id=suggestion_data.get("id", str(uuid.uuid4())),
+        organization_id=suggestion_data["organization_id"],
+        status=suggestion_data.get("status", "PENDING"),
+        canonical_term_candidate=suggestion_data["canonical_term_candidate"],
+        alias_candidates=suggestion_data.get("alias_candidates") or [],
+        category_hint=suggestion_data.get("category_hint"),
+        source_meeting_ids=suggestion_data.get("source_meeting_ids") or [],
+        evidence_examples=suggestion_data.get("evidence_examples") or [],
+        occurrence_count=suggestion_data.get("occurrence_count", 0),
+        confidence_score=suggestion_data.get("confidence_score", 0.0),
+        suggestion_type=suggestion_data.get("suggestion_type", "UNKNOWN_TERM"),
+        reviewed_by=suggestion_data.get("reviewed_by"),
+        reviewed_at=suggestion_data.get("reviewed_at"),
+    )
+    db.add(db_suggestion)
+    db.commit()
+    db.refresh(db_suggestion)
+    return db_suggestion
+
+
+def update_glossary_suggestion(db: Session, suggestion_id: str, updates: dict) -> Optional[models.GlossarySuggestion]:
+    db_suggestion = get_glossary_suggestion_by_id(db, suggestion_id)
+    if not db_suggestion:
+        return None
+
+    for key, value in updates.items():
+        if hasattr(db_suggestion, key):
+            setattr(db_suggestion, key, value)
+
+    db.commit()
+    db.refresh(db_suggestion)
+    return db_suggestion

@@ -9,18 +9,27 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.responses import FileResponse
 from starlette.websockets import WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from src.api import auth, models, schemas
+from src.api.core.app_state import config, ensure_audio_upload_dir, resolve_audio_storage_path
 from src.api.core.meetings_support import (
     estimate_segment_end,
     normalize_speaker_label,
 )
 from src.api.core.meeting_operations import get_ws_user, meeting_room_manager
+from src.api.core.upload_jobs import (
+    UploadMeetingJob,
+    normalize_upload_language,
+    register_upload_job,
+    sanitize_upload_filename,
+    start_upload_job,
+    validate_upload_filename,
+)
 from src.api.core.nlp_support import (
     build_glossary_dict,
     build_speaker_aware_transcript,
@@ -31,6 +40,7 @@ from src.api.core.nlp_support import (
 from src.api.core.transcript_support import build_transcript_from_drafts, serialize_transcript_draft_chunks
 from src.api.core.tasks_support import _extract_json_object, _normalize_analysis_payload
 from src.api.core.user_payloads import ensure_speaker_mapping, get_meeting_by_id, require_meeting_room_access
+from src.api.crud import add_meeting_participant, create_audio_file, create_meeting, update_meeting
 from src.api.database import SessionLocal, get_db
 from src.cost.cost_logger import CostLogger
 from src.api.core.admin_operations import ADMIN_PROMPTS
@@ -38,7 +48,27 @@ from src.api.core.admin_operations import ADMIN_PROMPTS
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["stt"])
 
-AUDIO_UPLOAD_DIR = os.path.join("data", "meetings", "audio")
+
+def parse_bool_form(value: Any, default: bool = True) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def parse_optional_form_datetime(raw_value: Optional[str]) -> Optional[datetime]:
+    if not raw_value:
+        return None
+    normalized = raw_value.strip()
+    if not normalized:
+        return None
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+    parsed = datetime.fromisoformat(normalized)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 def upsert_transcript_draft(
     db: Session,
@@ -86,64 +116,117 @@ def upsert_transcript_draft(
 
 @router.post("/api/upload")
 async def upload_audio(
-    background_tasks: BackgroundTasks, 
     file: UploadFile = File(...), 
+    organization_id: str = Form(...),
+    group_id: Optional[str] = Form(None),
+    title: Optional[str] = Form(None),
+    description: Optional[str] = Form(None),
+    scheduled_start: Optional[str] = Form(None),
+    scheduled_end: Optional[str] = Form(None),
+    language: str = Form("auto"),
+    stt_provider: str = Form("deepgram"),
+    enable_diarization: bool = Form(True),
+    enable_glossary: bool = Form(True),
+    enable_summary: bool = Form(True),
+    enable_action_items: bool = Form(True),
+    enable_noise_cleanup: bool = Form(True),
     db: Session = Depends(get_db),
     current_user = Depends(auth.get_current_user)
 ):
-    # Temporarily disabled due to torch codec issue
-    raise HTTPException(status_code=503, detail="Upload feature temporarily disabled due to dependency issues")
+    auth.require_org_member(db, current_user, organization_id)
+    if group_id:
+        group = auth.require_group_member(db, current_user, group_id)
+        if group.organization_id != organization_id:
+            raise HTTPException(status_code=400, detail="Group does not belong to organization")
 
-    # if not file.filename.lower().endswith((".wav", ".mp3")):
-    #     raise HTTPException(
-    #         status_code= status.HTTP_400_BAD_REQUEST,
-    #         detail="Invalid file type. Only .wav and .mp3 are supported.",
-    #     )
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Audio file is required")
 
-    # # Ensure upload directory exists
-    # upload_dir = os.path.join("data", "uploads")
-    # os.makedirs(upload_dir, exist_ok=True)
-    
-    # # Save file to disk
-    # file_id = str(uuid.uuid4())
-    # extension = os.path.splitext(file.filename)[1]
-    # file_path = os.path.join(upload_dir, f"{file_id}{extension}")
-    
-    # with open(file_path, "wb") as buffer:
-    #     content = await file.read()
-    #     buffer.write(content)
+    try:
+        validate_upload_filename(file.filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    # # Create meeting record with new schema
-    # meeting_data = {
-    #     "title": file.filename,
-    #     "status": "IN_PROGRESS",
-    #     "meeting_type": "MEETING",
-    # }
-    # db_meeting = create_meeting(db, meeting_data, created_by=current_user.id)
-    
-    # # Create audio file record
-    # from src.api.crud import create_audio_file
-    # audio_data = {
-    #     "meeting_id": db_meeting.id,
-    #     "filename": f"{file_id}{extension}",
-    #     "original_filename": file.filename,
-    #     "file_path": file_path,
-    #     "file_size": os.path.getsize(file_path),
-    #     "format": extension[1:].upper(),
-    #     "upload_status": "UPLOADED"
-    # }
-    # db_audio = create_audio_file(db, audio_data)
-    
-    # # Initialize Job
-    # job = MeetingProcessingJob(db_meeting.id, db_meeting.title, cost_logger)
-    # job.audio_path = file_path
-    # job.audio_file_id = db_audio.id
-    # JOBS[job.job_id] = job
+    max_upload_size = int(config.server.max_upload_size or 0)
+    upload_bytes = bytearray()
+    while True:
+        chunk = await file.read(1024 * 1024)
+        if not chunk:
+            break
+        upload_bytes.extend(chunk)
+        if max_upload_size and len(upload_bytes) > max_upload_size:
+            raise HTTPException(status_code=413, detail=f"File too large. Max size is {max_upload_size // (1024 * 1024)}MB")
+    if not upload_bytes:
+        raise HTTPException(status_code=400, detail="Empty audio file")
 
-    # # Run background pipeline
-    # background_tasks.add_task(job.run)
+    try:
+        parsed_start = parse_optional_form_datetime(scheduled_start)
+        parsed_end = parse_optional_form_datetime(scheduled_end)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid meeting date/time") from exc
 
-    # return {"job_id": job.job_id, "meeting_id": db_meeting.id}
+    meeting_title = (title or "").strip() or os.path.splitext(file.filename)[0]
+    meeting_payload = {
+        "organization_id": organization_id,
+        "group_id": group_id,
+        "title": meeting_title,
+        "description": description,
+        "meeting_type": "MEETING",
+        "status": "queued",
+        "scheduled_start": parsed_start,
+        "scheduled_end": parsed_end,
+    }
+    meeting = create_meeting(db, meeting_payload, created_by=current_user.id)
+    add_meeting_participant(db, meeting.id, user_id=current_user.id, role="HOST", invite_status="accepted")
+
+    meeting_dir = os.path.join(ensure_audio_upload_dir(), meeting.id)
+    os.makedirs(meeting_dir, exist_ok=True)
+    stored_filename = sanitize_upload_filename(file.filename)
+    original_path = os.path.join(meeting_dir, stored_filename)
+    with open(original_path, "wb") as output_file:
+        output_file.write(upload_bytes)
+
+    audio_record = create_audio_file(db, {
+        "meeting_id": meeting.id,
+        "filename": stored_filename,
+        "original_filename": file.filename,
+        "file_path": original_path,
+        "file_size": len(upload_bytes),
+        "format": os.path.splitext(stored_filename)[1].replace(".", "").upper() or "BIN",
+        "upload_status": "UPLOADED",
+    })
+    audio_stream_url = f"/api/audio-files/{audio_record.id}/stream"
+    update_meeting(db, meeting.id, {
+        "audio_url": audio_stream_url,
+        "recording_url": audio_stream_url,
+        "status": "queued",
+    })
+
+    normalized_language = normalize_upload_language(language)
+    provider_name = (stt_provider or "deepgram").strip().lower() or "deepgram"
+    job = register_upload_job(UploadMeetingJob(
+        meeting_id=meeting.id,
+        created_by=current_user.id,
+        audio_file_id=audio_record.id,
+        original_audio_path=original_path,
+        original_filename=file.filename,
+        organization_id=organization_id,
+        stt_provider=provider_name,
+        language=normalized_language,
+        enable_diarization=parse_bool_form(enable_diarization, True),
+        enable_glossary=parse_bool_form(enable_glossary, True),
+        enable_summary=parse_bool_form(enable_summary, True),
+        enable_action_items=parse_bool_form(enable_action_items, True),
+        enable_noise_cleanup=parse_bool_form(enable_noise_cleanup, True),
+    ))
+    start_upload_job(job)
+    return {
+        "job_id": job.job_id,
+        "meeting_id": meeting.id,
+        "status": job.status,
+        "progress_percent": job.progress_percent,
+        "current_stage": job.current_stage,
+    }
 
 # Singleton STT providers - load once, reuse for all chunks
 _stt_service = None
@@ -639,7 +722,7 @@ async def meeting_stt_stream(
             bridge.send_media(first_bytes)
 
         # Save raw audio for recording persistence
-        audio_dir = os.path.join(AUDIO_UPLOAD_DIR, meeting_id)
+        audio_dir = os.path.join(ensure_audio_upload_dir(), meeting_id)
         os.makedirs(audio_dir, exist_ok=True)
         raw_audio_path = os.path.join(audio_dir, f"stream_{current_user.id}_{int(time.time())}.pcm")
         raw_audio_file = open(raw_audio_path, "ab")
@@ -1031,7 +1114,7 @@ async def transcribe_chunk(
         # Save chunk to permanent storage for later concatenation
         if chunk_index is not None:
             try:
-                perm_dir = os.path.join(AUDIO_UPLOAD_DIR, meeting_id)
+                perm_dir = os.path.join(ensure_audio_upload_dir(), meeting_id)
                 os.makedirs(perm_dir, exist_ok=True)
                 chunk_filename = f"chunk_{chunk_index:06d}{suffix}"
                 permanent_path = os.path.join(perm_dir, chunk_filename)
@@ -1231,13 +1314,19 @@ def stream_audio_file(
     """Stream an audio file by its ID. No auth required for direct playback."""
     audio_file = db.query(models.AudioFile).filter(models.AudioFile.id == audio_id).first()
     if not audio_file:
-        raise HTTPException(status_code=404, detail="Audio file not found")
-    if not os.path.exists(audio_file.file_path):
-        raise HTTPException(status_code=404, detail="Audio file not found on disk")
+        raise HTTPException(status_code=404, detail="Audio file record missing")
+    resolved_path = resolve_audio_storage_path(audio_file.file_path)
+    if not resolved_path:
+        raise HTTPException(status_code=404, detail="Audio path could not be resolved")
+    if not os.path.exists(resolved_path):
+        raise HTTPException(status_code=404, detail="Audio file missing on disk")
+    if resolved_path != audio_file.file_path:
+        logger.info("Backfilled audio file path for %s from %s to %s", audio_id, audio_file.file_path, resolved_path)
+        audio_file.file_path = resolved_path
+        db.commit()
+        db.refresh(audio_file)
     return FileResponse(
-        audio_file.file_path,
+        resolved_path,
         media_type="audio/wav",
         filename=audio_file.original_filename or "recording.wav",
     )
-
-

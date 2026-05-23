@@ -582,7 +582,7 @@ const AdminOrganizations: React.FC = () => {
                                   <p className="truncate text-xs font-medium text-gray-500">{member.email}</p>
                                 </div>
                                 <div className="shrink-0">
-                                  {role === 'org-admin' || role === 'owner' ? (
+                                  {(role as string) === 'org-admin' || (role as string) === 'owner' ? (
                                     <span className="inline-flex items-center gap-1 rounded-lg bg-purple-50 px-2 py-1 text-[10px] font-black uppercase tracking-widest text-purple-700 dark:bg-purple-900/30 dark:text-purple-400">
                                       <Shield size={12} strokeWidth={2.5} /> Admin
                                     </span>

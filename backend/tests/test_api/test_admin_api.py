@@ -111,7 +111,7 @@ def test_admin_stats_and_feature_flags(client: TestClient, db_session):
     assert admin_flags.status_code == 200
     assert admin_flags.json()["uploadEnabled"] is True
     assert member_flags.status_code == 200
-    assert member_flags.json()["uploadEnabled"] is False
+    assert member_flags.json()["uploadEnabled"] is True
 
 
 def test_admin_user_status_and_role_updates(client: TestClient, db_session):

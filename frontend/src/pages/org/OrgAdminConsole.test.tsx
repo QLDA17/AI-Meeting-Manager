@@ -1,5 +1,5 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi } from 'vitest';
 import { BrowserRouter } from 'react-router-dom';
 import OrgAdminConsole from './OrgAdminConsole';
 
@@ -42,8 +42,22 @@ vi.mock('../../stores', () => ({
   }),
   useGlossaryStore: () => ({
     glossaries: [],
+    categories: [],
+    suggestions: [],
+    insights: null,
     loadGlossaries: vi.fn(),
+    loadGlossaryCategories: vi.fn(),
+    loadSuggestions: vi.fn(),
+    loadInsights: vi.fn(),
     removeGlossary: vi.fn(),
+    createGlossary: vi.fn(),
+    updateGlossary: vi.fn(),
+    importGlossaries: vi.fn(),
+    exportGlossaries: vi.fn(),
+    runSuggestions: vi.fn(),
+    approveSuggestion: vi.fn(),
+    mergeSuggestion: vi.fn(),
+    rejectSuggestion: vi.fn(),
   }),
 }));
 
@@ -66,13 +80,14 @@ const renderComponent = () => {
 describe('OrgAdminConsole Component', () => {
   it('renders the console with organization name', () => {
     renderComponent();
-    expect(screen.getByText(/Test Org - Bảng quản trị/i)).toBeInTheDocument();
+    expect(screen.getByText(/Quản trị tổ chức/i)).toBeInTheDocument();
+    expect(screen.getByText(/Test Org/i)).toBeInTheDocument();
   });
 
   it('renders quick stats correctly', () => {
     renderComponent();
-    expect(screen.getByText('10')).toBeInTheDocument(); // memberCount
-    expect(screen.getByText('5')).toBeInTheDocument();  // groupCount
+    expect(screen.getByText(/10\s+người dùng/i)).toBeInTheDocument(); // memberCount
+    expect(screen.getByText(/5\s+nhóm/i)).toBeInTheDocument();  // groupCount
   });
 
   it('switches to Settings tab and renders content', async () => {
@@ -81,8 +96,8 @@ describe('OrgAdminConsole Component', () => {
     const settingsTab = screen.getByText('Cài đặt');
     fireEvent.click(settingsTab);
     
-    expect(await screen.findByText('Thông tin Tổ chức')).toBeInTheDocument();
-    expect(screen.getByLabelText('Tên hiển thị')).toHaveValue('Test Org');
+    expect(await screen.findByText('Cấu hình tổ chức')).toBeInTheDocument();
+    expect(screen.getByLabelText('Tên tổ chức')).toHaveValue('Test Org');
   });
 
   it('switches to Glossaries tab', async () => {

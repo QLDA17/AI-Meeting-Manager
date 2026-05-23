@@ -102,7 +102,7 @@ MEETING_REMINDER_TEMPLATE = """
             </a>
         </div>
         <p style="color: #999; font-size: 12px; text-align: center; margin-top: 30px;">
-            © 2026 MultiMinutes AI - Hệ thống Ghi Biên Bản AI
+            © 2026 CONVIA - Hệ thống Ghi Biên Bản AI
         </p>
     </div>
 </div>
@@ -131,7 +131,7 @@ MEETING_COMPLETED_TEMPLATE = """
         </div>
         {% endif %}
         <p style="color: #999; font-size: 12px; text-align: center; margin-top: 30px;">
-            © 2026 MultiMinutes AI - Hệ thống Ghi Biên Bản AI
+            © 2026 CONVIA - Hệ thống Ghi Biên Bản AI
         </p>
     </div>
 </div>
@@ -161,7 +161,7 @@ ACTION_ITEM_ASSIGNED_TEMPLATE = """
             </a>
         </div>
         <p style="color: #999; font-size: 12px; text-align: center; margin-top: 30px;">
-            © 2026 MultiMinutes AI - Hệ thống Ghi Biên Bản AI
+            © 2026 CONVIA - Hệ thống Ghi Biên Bản AI
         </p>
     </div>
 </div>
@@ -188,7 +188,7 @@ EXPORT_READY_TEMPLATE = """
             </a>
         </div>
         <p style="color: #999; font-size: 12px; text-align: center; margin-top: 30px;">
-            File sẽ được giữ trong 7 ngày. © 2026 MultiMinutes AI
+            File sẽ được giữ trong 7 ngày. © 2026 CONVIA
         </p>
     </div>
 </div>
@@ -353,13 +353,13 @@ async def custom_notification(request: NotificationRequest, background_tasks: Ba
                     {request.data.get('message', 'Bạn có một thông báo mới.')}
                 </p>
                 <p style="color: #999; font-size: 12px; text-align: center; margin-top: 30px;">
-                    © 2026 MultiMinutes AI
+                    © 2026 CONVIA
                 </p>
             </div>
         </div>
         """
         
-        subject = request.data.get('subject', 'Thông báo từ MultiMinutes AI')
+        subject = request.data.get('subject', 'Thông báo từ CONVIA')
         send_email(request.recipient_email, subject, html_content)
     
     background_tasks.add_task(send_custom)

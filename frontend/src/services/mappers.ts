@@ -2,6 +2,8 @@ import type {
   ActionItem,
   DashboardStats,
   FeatureFlags,
+  GlossaryInsights,
+  GlossarySuggestion,
   GlossaryTerm,
   Group,
   GroupMessage,
@@ -388,6 +390,7 @@ export const normalizeGlossaryTerm = (term: any): GlossaryTerm => ({
   organizationId: term.organizationId ?? term.organization_id ?? undefined,
   name: term.name ?? term.term,
   term: term.term,
+  aliases: Array.isArray(term.aliases) ? term.aliases.filter((alias: unknown) => typeof alias === 'string') : [],
   translationVi: term.translationVi ?? term.translation_vi ?? '',
   translationEn: term.translationEn ?? term.translation_en ?? '',
   translationJa: term.translationJa ?? term.translation_ja ?? '',
@@ -399,6 +402,36 @@ export const normalizeGlossaryTerm = (term: any): GlossaryTerm => ({
   createdAt: asIsoString(term.createdAt ?? term.created_at),
   updatedAt: asIsoString(term.updatedAt ?? term.updated_at),
   scope: term.organization_id || term.organizationId ? 'ORGANIZATION' : 'GLOBAL',
+});
+
+export const normalizeGlossarySuggestion = (suggestion: any): GlossarySuggestion => ({
+  id: suggestion.id,
+  organization_id: suggestion.organization_id,
+  status: suggestion.status ?? 'PENDING',
+  canonical_term_candidate: suggestion.canonical_term_candidate ?? '',
+  alias_candidates: Array.isArray(suggestion.alias_candidates) ? suggestion.alias_candidates.filter((alias: unknown) => typeof alias === 'string') : [],
+  category_hint: suggestion.category_hint ?? undefined,
+  source_meeting_ids: Array.isArray(suggestion.source_meeting_ids) ? suggestion.source_meeting_ids : [],
+  evidence_examples: Array.isArray(suggestion.evidence_examples) ? suggestion.evidence_examples : [],
+  occurrence_count: asNumber(suggestion.occurrence_count),
+  confidence_score: asNumber(suggestion.confidence_score),
+  suggestion_type: suggestion.suggestion_type ?? 'UNKNOWN_TERM',
+  reviewed_by: suggestion.reviewed_by ?? undefined,
+  reviewed_at: suggestion.reviewed_at ? asIsoString(suggestion.reviewed_at) : undefined,
+  created_at: suggestion.created_at ? asIsoString(suggestion.created_at) : undefined,
+  updated_at: suggestion.updated_at ? asIsoString(suggestion.updated_at) : undefined,
+});
+
+export const normalizeGlossaryInsights = (insights: any): GlossaryInsights => ({
+  top_corrected_aliases: Array.isArray(insights?.top_corrected_aliases)
+    ? insights.top_corrected_aliases.map((item: any) => ({ value: item.value ?? '', count: asNumber(item.count) }))
+    : [],
+  top_missing_terms: Array.isArray(insights?.top_missing_terms)
+    ? insights.top_missing_terms.map((item: any) => ({ value: item.value ?? '', count: asNumber(item.count) }))
+    : [],
+  pending_suggestions_count: asNumber(insights?.pending_suggestions_count),
+  approved_count: asNumber(insights?.approved_count),
+  rejected_count: asNumber(insights?.rejected_count),
 });
 
 export const normalizeGroupMessage = (message: any): GroupMessage => ({

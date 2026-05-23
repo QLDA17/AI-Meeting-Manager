@@ -557,7 +557,7 @@ const NoOrgView: React.FC = () => {
               <input
                 autoFocus
                 className="w-full h-14 rounded-2xl border-gray-100 bg-gray-50 px-5 text-lg font-bold focus:border-primary-500 focus:bg-white focus:ring-4 focus:ring-primary-500/10 dark:border-slate-800 dark:bg-slate-800/50 dark:text-white"
-                placeholder="Ví dụ: Công ty MultiMinutes AI"
+                placeholder="Ví dụ: Công ty CONVIA"
                 value={orgName}
                 onChange={(e) => setOrgName(e.target.value)}
                 required

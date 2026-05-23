@@ -17,6 +17,7 @@ from src.api.core.admin_runtime import (
     ensure_audit_log_table,
 )
 from src.api.core.notifications_support import create_persisted_notification
+from src.api.core.upload_jobs import feature_flags_for_user
 from src.api.core.user_payloads import format_user_payload
 from src.api.crud import update_user
 
@@ -336,8 +337,4 @@ def get_costs_payload() -> None:
 
 
 def get_feature_flags_payload(current_user: models.User) -> Dict[str, bool]:
-    return {
-        "uploadEnabled": current_user.role == "system-admin",
-        "jobTrackingEnabled": current_user.role == "system-admin",
-        "systemAdminEnabled": current_user.role == "system-admin",
-    }
+    return feature_flags_for_user(current_user)

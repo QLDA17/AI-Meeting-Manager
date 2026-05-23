@@ -55,7 +55,7 @@ def build_password_reset_email_html(reset_code: str, expires_minutes: int) -> st
             <h1 style='color: white; margin: 0;'>Ma xac thuc dat lai mat khau</h1>
         </div>
         <div style='background: #f8fafc; padding: 30px; border-radius: 0 0 12px 12px;'>
-            <p style='color: #0f172a; font-size: 16px;'>Ban vua yeu cau dat lai mat khau MultiMinutes AI.</p>
+            <p style='color: #0f172a; font-size: 16px;'>Ban vua yeu cau dat lai mat khau CONVIA.</p>
             <p style='color: #475569; font-size: 14px;'>Nhap ma OTP ben duoi vao man hinh "Quen mat khau".</p>
             <div style='margin: 28px 0; text-align: center;'>
                 <div style='display: inline-block; font-size: 36px; font-weight: 700; letter-spacing: 8px; color: #0f172a; background: white; border: 1px solid #dbeafe; border-radius: 12px; padding: 16px 24px;'>{reset_code}</div>
@@ -200,7 +200,7 @@ def forgot_password_payload(req: schemas.ForgotPasswordRequest, db: Session) -> 
     email_html = build_password_reset_email_html(otp, expires_minutes)
     email_sent = _send_email_via_main(
         user.email,
-        "MultiMinutes AI - Ma dat lai mat khau",
+        "CONVIA - Ma dat lai mat khau",
         email_html,
     )
 

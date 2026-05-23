@@ -372,7 +372,7 @@ def create_invitation_payload(
         inv_data.role,
         invite_url,
     )
-    subject = f"Lời mời tham gia {organization.name if organization else 'MultiMinutes AI'}"
+    subject = f"Lời mời tham gia {organization.name if organization else 'CONVIA'}"
     email_sent = send_email(invite_email, subject, email_html)
     if target_user:
         create_persisted_notification(

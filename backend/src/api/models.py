@@ -600,6 +600,7 @@ class GlossaryTerm(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
     organization_id: Mapped[str] = mapped_column(String(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True)
     term: Mapped[str] = mapped_column(String(255), nullable=False)
+    aliases: Mapped[list] = mapped_column(JSON, nullable=True, default=list)
     translation_vi: Mapped[str] = mapped_column(String(255), nullable=True)
     translation_en: Mapped[str] = mapped_column(String(255), nullable=True)
     translation_ja: Mapped[str] = mapped_column(String(255), nullable=True)
@@ -618,6 +619,38 @@ class GlossaryTerm(Base):
     # Relationships
     organization = relationship("Organization", back_populates="glossary_terms")
     created_by_user = relationship("User", back_populates="glossary_terms")
+
+
+class GlossarySuggestion(Base):
+    __tablename__ = "glossary_suggestions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    organization_id: Mapped[str] = mapped_column(String(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="PENDING")
+    canonical_term_candidate: Mapped[str] = mapped_column(String(255), nullable=False)
+    alias_candidates: Mapped[list] = mapped_column(JSON, nullable=True, default=list)
+    category_hint: Mapped[str] = mapped_column(String(100), nullable=True)
+    source_meeting_ids: Mapped[list] = mapped_column(JSON, nullable=True, default=list)
+    evidence_examples: Mapped[list] = mapped_column(JSON, nullable=True, default=list)
+    occurrence_count: Mapped[int] = mapped_column(Integer, default=0)
+    confidence_score: Mapped[float] = mapped_column(Float, default=0.0)
+    suggestion_type: Mapped[str] = mapped_column(String(30), default="UNKNOWN_TERM")
+    reviewed_by: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    reviewed_at: Mapped[DateTime] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        CheckConstraint("status IN ('PENDING', 'APPROVED', 'REJECTED', 'APPLIED')", name='check_glossary_suggestion_status'),
+        CheckConstraint(
+            "suggestion_type IN ('UNKNOWN_TERM', 'VARIANT_CLUSTER', 'PROPER_NOUN', 'ABBREVIATION')",
+            name='check_glossary_suggestion_type'
+        ),
+        Index('idx_glossary_suggestions_org_status', 'organization_id', 'status'),
+    )
+
+    organization = relationship("Organization")
+    reviewed_by_user = relationship("User", foreign_keys=[reviewed_by])
 
 
 class AuditLog(Base):

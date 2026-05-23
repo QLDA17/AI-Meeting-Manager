@@ -1,3 +1,5 @@
+import io
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -5,6 +7,8 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from src.api import auth, models
+from src.api.core.glossary_action_item_operations import generate_glossary_suggestions_for_transcript
+from src.api.core.nlp_support import build_glossary_dict
 from src.api.crud import add_user_to_group, add_user_to_organization, create_user
 from src.api.main import app
 from src.api.database import get_db, Base
@@ -137,6 +141,7 @@ def test_glossary_crud(client, auth_context):
         json={
             "organization_id": auth_context["org_id"],
             "term": "LLM",
+            "aliases": ["el em", "large language model"],
             "translation_vi": "Mô hình ngôn ngữ lớn",
             "category": "AI",
         },
@@ -145,6 +150,7 @@ def test_glossary_crud(client, auth_context):
     assert create_response.status_code == 200
     term = create_response.json()
     assert term["term"] == "LLM"
+    assert term["aliases"] == ["el em", "large language model"]
 
     list_response = client.get(
         f"/api/glossary?organization_id={auth_context['org_id']}",
@@ -156,13 +162,198 @@ def test_glossary_crud(client, auth_context):
     update_response = client.patch(
         f"/api/glossary/{term['id']}",
         headers=auth_context["headers"],
-        json={"translation_en": "Large Language Model"},
+        json={"translation_en": "Large Language Model", "aliases": ["l l m", "model llm"]},
     )
     assert update_response.status_code == 200
     assert update_response.json()["translation_en"] == "Large Language Model"
+    assert update_response.json()["aliases"] == ["l l m", "model llm"]
 
     delete_response = client.delete(f"/api/glossary/{term['id']}", headers=auth_context["headers"])
     assert delete_response.status_code == 200
+
+
+def test_glossary_alias_conflict_rejected(client, auth_context):
+    first = client.post(
+        "/api/glossary",
+        headers=auth_context["headers"],
+        json={
+            "organization_id": auth_context["org_id"],
+            "term": "CI/CD",
+            "aliases": ["ci cd"],
+        },
+    )
+    assert first.status_code == 200
+
+    conflict = client.post(
+        "/api/glossary",
+        headers=auth_context["headers"],
+        json={
+            "organization_id": auth_context["org_id"],
+            "term": "Pipeline",
+            "aliases": ["CI CD"],
+        },
+    )
+    assert conflict.status_code == 409
+    assert "alias conflict" in conflict.json()["detail"].lower()
+
+
+def test_glossary_categories_import_export_and_builder(client, auth_context, db_session):
+    create_response = client.post(
+        "/api/glossary",
+        headers=auth_context["headers"],
+        json={
+            "organization_id": auth_context["org_id"],
+            "term": "OpenAI",
+            "aliases": ["ô pen ai"],
+            "category": "AI",
+            "is_active": True,
+        },
+    )
+    assert create_response.status_code == 200
+
+    categories = client.get(
+        f"/api/glossary/categories?organization_id={auth_context['org_id']}",
+        headers=auth_context["headers"],
+    )
+    assert categories.status_code == 200
+    assert "AI" in categories.json()
+
+    csv_content = """term,aliases,category,translation_vi,translation_en,translation_ja,translation_zh,translation_ko,is_active
+KPI,ca pi ai;key performance indicator,Metrics,Chi so KPI,KPI,,,,true
+Docker,doc co,Platform,Docker,Docker,,,,false
+"""
+    import_response = client.post(
+        "/api/glossary/import",
+        headers=auth_context["headers"],
+        data={"organization_id": auth_context["org_id"]},
+        files={"file": ("glossary.csv", io.BytesIO(csv_content.encode("utf-8")), "text/csv")},
+    )
+    assert import_response.status_code == 200
+    report = import_response.json()
+    assert report["created"] == 2
+    assert report["updated"] == 0
+    assert report["errors"] == []
+
+    export_response = client.get(
+        f"/api/glossary/export?organization_id={auth_context['org_id']}",
+        headers=auth_context["headers"],
+    )
+    assert export_response.status_code == 200
+    assert "term,aliases,category" in export_response.text
+    assert "KPI,ca pi ai;key performance indicator,Metrics" in export_response.text
+
+    glossary_dict = build_glossary_dict(db_session, auth_context["org_id"])
+    assert glossary_dict["OpenAI"] == "OpenAI"
+    assert glossary_dict["ô pen ai"] == "OpenAI"
+    assert glossary_dict["ca pi ai"] == "KPI"
+    assert "doc co" not in glossary_dict
+
+
+def test_glossary_suggestion_generation_review_and_insights(client, auth_context, db_session):
+    user = db_session.query(models.User).filter(models.User.email == "test@example.com").first()
+    meeting = models.Meeting(
+        organization_id=auth_context["org_id"],
+        title="Glossary Suggestion Meeting",
+        created_by=user.id,
+        status="completed",
+    )
+    db_session.add(meeting)
+    db_session.commit()
+
+    suggestions = generate_glossary_suggestions_for_transcript(
+        db_session,
+        auth_context["org_id"],
+        meeting.id,
+        "OpenAI Agent la OpenAI Agent va API Gateway ket noi voi API Gateway de xu ly.",
+        {
+            "corrections": [
+                {"original": "ô pen ai", "corrected": "OpenAI", "source": "glossary"},
+                {"original": "a pi", "corrected": "API", "source": "glossary"},
+            ]
+        },
+    )
+    assert len(suggestions) >= 2
+
+    listed = client.get(
+        f"/api/glossary/suggestions?organization_id={auth_context['org_id']}",
+        headers=auth_context["headers"],
+    )
+    assert listed.status_code == 200
+    pending = listed.json()
+    assert any(item["canonical_term_candidate"] == "OpenAI Agent" for item in pending)
+
+    run_response = client.post(
+        "/api/glossary/suggestions/run",
+        headers=auth_context["headers"],
+        json={"organization_id": auth_context["org_id"]},
+    )
+    assert run_response.status_code == 200
+    assert run_response.json()["processed_transcripts"] >= 0
+
+    openai_agent = next(item for item in pending if item["canonical_term_candidate"] == "OpenAI Agent")
+    approve = client.post(
+        f"/api/glossary/suggestions/{openai_agent['id']}/approve",
+        headers=auth_context["headers"],
+        json={
+          "organization_id": auth_context["org_id"],
+          "term": "OpenAI Agent",
+          "aliases": ["openaiagent", "OAA"],
+          "translation_vi": "Tác nhân OpenAI",
+          "is_active": True,
+        },
+    )
+    assert approve.status_code == 200
+    assert approve.json()["term"] == "OpenAI Agent"
+
+    gateway_suggestion = next(item for item in pending if item["canonical_term_candidate"] == "API Gateway")
+    existing = client.post(
+        "/api/glossary",
+        headers=auth_context["headers"],
+        json={
+            "organization_id": auth_context["org_id"],
+            "term": "Gateway",
+            "aliases": ["gw"],
+        },
+    )
+    assert existing.status_code == 200
+
+    merge = client.post(
+        f"/api/glossary/suggestions/{gateway_suggestion['id']}/merge",
+        headers=auth_context["headers"],
+        json={
+            "organization_id": auth_context["org_id"],
+            "target_term_id": existing.json()["id"],
+            "aliases": gateway_suggestion["alias_candidates"],
+        },
+    )
+    assert merge.status_code == 200
+    assert len(merge.json()["aliases"]) >= 1
+
+    rejected_source = generate_glossary_suggestions_for_transcript(
+        db_session,
+        auth_context["org_id"],
+        meeting.id,
+        "Docker Compose va Docker Compose duoc nhac lai nhieu lan.",
+        {},
+    )
+    docker = next(item for item in rejected_source if item.canonical_term_candidate == "Docker Compose")
+    reject = client.post(
+        f"/api/glossary/suggestions/{docker.id}/reject",
+        headers=auth_context["headers"],
+        json={"organization_id": auth_context["org_id"]},
+    )
+    assert reject.status_code == 200
+    assert reject.json()["status"] == "REJECTED"
+
+    insights = client.get(
+        f"/api/glossary/insights?organization_id={auth_context['org_id']}",
+        headers=auth_context["headers"],
+    )
+    assert insights.status_code == 200
+    payload = insights.json()
+    assert payload["approved_count"] >= 1
+    assert payload["rejected_count"] >= 1
+    assert any(item["value"] == "ô pen ai" for item in payload["top_corrected_aliases"])
 
 
 def test_group_user_search_short_query_and_excludes_existing_members(client, auth_context, db_session):
