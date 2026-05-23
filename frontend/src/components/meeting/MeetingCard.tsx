@@ -117,8 +117,14 @@ const getEffectiveDurationMinutes = (meeting: Meeting) => {
   if (meeting.duration) {
     return Math.max(0, meeting.duration);
   }
-  if (meeting.startTime && meeting.endTime) {
-    return Math.max(0, Math.round((safeDate(meeting.endTime).getTime() - safeDate(meeting.startTime).getTime()) / 60000));
+  const startStr = meeting.actual_start || meeting.startTime;
+  const endStr = meeting.actual_end || meeting.endTime;
+  if (startStr && endStr) {
+    const start = new Date(startStr);
+    const end = new Date(endStr);
+    if (!Number.isNaN(start.getTime()) && !Number.isNaN(end.getTime())) {
+      return Math.max(0, Math.round((end.getTime() - start.getTime()) / 60000));
+    }
   }
   return 0;
 };

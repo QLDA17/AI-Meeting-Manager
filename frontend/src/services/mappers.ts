@@ -217,12 +217,12 @@ const normalizeMeetingAttendees = (meeting: any): User[] => {
   if (Array.isArray(meeting.attendees)) {
     return meeting.attendees.map(normalizeUser);
   }
-  const attendedParticipants = Array.isArray(meeting.attended_participants)
-    ? meeting.attended_participants
-    : Array.isArray(meeting.participants)
-      ? meeting.participants.filter((participant: any) => participant?.attended)
+  const allParticipants = Array.isArray(meeting.participants)
+    ? meeting.participants
+    : Array.isArray(meeting.attended_participants)
+      ? meeting.attended_participants
       : [];
-  return attendedParticipants.map(normalizeMeetingParticipantUser);
+  return allParticipants.map(normalizeMeetingParticipantUser);
 };
 
 export const normalizeMeeting = (meeting: any): Meeting => ({
@@ -237,8 +237,8 @@ export const normalizeMeeting = (meeting: any): Meeting => ({
   scheduled_end: ensureUtc(meeting.scheduled_end),
   actual_start: ensureUtc(meeting.actual_start ?? meeting.actualStart),
   actual_end: ensureUtc(meeting.actual_end ?? meeting.actualEnd),
-  startTime: ensureUtc(meeting.startTime) || ensureUtc(meeting.scheduled_start) || asIsoString(meeting.created_at),
-  endTime: ensureUtc(meeting.endTime) || ensureUtc(meeting.scheduled_end) || asIsoString(meeting.created_at),
+  startTime: ensureUtc(meeting.actual_start ?? meeting.actualStart) || ensureUtc(meeting.startTime) || ensureUtc(meeting.scheduled_start) || asIsoString(meeting.created_at),
+  endTime: ensureUtc(meeting.actual_end ?? meeting.actualEnd) || ensureUtc(meeting.endTime) || ensureUtc(meeting.scheduled_end) || asIsoString(meeting.created_at),
   duration: asNumber(meeting.duration),
   status: meeting.status ?? 'upcoming',
   code: meeting.code ?? undefined,
