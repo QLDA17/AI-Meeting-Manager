@@ -1113,7 +1113,7 @@ const MeetingDetail: React.FC = () => {
       )}
 
       {!isUpcomingMeeting && meeting?.audioStatus === 'READY' && meeting.audioUrl && (
-        <div className="sticky top-2 z-30 mb-4" style={{ position: 'sticky', top: '8px', zIndex: 30 }}>
+        <div className="sticky top-0 z-30 mb-4" style={{ position: 'sticky', top: '0px', zIndex: 30 }}>
           <AudioPlayer
             ref={audioPlayerRef}
             src={meeting.audioUrl}
