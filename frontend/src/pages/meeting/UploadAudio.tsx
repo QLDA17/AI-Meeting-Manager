@@ -155,7 +155,6 @@ const UploadAudio: React.FC = () => {
       formData.append('language', language);
       formData.append('stt_provider', sttProvider);
       formData.append('enable_diarization', 'true');
-      formData.append('enable_glossary', 'true');
       formData.append('enable_summary', 'true');
       formData.append('enable_action_items', 'true');
       formData.append('enable_noise_cleanup', 'true');

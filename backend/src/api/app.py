@@ -11,7 +11,7 @@ from src.api.routes.admin import router as admin_router
 from src.api.routes.analytics import router as analytics_router
 from src.api.routes.auth_profile import router as auth_profile_router
 from src.api.export import router as export_router
-from src.api.routes.glossary_action_items import router as glossary_action_items_router
+from src.api.routes.action_items import router as action_items_router
 from src.api.routes.groups import router as groups_router
 from src.api.routes.jobs import router as jobs_router
 from src.api.routes.meetings import router as meetings_router
@@ -62,7 +62,7 @@ def create_app() -> FastAPI:
     app.include_router(meetings_router)
     app.include_router(stt_router)
     app.include_router(admin_router)
-    app.include_router(glossary_action_items_router)
+    app.include_router(action_items_router)
     app.include_router(system_router)
     app.include_router(notifications_router)
     app.include_router(analytics_router)

@@ -209,8 +209,6 @@ async def finalize_meeting_transcript(
         _normalize_analysis_payload,
         _split_ai_owner_text,
         _try_parse_date,
-        build_glossary_context,
-        build_glossary_dict,
         build_speaker_aware_transcript,
         build_structured_summary_prompts,
         get_phobert_processor,
@@ -233,7 +231,6 @@ async def finalize_meeting_transcript(
     regenerate = bool(body.get("regenerate", False))
     generate_summary = bool(body.get("generate_summary", True))
     generate_action_items = bool(body.get("generate_action_items", True))
-    enable_glossary = bool(body.get("enable_glossary", True))
     errors: List[str] = []
 
     meeting = db.query(models.Meeting).filter(models.Meeting.id == meeting_id).first()
@@ -283,8 +280,7 @@ async def finalize_meeting_transcript(
     if phobert_enabled_for(language):
         try:
             processor = get_phobert_processor()
-            glossary = build_glossary_dict(db, meeting.organization_id) if enable_glossary else {}
-            processed = processor.process_finalize(full_text, segments if isinstance(segments, list) else [], glossary)
+            processed = processor.process_finalize(full_text, segments if isinstance(segments, list) else [])
             full_text = str(processed.get("text") or full_text)
             segments = processed.get("segments") or segments
             nlp_metadata = processed.get("nlp_metadata")
@@ -368,20 +364,6 @@ async def finalize_meeting_transcript(
             create_transcript_segments_bulk(db, segments_data)
 
     db.commit()
-
-    try:
-        from src.api.core.glossary_action_item_operations import generate_glossary_suggestions_for_transcript
-
-        if enable_glossary:
-            generate_glossary_suggestions_for_transcript(
-                db,
-                meeting.organization_id,
-                meeting_id,
-                full_text,
-                nlp_metadata if isinstance(nlp_metadata, dict) else None,
-            )
-    except Exception as suggestion_error:
-        logger.warning("Glossary suggestion generation skipped: %s", suggestion_error, exc_info=True)
 
     audio_file_id = None
     try:
@@ -495,18 +477,12 @@ async def finalize_meeting_transcript(
         "content",
         "Create a concise executive meeting brief. Focus on outcomes, explicit decisions, and next steps only.",
     )
-    try:
-        glossary_context = build_glossary_context(db, meeting.organization_id) if enable_glossary else {}
-    except Exception as glossary_err:
-        logger.warning("Glossary context skipped: %s", glossary_err)
-        glossary_context = {}
     speaker_map = get_speaker_mapping_dict(db, meeting_id)
     speaker_aware_transcript = build_speaker_aware_transcript(full_text, segments_to_save, speaker_map)
     system_prompt, user_prompt = build_structured_summary_prompts(
         speaker_aware_transcript,
         custom_instruction,
         language,
-        glossary_context,
         nlp_metadata,
     )
 

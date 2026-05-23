@@ -22,7 +22,6 @@ class TranslationRequest:
     source_lang: str
     target_lang: str
     transcript: str
-    glossary: Dict[str, str]
     max_tokens: int = 500
     system_prompt: str = "You are a translator. Preserve [timestamp] and [Speaker_X] markers."
 
@@ -52,7 +51,7 @@ class TranslationService:
 
     def _get_fingerprint(self, req: TranslationRequest) -> str:
         """Create a stable fingerprint for the request."""
-        data = f"{req.source_lang}:{req.target_lang}:{req.transcript}:{sorted(req.glossary.items())}:{req.system_prompt}"
+        data = f"{req.source_lang}:{req.target_lang}:{req.transcript}:{req.system_prompt}"
         return hashlib.sha256(data.encode()).hexdigest()
 
     def translate(self, req: TranslationRequest) -> str:
@@ -73,12 +72,9 @@ class TranslationService:
         any_fallback = False
         
         for chunk in chunks:
-            # First apply glossary
-            chunk_with_glossary = self._apply_glossary(chunk, req.glossary)
-            # Then translate via Adapter
             translated = self.adapter.chat_completion(
                 system_prompt=req.system_prompt,
-                user_prompt=chunk_with_glossary
+                user_prompt=chunk
             )
             
             is_mock = "Mock" in translated or "exhausted_candidates" in translated or "global_cooldown" in translated
@@ -92,8 +88,8 @@ class TranslationService:
                     if self.fail_fast:
                         raise MarkerPreservationError(f"Markers corrupted in chunk: {chunk[:50]}...")
                     else:
-                        translated_chunks.append(chunk_with_glossary)
-                        any_fallback = True # Glossary fallback is still a fallback
+                        translated_chunks.append(chunk)
+                        any_fallback = True
                         continue
                 translated = repaired
                 
@@ -162,13 +158,3 @@ class TranslationService:
             chunks.append(" ".join(tokens[i : i + max_tokens]))
         return chunks
 
-    def _apply_glossary(self, chunk: str, glossary: Dict[str, str]) -> str:
-        if not glossary:
-            return chunk
-        # Sort keys by length descending to avoid partial matches
-        sorted_keys = sorted(glossary.keys(), key=len, reverse=True)
-        pattern = re.compile(
-            "|".join(rf"\b{re.escape(k)}\b" for k in sorted_keys),
-            flags=re.IGNORECASE
-        )
-        return pattern.sub(lambda m: glossary[next(k for k in sorted_keys if k.lower() == m.group(0).lower())], chunk)

@@ -333,69 +333,6 @@ export interface UploadJobStatus {
   result?: Record<string, unknown> | null;
 }
 
-export interface GlossaryTerm {
-  id: string;
-  organizationId?: string;
-  name: string;
-  term: string;
-  aliases: string[];
-  translationVi?: string;
-  translationEn?: string;
-  translationJa?: string;
-  translationZh?: string;
-  translationKo?: string;
-  category?: string;
-  isActive: boolean;
-  createdBy: string;
-  createdAt: string;
-  updatedAt: string;
-  scope: 'GLOBAL' | 'ORGANIZATION';
-}
-
-export interface GlossaryImportError {
-  row: number;
-  term?: string;
-  message: string;
-}
-
-export interface GlossaryImportReport {
-  created: number;
-  updated: number;
-  skipped: number;
-  errors: GlossaryImportError[];
-}
-
-export interface GlossarySuggestion {
-  id: string;
-  organization_id: string;
-  status: 'PENDING' | 'APPROVED' | 'REJECTED' | 'APPLIED';
-  canonical_term_candidate: string;
-  alias_candidates: string[];
-  category_hint?: string;
-  source_meeting_ids: string[];
-  evidence_examples: string[];
-  occurrence_count: number;
-  confidence_score: number;
-  suggestion_type: 'UNKNOWN_TERM' | 'VARIANT_CLUSTER' | 'PROPER_NOUN' | 'ABBREVIATION';
-  reviewed_by?: string;
-  reviewed_at?: string;
-  created_at?: string;
-  updated_at?: string;
-}
-
-export interface GlossaryInsightsItem {
-  value: string;
-  count: number;
-}
-
-export interface GlossaryInsights {
-  top_corrected_aliases: GlossaryInsightsItem[];
-  top_missing_terms: GlossaryInsightsItem[];
-  pending_suggestions_count: number;
-  approved_count: number;
-  rejected_count: number;
-}
-
 export interface NotificationItem {
   id: string;
   type: string;

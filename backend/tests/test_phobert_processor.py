@@ -6,7 +6,7 @@ def test_process_chunk_applies_rule_without_model_load(monkeypatch):
     processor = PhoBERTPostProcessor()
     segments = [{"speaker": "A", "start": 0, "end": 1, "text": "ka pi ai tháng này tốt"}]
 
-    result = processor.process_chunk("ka pi ai tháng này tốt", segments, {})
+    result = processor.process_chunk("ka pi ai tháng này tốt", segments)
 
     assert result["text"] == "KPI tháng này tốt"
     assert result["segments"][0]["text"] == "KPI tháng này tốt"
@@ -19,7 +19,7 @@ def test_process_finalize_preserves_segment_timing_and_adds_metadata(monkeypatch
     processor = PhoBERTPostProcessor()
     segments = [{"speaker": "A", "start": 3.5, "end": 8.0, "text": "Dạ ka pi ai ổn nha"}]
 
-    result = processor.process_finalize("Dạ ka pi ai ổn nha", segments, {"KPI": "KPI"})
+    result = processor.process_finalize("Dạ ka pi ai ổn nha", segments)
 
     assert result["post_processed"] is True
     assert result["segments"][0]["start"] == 3.5

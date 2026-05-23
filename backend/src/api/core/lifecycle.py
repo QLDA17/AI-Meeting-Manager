@@ -49,7 +49,6 @@ def _ensure_meeting_runtime_columns() -> None:
     _ensure_column("meeting_summaries", "open_questions", "open_questions JSON")
     _ensure_column("meeting_summaries", "timeline_highlights", "timeline_highlights JSON")
     _ensure_column("meeting_summaries", "speaker_summaries", "speaker_summaries JSON")
-    _ensure_column("glossary_terms", "aliases", "aliases JSON")
     _ensure_column("users", "bio", "bio TEXT")
 
 
@@ -107,7 +106,6 @@ async def startup_event():
         models.MeetingMessage.__table__.create(bind=engine, checkfirst=True)
         models.MeetingSpeakerMapping.__table__.create(bind=engine, checkfirst=True)
         models.ActionItemAssignee.__table__.create(bind=engine, checkfirst=True)
-        models.GlossarySuggestion.__table__.create(bind=engine, checkfirst=True)
         _ensure_meeting_runtime_columns()
         _ensure_action_item_assignee_backfill()
 

@@ -112,7 +112,7 @@ describe('GroupDetail Authorization', () => {
     const settingsTab = screen.getByRole('button', { name: /Cài đặt/i });
     fireEvent.click(settingsTab);
 
-    expect(await screen.findByText(/Trung tâm Bảo mật/i)).toBeInTheDocument();
+    expect(await screen.findByText(/Cài đặt Cấu hình Nhóm/i)).toBeInTheDocument();
   });
 
   it('hiển thị nút "Mời thành viên" cho Group Admin trong Tab Thành viên', async () => {

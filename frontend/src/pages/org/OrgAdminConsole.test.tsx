@@ -40,25 +40,6 @@ vi.mock('../../stores', () => ({
     members: [],
     loadOrgDetails: vi.fn(),
   }),
-  useGlossaryStore: () => ({
-    glossaries: [],
-    categories: [],
-    suggestions: [],
-    insights: null,
-    loadGlossaries: vi.fn(),
-    loadGlossaryCategories: vi.fn(),
-    loadSuggestions: vi.fn(),
-    loadInsights: vi.fn(),
-    removeGlossary: vi.fn(),
-    createGlossary: vi.fn(),
-    updateGlossary: vi.fn(),
-    importGlossaries: vi.fn(),
-    exportGlossaries: vi.fn(),
-    runSuggestions: vi.fn(),
-    approveSuggestion: vi.fn(),
-    mergeSuggestion: vi.fn(),
-    rejectSuggestion: vi.fn(),
-  }),
 }));
 
 vi.mock('../../data', () => ({
@@ -100,12 +81,4 @@ describe('OrgAdminConsole Component', () => {
     expect(screen.getByLabelText('Tên tổ chức')).toHaveValue('Test Org');
   });
 
-  it('switches to Glossaries tab', async () => {
-    renderComponent();
-    
-    const glossaryTab = screen.getByText('Từ điển');
-    fireEvent.click(glossaryTab);
-    
-    expect(await screen.findByText(/Từ điển chuyên ngành/i)).toBeInTheDocument();
-  });
 });

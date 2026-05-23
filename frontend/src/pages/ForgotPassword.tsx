@@ -1,10 +1,9 @@
 import React, { useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { motion, AnimatePresence } from 'framer-motion';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { ArrowLeft, Check, Mail, Lock, Eye, EyeOff, ArrowRight } from 'lucide-react';
+import { ArrowLeft, Check, Mail, Lock, Eye, EyeOff, ArrowRight, Clock, KeyRound, ShieldCheck } from 'lucide-react';
 import { Button, Input, Logo } from '../components/ui';
 import api from '../services/api';
 
@@ -31,17 +30,17 @@ const step2Schema = z
 type Step1Data = z.infer<typeof step1Schema>;
 type Step2Data = z.infer<typeof step2Schema>;
 
-const stepVariants = {
-  enter: { opacity: 0, x: 20 },
-  center: { opacity: 1, x: 0, transition: { duration: 0.3, ease: [0.22, 1, 0.36, 1] } },
-  exit: { opacity: 0, x: -20, transition: { duration: 0.2 } },
-};
+const securityRules = [
+  { text: 'Mã OTP có hiệu lực trong vòng 10 phút', icon: Clock },
+  { text: 'Mật khẩu mới phải từ 8 ký tự trở lên', icon: KeyRound },
+  { text: 'Sử dụng kết hợp chữ, số và ký tự đặc biệt', icon: ShieldCheck },
+];
 
 const getPasswordStrength = (password: string): { level: number; label: string; color: string } => {
   if (!password) return { level: 0, label: '', color: '' };
   if (password.length < 6) return { level: 1, label: 'Yếu', color: 'bg-red-500' };
   if (password.length < 10) return { level: 2, label: 'Trung bình', color: 'bg-amber-500' };
-  return { level: 3, label: 'Mạnh', color: 'bg-primary-500' };
+  return { level: 3, label: 'Mạnh', color: 'bg-emerald-500' };
 };
 
 const ForgotPassword: React.FC = () => {
@@ -163,145 +162,108 @@ const ForgotPassword: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-950 relative overflow-hidden px-4 selection:bg-primary-500/30 font-sans">
-      {/* Dynamic Background Decor */}
-      <div className="absolute inset-0 dot-grid opacity-[0.15] pointer-events-none" />
+    <div className="min-h-screen flex items-center justify-center bg-[#030712] relative overflow-hidden px-4 selection:bg-emerald-500/30 font-sans">
+      {/* Premium Minimalist Background */}
+      <div className="absolute inset-0 dot-grid opacity-[0.05] pointer-events-none" />
       
-      {/* Static Glow Orbs */}
-      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] h-[800px] bg-primary-500/10 rounded-full blur-[120px] pointer-events-none animate-pulse" />
+      {/* Static Light Orbs - Ultra High Performance */}
+      <div className="absolute top-[10%] left-[-10%] w-[600px] h-[600px] bg-emerald-500/[0.03] rounded-full blur-[120px] pointer-events-none" />
+      <div className="absolute bottom-[-10%] right-[-10%] w-[550px] h-[550px] bg-green-600/[0.03] rounded-full blur-[110px] pointer-events-none" />
 
-      <div className="w-full max-w-6xl grid lg:grid-cols-2 gap-16 items-center relative z-10">
-        {/* Left Content - Desktop */}
-        <motion.div
-          initial={{ opacity: 0, x: -40 }}
-          animate={{ opacity: 1, x: 0 }}
-          transition={{ duration: 0.8, ease: [0.22, 1, 0.36, 1] }}
-          className="hidden lg:block space-y-12"
-        >
+      <div className="w-full max-w-6xl grid lg:grid-cols-2 gap-16 items-center relative z-10 my-8">
+        {/* Left Content - Desktop Presentation */}
+        <div className="hidden lg:block space-y-12">
           <div className="flex items-center gap-3">
-            <Logo variant="dark" size="sm" showSubtext={false} className="origin-left" />
+            <Logo variant="dark" size="sm" showSubtext={false} className="origin-left scale-105" />
           </div>
 
           <div className="space-y-8">
-            <motion.h1 
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.2, duration: 0.6 }}
-              className="text-6xl font-black text-white leading-[1.1] tracking-tighter"
-            >
+            <h1 className="text-6xl font-black text-white leading-[1.15] tracking-tight">
               Khôi phục <br />
-              <span className="bg-clip-text text-transparent bg-gradient-to-r from-primary-400 via-green-300 to-primary-500 animate-gradient-x">
+              <span className="bg-clip-text text-transparent bg-gradient-to-r from-emerald-400 via-slate-200 to-green-500">
                 truy cập.
               </span>
-            </motion.h1>
-            <motion.p 
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.3, duration: 0.6 }}
-              className="text-slate-400 text-xl leading-relaxed max-w-md font-medium"
-            >
-              Đừng lo lắng, chúng tôi sẽ hỗ trợ bạn lấy lại mật khẩu một cách an toàn nhất.
-            </motion.p>
+            </h1>
+            <p className="text-slate-400 text-lg leading-relaxed max-w-md font-medium">
+              Đừng lo lắng, chúng tôi sẽ hỗ trợ bạn thiết lập lại mật khẩu và lấy lại quyền truy cập hệ thống một cách an toàn, bảo mật nhất.
+            </p>
           </div>
 
           <div className="space-y-4">
-            <p className="text-xs font-bold text-primary-500 uppercase tracking-[0.3em]">Quy tắc bảo mật</p>
-            {[
-              'Mã OTP có hiệu lực trong 10 phút',
-              'Mật khẩu mới phải từ 8 ký tự trở lên',
-              'Sử dụng kết hợp chữ, số và ký tự đặc biệt',
-            ].map((rule, i) => (
-              <motion.div 
-                key={i}
-                initial={{ opacity: 0, x: -20 }}
-                animate={{ opacity: 1, x: 0 }}
-                transition={{ delay: 0.4 + (i * 0.1) }}
-                className="flex items-center gap-4 text-slate-300"
-              >
-                <div className="w-6 h-6 rounded-full bg-primary-500/10 flex items-center justify-center">
-                  <Check size={12} className="text-primary-400" />
+            <p className="text-xs font-black text-emerald-400 uppercase tracking-[0.3em]">Quy tắc bảo mật</p>
+            {securityRules.map((rule, i) => {
+              const IconComponent = rule.icon;
+              return (
+                <div 
+                  key={i}
+                  className="flex items-center gap-4 text-slate-300"
+                >
+                  <div className="w-8 h-8 rounded-xl bg-white/[0.005] border border-white/5 flex items-center justify-center">
+                    <IconComponent size={12} className="text-emerald-400" />
+                  </div>
+                  <span className="font-bold text-sm text-slate-300">{rule.text}</span>
                 </div>
-                <span className="font-bold text-sm">{rule}</span>
-              </motion.div>
-            ))}
+              );
+            })}
           </div>
 
           <Link
             to="/login"
-            className="inline-flex items-center gap-2 text-primary-400 hover:text-primary-300 font-black uppercase tracking-widest text-xs transition-all hover:gap-3"
+            className="inline-flex items-center gap-2 text-emerald-400 hover:text-emerald-300 font-black uppercase tracking-widest text-xs transition-all hover:gap-3"
           >
             <ArrowLeft size={16} />
             Quay lại đăng nhập
           </Link>
-        </motion.div>
+        </div>
 
         {/* Right Content - Form */}
-        <motion.div
-          initial={{ opacity: 0, scale: 0.9 }}
-          animate={{ opacity: 1, scale: 1 }}
-          transition={{ duration: 0.8, ease: [0.22, 1, 0.36, 1] }}
-          className="relative group/card"
-        >
-          <div className="bg-white/[0.03] border border-white/10 backdrop-blur-3xl p-8 sm:p-12 rounded-[2.5rem] shadow-2xl relative overflow-hidden">
-            {/* Subtle Gradient Shine */}
-            <div className="absolute top-0 left-0 right-0 h-[1px] bg-gradient-to-r from-transparent via-white/20 to-transparent" />
+        <div className="relative">
+          <div className="bg-slate-900/30 border border-slate-800/60 backdrop-blur-2xl p-8 sm:p-12 rounded-3xl shadow-2xl relative overflow-hidden transition-all duration-300 group/card">
+            {/* Minimalist Top Accent Line */}
+            <div className="absolute top-0 left-0 right-0 h-[1px] bg-gradient-to-r from-transparent via-emerald-500/20 to-transparent" />
             
-            {/* Mobile Logo */}
-            <div className="lg:hidden flex items-center gap-3 mb-10">
+            {/* Mobile View Logo */}
+            <div className="lg:hidden flex items-center gap-3 mb-8">
               <Logo variant="dark" size="sm" showSubtext={false} />
             </div>
 
-            <div className="mb-8">
-              <h2 className="text-4xl font-black text-white tracking-tight mb-3">Quên mật khẩu?</h2>
-              <p className="text-slate-400 font-medium">
+            <div className="mb-6">
+              <h2 className="text-3xl font-black text-white tracking-tight mb-2">Quên mật khẩu?</h2>
+              <p className="text-slate-400 text-sm font-semibold leading-relaxed">
                 {step === 1
-                  ? 'Nhập email của bạn để nhận mã xác thực.'
+                  ? 'Nhập email của bạn để nhận mã xác thực OTP.'
                   : `Mã xác thực đã được gửi tới ${savedEmail}`}
               </p>
             </div>
 
             {/* Progress Indicator */}
-            <div className="flex gap-2 mb-10">
-              <div className={`h-1.5 flex-1 rounded-full transition-all duration-700 ${step >= 1 ? 'bg-primary-500 shadow-[0_0_10px_rgba(34,197,94,0.5)]' : 'bg-white/10'}`} />
-              <div className={`h-1.5 flex-1 rounded-full transition-all duration-700 ${step >= 2 ? 'bg-primary-500 shadow-[0_0_10px_rgba(34,197,94,0.5)]' : 'bg-white/10'}`} />
+            <div className="flex gap-2 mb-8">
+              <div className={`h-1.5 flex-1 rounded-full transition-all duration-300 ${step >= 1 ? 'bg-gradient-to-r from-emerald-500 to-green-500 shadow-[0_0_10px_rgba(16,185,129,0.1)]' : 'bg-white/10'}`} />
+              <div className={`h-1.5 flex-1 rounded-full transition-all duration-300 ${step >= 2 ? 'bg-gradient-to-r from-emerald-500 to-green-500 shadow-[0_0_10px_rgba(16,185,129,0.1)]' : 'bg-white/10'}`} />
             </div>
 
             {apiError && (
-              <motion.div 
-                initial={{ opacity: 0, height: 0 }}
-                animate={{ opacity: 1, height: 'auto' }}
-                className="mb-8 p-4 rounded-2xl bg-red-500/10 border border-red-500/20 text-red-400 text-sm font-semibold flex items-center gap-3"
-              >
+              <div className="mb-6 p-4 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-xs font-semibold flex items-center gap-3">
                 <div className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
                 {apiError}
-              </motion.div>
+              </div>
             )}
 
             {success && (
-              <motion.div 
-                initial={{ opacity: 0, scale: 0.95 }}
-                animate={{ opacity: 1, scale: 1 }}
-                className="p-8 rounded-3xl bg-primary-500/10 border border-primary-500/20 text-center"
-              >
-                <div className="w-16 h-16 rounded-full bg-primary-500/20 flex items-center justify-center mx-auto mb-6">
-                  <Check size={32} className="text-primary-400" />
+              <div className="p-8 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 text-center">
+                <div className="w-14 h-14 rounded-full bg-emerald-500/20 flex items-center justify-center mx-auto mb-6">
+                  <Check size={28} className="text-emerald-400" />
                 </div>
                 <h3 className="text-white text-xl font-black mb-2">Thành công!</h3>
-                <p className="text-slate-400 font-medium">Mật khẩu của bạn đã được cập nhật thành công.</p>
-              </motion.div>
+                <p className="text-slate-400 text-sm font-semibold">Mật khẩu của bạn đã được cập nhật thành công.</p>
+              </div>
             )}
 
             {!success && (
-              <AnimatePresence mode="wait">
+              <div>
                 {step === 1 ? (
-                  <motion.div
-                    key="step1"
-                    variants={stepVariants}
-                    initial="enter"
-                    animate="center"
-                    exit="exit"
-                  >
-                    <form onSubmit={step1Form.handleSubmit(onStep1Submit)} className="space-y-6">
+                  <div>
+                    <form onSubmit={step1Form.handleSubmit(onStep1Submit)} noValidate className="space-y-6">
                       <div className="space-y-2">
                         <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Email đăng ký</label>
                         <Input
@@ -309,30 +271,23 @@ const ForgotPassword: React.FC = () => {
                           placeholder="name@company.com"
                           error={step1Form.formState.errors.email?.message}
                           disabled={isLoading}
-                          leftIcon={<Mail size={18} className="text-slate-500" />}
-                          className="bg-white/[0.03] border-white/10 text-white placeholder:text-slate-700 focus:border-primary-500/50 focus:bg-white/[0.05] h-12 rounded-xl transition-all"
+                          leftIcon={<Mail size={16} className="text-slate-500" />}
+                          className="bg-white/[0.01] border-white/5 text-white placeholder:text-slate-600 focus:border-emerald-500/30 focus:bg-white/[0.02] h-12 rounded-xl transition-all focus:ring-1 focus:ring-emerald-500/10"
                           {...step1Form.register('email')}
                         />
                       </div>
                       <Button
                         type="submit"
-                        className="w-full h-14 rounded-2xl bg-primary-600 hover:bg-primary-500 text-white font-black text-lg shadow-xl shadow-primary-500/20 transition-all hover:scale-[1.02] active:scale-[0.98] mt-4"
+                        className="w-full h-12 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-sm transition-all hover:scale-[1.005] active:scale-[0.995] mt-6 flex items-center justify-center gap-2 shadow-[0_0_15px_rgba(16,185,129,0.15)]"
                         loading={isLoading}
                       >
                         Gửi mã xác thực
-                        <ArrowRight size={22} className="ml-3 group-hover:translate-x-1 transition-transform" />
+                        <ArrowRight size={18} className="transition-transform group-hover:translate-x-0.5" />
                       </Button>
                     </form>
-                  </motion.div>
+                  </div>
                 ) : (
-                  <motion.div
-                    key="step2"
-                    variants={stepVariants}
-                    initial="enter"
-                    animate="center"
-                    exit="exit"
-                    className="space-y-6"
-                  >
+                  <div className="space-y-6">
                     <form onSubmit={step2Form.handleSubmit(onStep2Submit)} className="space-y-6">
                       <div className="space-y-4">
                         <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Mã xác thực (6 chữ số)</label>
@@ -349,7 +304,7 @@ const ForgotPassword: React.FC = () => {
                               onKeyDown={(e) => handleOtpKeyDown(index, e)}
                               onPaste={handleOtpPaste}
                               disabled={isLoading}
-                              className="w-full h-14 text-center text-xl font-black rounded-xl border border-white/10 bg-white/5 text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition-all"
+                              className="w-full h-12 text-center text-lg font-black rounded-xl border border-white/5 bg-white/[0.01] text-white focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 transition-all focus:bg-white/[0.02]"
                             />
                           ))}
                         </div>
@@ -366,28 +321,30 @@ const ForgotPassword: React.FC = () => {
                             placeholder="Tối thiểu 8 ký tự"
                             error={step2Form.formState.errors.newPassword?.message}
                             disabled={isLoading}
-                            leftIcon={<Lock size={18} className="text-slate-500" />}
-                            className="bg-white/[0.03] border-white/10 text-white placeholder:text-slate-700 focus:border-primary-500/50 focus:bg-white/[0.05] h-12 rounded-xl transition-all"
+                            leftIcon={<Lock size={16} className="text-slate-500" />}
+                            className="bg-white/[0.01] border-white/5 text-white placeholder:text-slate-600 focus:border-emerald-500/30 focus:bg-white/[0.02] h-12 rounded-xl transition-all focus:ring-1 focus:ring-emerald-500/10"
                             {...step2Form.register('newPassword')}
                           />
                           <button
                             type="button"
                             onClick={() => setShowNewPassword(!showNewPassword)}
-                            className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 transition-colors"
+                            className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-500 hover:text-emerald-400 transition-colors"
                           >
-                            {showNewPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                            {showNewPassword ? <EyeOff size={16} /> : <Eye size={16} />}
                           </button>
                         </div>
                         {passwordValue && (
                           <div className="px-1 pt-2">
-                            <div className="flex gap-1.5 h-1">
+                            <div className="flex gap-1.5 h-1.5">
                               {[1, 2, 3].map((level) => (
                                 <div
                                   key={level}
-                                  className={`flex-1 rounded-full transition-colors duration-300 ${
+                                  className={`flex-1 rounded-full transition-all duration-200 ${
                                     level <= passwordStrength.level
-                                      ? passwordStrength.color
-                                      : 'bg-white/10'
+                                      ? passwordStrength.level === 1 ? 'bg-red-500' :
+                                        passwordStrength.level === 2 ? 'bg-amber-500' :
+                                        'bg-emerald-500'
+                                      : 'bg-white/5'
                                   }`}
                                 />
                               ))}
@@ -404,54 +361,54 @@ const ForgotPassword: React.FC = () => {
                             placeholder="Nhập lại mật khẩu"
                             error={step2Form.formState.errors.confirmPassword?.message}
                             disabled={isLoading}
-                            leftIcon={<Lock size={18} className="text-slate-500" />}
-                            className="bg-white/[0.03] border-white/10 text-white placeholder:text-slate-700 focus:border-primary-500/50 focus:bg-white/[0.05] h-12 rounded-xl transition-all"
+                            leftIcon={<Lock size={16} className="text-slate-500" />}
+                            className="bg-white/[0.01] border-white/5 text-white placeholder:text-slate-600 focus:border-emerald-500/30 focus:bg-white/[0.02] h-12 rounded-xl transition-all focus:ring-1 focus:ring-emerald-500/10"
                             {...step2Form.register('confirmPassword')}
                           />
                           <button
                             type="button"
                             onClick={() => setShowConfirmPassword(!showConfirmPassword)}
-                            className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 transition-colors"
+                            className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-500 hover:text-emerald-400 transition-colors"
                           >
-                            {showConfirmPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                            {showConfirmPassword ? <EyeOff size={16} /> : <Eye size={16} />}
                           </button>
                         </div>
                       </div>
 
                       <Button
                         type="submit"
-                        className="w-full h-14 rounded-2xl bg-primary-600 hover:bg-primary-500 text-white font-black text-lg shadow-xl shadow-primary-500/20 transition-all hover:scale-[1.02] active:scale-[0.98] mt-4"
+                        className="w-full h-12 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-sm transition-all hover:scale-[1.005] active:scale-[0.995] mt-6 flex items-center justify-center gap-2 shadow-[0_0_15px_rgba(16,185,129,0.15)]"
                         loading={isLoading}
                       >
                         Cập nhật mật khẩu
-                        <ArrowRight size={22} className="ml-3 group-hover:translate-x-1 transition-transform" />
+                        <ArrowRight size={18} className="transition-transform group-hover:translate-x-0.5" />
                       </Button>
 
                       <button
                         type="button"
                         onClick={handleResendCode}
                         disabled={isLoading}
-                        className="w-full text-center text-xs font-black text-slate-500 hover:text-primary-400 uppercase tracking-widest transition-colors"
+                        className="w-full text-center text-xs font-black text-slate-500 hover:text-emerald-400 uppercase tracking-widest transition-colors mt-2"
                       >
                         Gửi lại mã xác nhận
                       </button>
                     </form>
-                  </motion.div>
+                  </div>
                 )}
-              </AnimatePresence>
+              </div>
             )}
 
-            <div className="mt-10 pt-8 border-t border-white/10 text-center lg:hidden">
+            <div className="mt-8 pt-6 border-t border-white/5 text-center lg:hidden">
               <Link
                 to="/login"
-                className="text-primary-400 hover:text-primary-300 font-black uppercase tracking-widest text-xs transition-colors inline-flex items-center gap-2"
+                className="text-emerald-400 hover:text-emerald-300 font-black uppercase tracking-widest text-xs transition-colors inline-flex items-center gap-2"
               >
                 <ArrowLeft size={16} />
                 Quay lại đăng nhập
               </Link>
             </div>
           </div>
-        </motion.div>
+        </div>
       </div>
     </div>
   );

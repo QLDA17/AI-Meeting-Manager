@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Integer, DateTime, Boolean, ForeignKey, Text, Float, JSON, Numeric, Date, CheckConstraint, UniqueConstraint, Index
+from sqlalchemy import Column, String, Integer, DateTime, Boolean, ForeignKey, Text, JSON, Numeric, Date, CheckConstraint, UniqueConstraint, Index, BigInteger
 from typing import Optional
 from sqlalchemy.orm import relationship, Mapped, mapped_column
 from sqlalchemy.sql import func
@@ -37,7 +37,6 @@ class User(Base):
     __table_args__ = (
         CheckConstraint("role IN ('system-admin', 'member')", name='check_user_role'),
         CheckConstraint("gender IS NULL OR gender IN ('male', 'female', 'other')", name='check_user_gender'),
-        Index('idx_users_email', 'email'),
     )
 
     # Relationships
@@ -54,7 +53,6 @@ class User(Base):
     accepted_invitations = relationship("Invitation", back_populates="accepted_by_user", foreign_keys="Invitation.accepted_by")
     notifications = relationship("Notification", back_populates="recipient", cascade="all, delete-orphan")
     export_files = relationship("ExportFile", back_populates="generated_by_user")
-    glossary_terms = relationship("GlossaryTerm", back_populates="created_by_user")
 
 
 class Organization(Base):
@@ -74,7 +72,6 @@ class Organization(Base):
     groups = relationship("Group", back_populates="organization", cascade="all, delete-orphan")
     meetings = relationship("Meeting", back_populates="organization", cascade="all, delete-orphan")
     invitations = relationship("Invitation", back_populates="organization", cascade="all, delete-orphan")
-    glossary_terms = relationship("GlossaryTerm", back_populates="organization", cascade="all, delete-orphan")
 
 
 class UserOrganization(Base):
@@ -304,6 +301,7 @@ class MeetingParticipant(Base):
     __table_args__ = (
         UniqueConstraint('meeting_id', 'user_id', name='uq_meeting_user'),
         UniqueConstraint('meeting_id', 'email', name='uq_meeting_email'),
+        Index('idx_mp_user', 'user_id'),
     )
 
     # Relationships
@@ -363,7 +361,7 @@ class AudioFile(Base):
     filename: Mapped[str] = mapped_column(String(255), nullable=False)
     original_filename: Mapped[str] = mapped_column(String(255), nullable=False)
     file_path: Mapped[str] = mapped_column(String(500), nullable=False)
-    file_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    file_size: Mapped[int] = mapped_column(BigInteger, nullable=False)
     duration_seconds: Mapped[int] = mapped_column(Integer, nullable=True)
     format: Mapped[str] = mapped_column(String(20), nullable=False)
     sample_rate: Mapped[int] = mapped_column(Integer, nullable=True)
@@ -374,6 +372,7 @@ class AudioFile(Base):
 
     __table_args__ = (
         CheckConstraint("upload_status IN ('UPLOADING', 'UPLOADED', 'PROCESSING', 'PROCESSED', 'FAILED')", name='check_upload_status'),
+        Index('idx_audio_meeting', 'meeting_id'),
     )
 
     # Relationships
@@ -427,6 +426,10 @@ class TranscriptSegment(Base):
     word_count: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now())
 
+    __table_args__ = (
+        Index('idx_ts_transcript', 'transcript_id'),
+    )
+
     # Relationships
     transcript = relationship("Transcript", back_populates="segments")
 
@@ -478,6 +481,7 @@ class MeetingSummary(Base):
 
     __table_args__ = (
         CheckConstraint("processing_status IN ('PENDING', 'PROCESSING', 'COMPLETED', 'FAILED')", name='check_summary_status'),
+        Index('idx_summary_meeting', 'meeting_id'),
     )
 
     # Relationships
@@ -553,7 +557,7 @@ class ExportFile(Base):
     filename: Mapped[str] = mapped_column(String(255), nullable=False)
     file_path: Mapped[str] = mapped_column(String(500), nullable=False)
     format: Mapped[str] = mapped_column(String(20), nullable=False)  # PDF, DOCX, TXT
-    file_size: Mapped[int] = mapped_column(Integer, nullable=True)
+    file_size: Mapped[int] = mapped_column(BigInteger, nullable=True)
     template_type: Mapped[str] = mapped_column(String(50), default='STANDARD')
     include_transcript: Mapped[bool] = mapped_column(Boolean, default=True)
     include_summary: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -590,67 +594,6 @@ class CostTracking(Base):
 
     # Relationships
     meeting = relationship("Meeting", back_populates="cost_tracking")
-
-
-# ==================== Glossary Terms ====================
-
-class GlossaryTerm(Base):
-    __tablename__ = "glossary_terms"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
-    organization_id: Mapped[str] = mapped_column(String(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True)
-    term: Mapped[str] = mapped_column(String(255), nullable=False)
-    aliases: Mapped[list] = mapped_column(JSON, nullable=True, default=list)
-    translation_vi: Mapped[str] = mapped_column(String(255), nullable=True)
-    translation_en: Mapped[str] = mapped_column(String(255), nullable=True)
-    translation_ja: Mapped[str] = mapped_column(String(255), nullable=True)
-    translation_zh: Mapped[str] = mapped_column(String(255), nullable=True)
-    translation_ko: Mapped[str] = mapped_column(String(255), nullable=True)
-    category: Mapped[str] = mapped_column(String(100), nullable=True)
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_by: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
-    created_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now())
-    updated_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
-
-    __table_args__ = (
-        UniqueConstraint('organization_id', 'term', name='uq_org_term'),
-    )
-
-    # Relationships
-    organization = relationship("Organization", back_populates="glossary_terms")
-    created_by_user = relationship("User", back_populates="glossary_terms")
-
-
-class GlossarySuggestion(Base):
-    __tablename__ = "glossary_suggestions"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
-    organization_id: Mapped[str] = mapped_column(String(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
-    status: Mapped[str] = mapped_column(String(20), default="PENDING")
-    canonical_term_candidate: Mapped[str] = mapped_column(String(255), nullable=False)
-    alias_candidates: Mapped[list] = mapped_column(JSON, nullable=True, default=list)
-    category_hint: Mapped[str] = mapped_column(String(100), nullable=True)
-    source_meeting_ids: Mapped[list] = mapped_column(JSON, nullable=True, default=list)
-    evidence_examples: Mapped[list] = mapped_column(JSON, nullable=True, default=list)
-    occurrence_count: Mapped[int] = mapped_column(Integer, default=0)
-    confidence_score: Mapped[float] = mapped_column(Float, default=0.0)
-    suggestion_type: Mapped[str] = mapped_column(String(30), default="UNKNOWN_TERM")
-    reviewed_by: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    reviewed_at: Mapped[DateTime] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now())
-    updated_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
-
-    __table_args__ = (
-        CheckConstraint("status IN ('PENDING', 'APPROVED', 'REJECTED', 'APPLIED')", name='check_glossary_suggestion_status'),
-        CheckConstraint(
-            "suggestion_type IN ('UNKNOWN_TERM', 'VARIANT_CLUSTER', 'PROPER_NOUN', 'ABBREVIATION')",
-            name='check_glossary_suggestion_type'
-        ),
-        Index('idx_glossary_suggestions_org_status', 'organization_id', 'status'),
-    )
-
-    organization = relationship("Organization")
-    reviewed_by_user = relationship("User", foreign_keys=[reviewed_by])
 
 
 class AuditLog(Base):

@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS users (
     first_name VARCHAR(100),
     last_name VARCHAR(100),
     avatar_url VARCHAR(500),
+    bio TEXT,
     language VARCHAR(10) DEFAULT 'vi',
     timezone VARCHAR(100) DEFAULT 'Asia/Ho_Chi_Minh',
     notification_preferences JSON,
@@ -404,59 +405,88 @@ CREATE TABLE IF NOT EXISTS cost_tracking (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ----------------------------
--- Table structure for glossary_terms
+-- Table structure for meeting_messages
 -- ----------------------------
-CREATE TABLE IF NOT EXISTS glossary_terms (
+CREATE TABLE IF NOT EXISTS meeting_messages (
     id VARCHAR(36) PRIMARY KEY,
-    organization_id VARCHAR(36),
-    term VARCHAR(255) NOT NULL,
-    aliases JSON DEFAULT NULL,
-    translation_vi VARCHAR(255),
-    translation_en VARCHAR(255),
-    translation_ja VARCHAR(255),
-    translation_zh VARCHAR(255),
-    translation_ko VARCHAR(255),
-    category VARCHAR(100),
-    is_active BOOLEAN DEFAULT true,
-    created_by VARCHAR(36) NOT NULL,
+    meeting_id VARCHAR(36) NOT NULL,
+    user_id VARCHAR(36) NOT NULL,
+    text TEXT NOT NULL,
+    message_type VARCHAR(20) DEFAULT 'chat',
+    reply_to_id VARCHAR(36),
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    UNIQUE KEY (organization_id, term),
-    CONSTRAINT fk_glossary_org FOREIGN KEY (organization_id) REFERENCES organizations (id) ON DELETE CASCADE,
-    CONSTRAINT fk_glossary_user FOREIGN KEY (created_by) REFERENCES users (id)
+    CONSTRAINT check_meeting_message_type CHECK (message_type IN ('chat', 'system')),
+    CONSTRAINT fk_mm_meeting FOREIGN KEY (meeting_id) REFERENCES meetings (id) ON DELETE CASCADE,
+    CONSTRAINT fk_mm_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
+    CONSTRAINT fk_mm_reply FOREIGN KEY (reply_to_id) REFERENCES meeting_messages (id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ----------------------------
--- Table structure for glossary_suggestions
+-- Table structure for meeting_speaker_mappings
 -- ----------------------------
-CREATE TABLE IF NOT EXISTS glossary_suggestions (
+CREATE TABLE IF NOT EXISTS meeting_speaker_mappings (
     id VARCHAR(36) PRIMARY KEY,
-    organization_id VARCHAR(36) NOT NULL,
-    status VARCHAR(20) DEFAULT 'PENDING',
-    canonical_term_candidate VARCHAR(255) NOT NULL,
-    alias_candidates JSON DEFAULT NULL,
-    category_hint VARCHAR(100),
-    source_meeting_ids JSON DEFAULT NULL,
-    evidence_examples JSON DEFAULT NULL,
-    occurrence_count INT DEFAULT 0,
-    confidence_score FLOAT DEFAULT 0.0,
-    suggestion_type VARCHAR(30) DEFAULT 'UNKNOWN_TERM',
-    reviewed_by VARCHAR(36),
-    reviewed_at DATETIME,
+    meeting_id VARCHAR(36) NOT NULL,
+    speaker_label VARCHAR(50) NOT NULL,
+    display_name VARCHAR(255) NOT NULL,
+    user_id VARCHAR(36),
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    CONSTRAINT fk_glossary_suggestion_org FOREIGN KEY (organization_id) REFERENCES organizations (id) ON DELETE CASCADE,
-    CONSTRAINT fk_glossary_suggestion_reviewer FOREIGN KEY (reviewed_by) REFERENCES users (id) ON DELETE SET NULL,
-    CONSTRAINT check_glossary_suggestion_status CHECK (status IN ('PENDING', 'APPROVED', 'REJECTED', 'APPLIED')),
-    CONSTRAINT check_glossary_suggestion_type CHECK (suggestion_type IN ('UNKNOWN_TERM', 'VARIANT_CLUSTER', 'PROPER_NOUN', 'ABBREVIATION'))
+    UNIQUE KEY uq_meeting_speaker_label (meeting_id, speaker_label),
+    CONSTRAINT fk_msm_meeting FOREIGN KEY (meeting_id) REFERENCES meetings (id) ON DELETE CASCADE,
+    CONSTRAINT fk_msm_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ----------------------------
+-- Table structure for action_item_assignees
+-- ----------------------------
+CREATE TABLE IF NOT EXISTS action_item_assignees (
+    id VARCHAR(36) PRIMARY KEY,
+    action_item_id VARCHAR(36) NOT NULL,
+    user_id VARCHAR(36),
+    email VARCHAR(255) NOT NULL,
+    display_name VARCHAR(255),
+    status VARCHAR(20) DEFAULT 'PENDING',
+    completed_at DATETIME,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    CONSTRAINT check_action_item_assignee_status CHECK (status IN ('PENDING', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED')),
+    UNIQUE KEY uq_action_item_assignee_email (action_item_id, email),
+    CONSTRAINT fk_aia_action_item FOREIGN KEY (action_item_id) REFERENCES action_items (id) ON DELETE CASCADE,
+    CONSTRAINT fk_aia_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ----------------------------
+-- Table structure for audit_logs
+-- ----------------------------
+CREATE TABLE IF NOT EXISTS audit_logs (
+    id VARCHAR(36) PRIMARY KEY,
+    time DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    `user` VARCHAR(255) NOT NULL,
+    role VARCHAR(50) NOT NULL DEFAULT 'System Admin',
+    action VARCHAR(120) NOT NULL,
+    target VARCHAR(500) NOT NULL,
+    org VARCHAR(255) NOT NULL DEFAULT 'System',
+    ip VARCHAR(64) NOT NULL DEFAULT 'system'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ----------------------------
 -- Indexes for performance
 -- ----------------------------
-CREATE INDEX idx_users_email ON users(email);
 CREATE INDEX idx_transcripts_meeting_id ON transcripts(meeting_id);
 CREATE INDEX idx_action_items_assigned_to ON action_items(assigned_to);
-CREATE INDEX idx_glossary_suggestions_org_status ON glossary_suggestions(organization_id, status);
+CREATE INDEX idx_mp_user ON meeting_participants(user_id);
+CREATE INDEX idx_audio_meeting ON audio_files(meeting_id);
+CREATE INDEX idx_summary_meeting ON meeting_summaries(meeting_id);
+CREATE INDEX idx_ts_transcript ON transcript_segments(transcript_id);
+CREATE INDEX idx_meeting_messages_meeting_id ON meeting_messages(meeting_id);
+CREATE INDEX idx_meeting_speaker_mappings_meeting_id ON meeting_speaker_mappings(meeting_id);
+CREATE INDEX idx_action_item_assignees_action_item_id ON action_item_assignees(action_item_id);
+CREATE INDEX idx_action_item_assignees_user_id ON action_item_assignees(user_id);
+CREATE INDEX idx_action_item_assignees_email ON action_item_assignees(email);
+CREATE INDEX idx_action_item_assignees_status ON action_item_assignees(status);
+CREATE INDEX idx_audit_logs_time ON audit_logs(time);
+CREATE INDEX idx_audit_logs_action ON audit_logs(action);
 
 SET FOREIGN_KEY_CHECKS = 1;

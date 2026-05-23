@@ -1,6 +1,5 @@
 import React from 'react';
 import { Globe, Zap, AlertCircle, CheckCircle2 } from 'lucide-react';
-import { MultiSelect } from '../ui';
 
 interface AIConfigSectionProps {
   language: string;
@@ -9,9 +8,6 @@ interface AIConfigSectionProps {
   onToggleRecord?: () => void;
   enableSummary?: boolean;
   onToggleSummary?: () => void;
-  glossaries: { id: string; name: string }[];
-  selectedGlossaryIds: string[];
-  onGlossaryChange: (ids: string[]) => void;
   children?: React.ReactNode;
   hideToggles?: boolean;
 }
@@ -19,9 +15,6 @@ interface AIConfigSectionProps {
 const AIConfigSection: React.FC<AIConfigSectionProps> = ({
   language,
   onLanguageChange,
-  glossaries,
-  selectedGlossaryIds,
-  onGlossaryChange,
   children,
   hideToggles = false,
 }) => (
@@ -44,17 +37,6 @@ const AIConfigSection: React.FC<AIConfigSectionProps> = ({
         <option value="zh">中文</option>
       </select>
     </div>
-
-    {/* Glossary */}
-    {glossaries.length > 0 && (
-      <MultiSelect
-        options={glossaries}
-        selectedIds={selectedGlossaryIds}
-        onChange={onGlossaryChange}
-        label="Từ điển chuyên ngành"
-        placeholder="Chọn glossary..."
-      />
-    )}
 
     {/* Always-on features */}
     {!hideToggles && (

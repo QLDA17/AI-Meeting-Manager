@@ -1,7 +1,7 @@
 import React from 'react';
 import { Calendar as CalendarIcon, Clock, Users } from 'lucide-react';
 import { Modal, Button, Input, Badge } from '../ui';
-import { useCalendarStore, useGlossaryStore, useOrgStore, useAppStore } from '../../stores';
+import { useCalendarStore, useOrgStore, useAppStore } from '../../stores';
 import api from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
 import { toast } from '../ui/Toast';
@@ -13,7 +13,6 @@ import AIConfigSection from './AIConfigSection';
 
 const ScheduleMeetingModal: React.FC = () => {
   const { isScheduleModalOpen, toggleScheduleModal, selectedDate } = useCalendarStore();
-  const { glossaries, loadGlossaries } = useGlossaryStore();
   const { currentOrgId, groups, loadGroups } = useOrgStore();
   const { user } = useAuth();
   const { loadMeetings } = useAppStore();
@@ -23,7 +22,6 @@ const ScheduleMeetingModal: React.FC = () => {
   const [date, setDate] = React.useState(toLocalDateStr(selectedDate));
   const [time, setTime] = React.useState('14:00');
   const [endTime, setEndTime] = React.useState('');
-  const [selectedGlossaries, setSelectedGlossaries] = React.useState<string[]>([]);
   const [language, setLanguage] = React.useState('vi');
   const [isSubmitting, setIsSubmitting] = React.useState(false);
   const [enableRecord, setEnableRecord] = React.useState(true);
@@ -33,11 +31,10 @@ const ScheduleMeetingModal: React.FC = () => {
 
   React.useEffect(() => {
     if (isScheduleModalOpen) {
-      loadGlossaries(currentOrgId || undefined);
       if (currentOrgId) loadGroups(currentOrgId);
       setDate(toLocalDateStr(selectedDate));
     }
-  }, [isScheduleModalOpen, currentOrgId, loadGlossaries, loadGroups, selectedDate]);
+  }, [isScheduleModalOpen, currentOrgId, loadGroups, selectedDate]);
 
   React.useEffect(() => {
     if (groups.length > 0 && !selectedGroupId) setSelectedGroupId(groups[0].id);
@@ -64,7 +61,7 @@ const ScheduleMeetingModal: React.FC = () => {
         scheduled_end: toMeetingApiDateTime(end),
         status: 'upcoming',
         description: `Cuộc họp lên lịch trong nhóm ${groups.find(g => g.id === selectedGroupId)?.name || selectedGroupId}`,
-        settings: { enableRecord, enableSummary, language, glossaryIds: selectedGlossaries },
+        settings: { enableRecord, enableSummary, language },
         participant_ids: selectedParticipants,
       });
 
@@ -80,7 +77,7 @@ const ScheduleMeetingModal: React.FC = () => {
   };
 
   const resetForm = () => {
-    setTitle(''); setSelectedParticipants([]); setSelectedGlossaries([]);
+    setTitle(''); setSelectedParticipants([]);
     setSelectedGroupId(''); setDate(toLocalDateStr(new Date()));
     setTime('14:00'); setEndTime(''); setLanguage('vi');
     setEnableRecord(true); setEnableSummary(true);
@@ -109,8 +106,6 @@ const ScheduleMeetingModal: React.FC = () => {
             language={language} onLanguageChange={setLanguage}
             enableRecord={enableRecord} onToggleRecord={() => setEnableRecord(!enableRecord)}
             enableSummary={enableSummary} onToggleSummary={() => setEnableSummary(!enableSummary)}
-            glossaries={glossaries.map(g => ({ id: g.id, name: `${g.name} (${g.scope === 'GLOBAL' ? 'Hệ thống' : 'Nội bộ'})` }))}
-            selectedGlossaryIds={selectedGlossaries} onGlossaryChange={setSelectedGlossaries}
           />
         </div>
 

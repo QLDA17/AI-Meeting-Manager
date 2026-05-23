@@ -32,7 +32,7 @@ class CrewRouter:
                 "security_auditor_agent": ["security", "owasp", "tls", "injection"],
                 "nlp_evaluator_agent": ["bleu", "rouge", "wer", "accuracy"],
                 "diarization_specialist": ["speaker", "diarization", "der", "align"],
-                "spellcheck_agent": ["spell", "proper noun", "glossary", "typo"],
+                "spellcheck_agent": ["spell", "proper noun", "typo"],
             },
         }
 

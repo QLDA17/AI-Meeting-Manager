@@ -31,7 +31,6 @@ from src.api.core.upload_jobs import (
     validate_upload_filename,
 )
 from src.api.core.nlp_support import (
-    build_glossary_dict,
     build_speaker_aware_transcript,
     build_structured_summary_prompts,
     get_phobert_processor,
@@ -129,7 +128,6 @@ async def upload_audio(
     language: str = Form("auto"),
     stt_provider: str = Form("deepgram"),
     enable_diarization: bool = Form(True),
-    enable_glossary: bool = Form(True),
     enable_summary: bool = Form(True),
     enable_action_items: bool = Form(True),
     enable_noise_cleanup: bool = Form(True),
@@ -217,7 +215,6 @@ async def upload_audio(
         stt_provider=provider_name,
         language=normalized_language,
         enable_diarization=parse_bool_form(enable_diarization, True),
-        enable_glossary=parse_bool_form(enable_glossary, True),
         enable_summary=parse_bool_form(enable_summary, True),
         enable_action_items=parse_bool_form(enable_action_items, True),
         enable_noise_cleanup=parse_bool_form(enable_noise_cleanup, True),
@@ -606,7 +603,7 @@ async def test_stt_stream(websocket: WebSocket, token: Optional[str] = Query(Non
             if phobert_enabled_for(language):
                 try:
                     processor = get_phobert_processor()
-                    processed = processor.process_chunk(normalized_text, segments, {})
+                    processed = processor.process_chunk(normalized_text, segments)
                     normalized_text = str(processed.get("text") or normalized_text)
                     segments = processed.get("segments") or segments
                     nlp_metadata = processed.get("nlp_metadata")
@@ -826,8 +823,7 @@ async def meeting_stt_stream(
             if phobert_enabled_for(language):
                 try:
                     processor = get_phobert_processor()
-                    glossary = build_glossary_dict(db, meeting.organization_id)
-                    processed = processor.process_chunk(normalized_text, segments, glossary)
+                    processed = processor.process_chunk(normalized_text, segments)
                     normalized_text = str(processed.get("text") or normalized_text)
                     segments = processed.get("segments") or segments
                     nlp_metadata = processed.get("nlp_metadata")
@@ -984,7 +980,7 @@ async def test_stt_transcribe_chunk(
         if phobert_enabled_for(detected_language):
             try:
                 processor = get_phobert_processor()
-                processed = processor.process_chunk(text, segments, {})
+                processed = processor.process_chunk(text, segments)
                 text = str(processed.get("text") or text)
                 segments = processed.get("segments") or segments
                 nlp_metadata = processed.get("nlp_metadata")
@@ -1038,7 +1034,7 @@ async def test_stt_analyze(
     if phobert_enabled_for(language):
         try:
             processor = get_phobert_processor()
-            processed = processor.process_finalize(full_text, segments, {})
+            processed = processor.process_finalize(full_text, segments)
             full_text = str(processed.get("text") or full_text)
             segments = processed.get("segments") or segments
             nlp_metadata = processed.get("nlp_metadata")
@@ -1064,7 +1060,6 @@ async def test_stt_analyze(
         speaker_aware_transcript,
         custom_instruction,
         language,
-        "",
         nlp_metadata,
     )
 
@@ -1277,8 +1272,7 @@ async def transcribe_chunk(
             if phobert_enabled_for(detected_language):
                 try:
                     processor = get_phobert_processor()
-                    glossary = build_glossary_dict(db, meeting.organization_id)
-                    processed = processor.process_chunk(text, normalized_segments, glossary)
+                    processed = processor.process_chunk(text, normalized_segments)
                     text = str(processed.get("text") or text)
                     normalized_segments = processed.get("segments") or normalized_segments
                     nlp_metadata = processed.get("nlp_metadata")

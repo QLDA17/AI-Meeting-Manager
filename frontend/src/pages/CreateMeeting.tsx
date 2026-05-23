@@ -18,7 +18,7 @@ import {
 } from "lucide-react";
 import { Button, showToast } from "../components/ui";
 import { useAuth } from "../context/AuthContext";
-import { useAppStore, useGlossaryStore, useOrgStore } from "../stores";
+import { useAppStore, useOrgStore } from "../stores";
 import { useGroupMembers } from "../hooks/useGroupMembers";
 import api from "../services/api";
 
@@ -37,12 +37,9 @@ const CreateMeeting: React.FC = () => {
   const { user } = useAuth();
   const { currentOrgId, groups, loadGroups } = useOrgStore();
   const { loadMeetings } = useAppStore();
-  const { glossaries, loadGlossaries } = useGlossaryStore();
-
   const [activeTab, setActiveTab] = useState<Tab>("room");
   const [title, setTitle] = useState("");
   const [selectedGroupId, setSelectedGroupId] = useState("");
-  const [selectedGlossaries, setSelectedGlossaries] = useState<string[]>([]);
   const [language, setLanguage] = useState("vi");
   const [enableCamera, setEnableCamera] = useState(true);
   const [enableMic, setEnableMic] = useState(true);
@@ -120,8 +117,7 @@ const CreateMeeting: React.FC = () => {
   useEffect(() => {
     if (!currentOrgId) return;
     loadGroups(currentOrgId);
-    loadGlossaries(currentOrgId);
-  }, [currentOrgId, loadGlossaries, loadGroups]);
+  }, [currentOrgId, loadGroups]);
 
   useEffect(() => {
     if (requestedGroupId && groups.some((group) => group.id === requestedGroupId)) {
@@ -163,7 +159,6 @@ const CreateMeeting: React.FC = () => {
           language,
           enableCamera,
           enableMic,
-          glossaryIds: selectedGlossaries,
         },
         participant_ids: selectedParticipants,
       });
@@ -419,52 +414,6 @@ const CreateMeeting: React.FC = () => {
                       <option value="zh">中文</option>
                     </select>
                   </div>
-
-                  {/* Glossary */}
-                  {glossaries.length > 0 && (
-                    <div>
-                      <label className="mb-1.5 block text-xs font-semibold text-gray-500 dark:text-slate-400">
-                        Từ điển chuyên ngành
-                      </label>
-                      <div className="max-h-36 space-y-1 overflow-y-auto rounded-xl bg-gray-50 p-2 dark:bg-slate-700/50">
-                        {glossaries.map((g) => {
-                          const isSelected = selectedGlossaries.includes(g.id);
-                          return (
-                            <button
-                              key={g.id}
-                              type="button"
-                              onClick={() =>
-                                setSelectedGlossaries((prev) =>
-                                  isSelected ? prev.filter((id) => id !== g.id) : [...prev, g.id],
-                                )
-                              }
-                              className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm transition ${
-                                isSelected
-                                  ? "bg-primary-50 text-primary-700 dark:bg-primary-900/10 dark:text-primary-300"
-                                  : "text-gray-600 hover:bg-white dark:text-slate-300 dark:hover:bg-slate-700"
-                              }`}
-                            >
-                              <div
-                                className={`flex h-5 w-5 items-center justify-center rounded-md border-2 transition ${
-                                  isSelected
-                                    ? "border-primary-500 bg-primary-500 text-white"
-                                    : "border-gray-300 dark:border-slate-500"
-                                }`}
-                              >
-                                {isSelected && <Check size={12} strokeWidth={3} />}
-                              </div>
-                              <span className="font-medium">
-                                {g.name}
-                                {g.scope === "GLOBAL" && (
-                                  <span className="ml-1.5 text-[10px] font-normal text-gray-400 dark:text-slate-500">(Hệ thống)</span>
-                                )}
-                              </span>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
 
                   {/* Always-on badge */}
                   <div className="flex items-center gap-3 rounded-xl border border-primary-100 bg-primary-50/60 px-4 py-3 dark:border-primary-900/30 dark:bg-primary-900/10">

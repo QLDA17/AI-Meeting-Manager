@@ -19,7 +19,7 @@ from src.api.core.meeting_operations import ensure_speaker_mapping
 from src.api.core.transcript_support import finalize_meeting_transcript
 from src.api.database import SessionLocal
 from src.api.crud import create_transcript, create_transcript_segments_bulk, update_audio_file, update_meeting
-from src.api.core.nlp_support import build_glossary_dict, get_phobert_processor, phobert_enabled_for
+from src.api.core.nlp_support import get_phobert_processor, phobert_enabled_for
 from src.api.core.transcript_support import normalize_segment_payload
 from src.diarization.service import DiarizationService, Segment as DiarizationSegment
 from src.stt.service import STTService
@@ -278,15 +278,13 @@ def persist_transcript_without_summary(
     segments: List[Dict[str, Any]],
     language: str,
     provider_name: str,
-    enable_glossary: bool,
 ) -> None:
     post_processed = False
     nlp_metadata = None
     if phobert_enabled_for(language):
         try:
             processor = get_phobert_processor()
-            glossary = build_glossary_dict(db, meeting.organization_id) if enable_glossary else {}
-            processed = processor.process_finalize(text, segments, glossary)
+            processed = processor.process_finalize(text, segments)
             text = str(processed.get("text") or text)
             segments = processed.get("segments") or segments
             nlp_metadata = processed.get("nlp_metadata")
@@ -344,7 +342,6 @@ class UploadMeetingJob:
     stt_provider: str = "deepgram"
     language: str = "auto"
     enable_diarization: bool = True
-    enable_glossary: bool = True
     enable_summary: bool = True
     enable_action_items: bool = True
     enable_noise_cleanup: bool = True
@@ -503,7 +500,6 @@ class UploadMeetingJob:
                         "language": final_language,
                         "generate_summary": True,
                         "generate_action_items": self.enable_action_items,
-                        "enable_glossary": self.enable_glossary,
                     },
                 )
             else:
@@ -514,7 +510,6 @@ class UploadMeetingJob:
                     segments=segments,
                     language=final_language,
                     provider_name=self.stt_provider,
-                    enable_glossary=self.enable_glossary,
                 )
                 result = {
                     "meeting_id": self.meeting_id,
@@ -601,7 +596,6 @@ def create_retry_job(job_id: str) -> UploadMeetingJob:
         stt_provider=job.stt_provider,
         language=job.language,
         enable_diarization=job.enable_diarization,
-        enable_glossary=job.enable_glossary,
         enable_summary=job.enable_summary,
         enable_action_items=job.enable_action_items,
         enable_noise_cleanup=job.enable_noise_cleanup,

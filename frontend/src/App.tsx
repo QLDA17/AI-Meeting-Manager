@@ -23,7 +23,6 @@ const JoinMeeting = React.lazy(() => import('./pages/JoinMeeting'));
 const UploadAudio = React.lazy(() => import('./pages/meeting/UploadAudio'));
 const Notifications = React.lazy(() => import('./pages/Notifications'));
 const ActionItems = React.lazy(() => import('./pages/ActionItems'));
-const GlossaryView = React.lazy(() => import('./pages/GlossaryView'));
 const NotFound = React.lazy(() => import('./pages/NotFound'));
 const Forbidden = React.lazy(() => import('./pages/Forbidden'));
 const GroupDetail = React.lazy(() => import('./pages/group/GroupDetail'));
@@ -39,7 +38,6 @@ const AdminPrompts = React.lazy(() => import('./pages/admin/components/AdminProm
 const AdminNotifications = React.lazy(() => import('./pages/admin/components/AdminNotifications'));
 const AdminAuditLogs = React.lazy(() => import('./pages/admin/components/AdminAuditLogs'));
 const AdminSettings = React.lazy(() => import('./pages/admin/components/AdminSettings'));
-const GlossariesAdmin = React.lazy(() => import('./pages/admin/GlossariesAdmin'));
 const OrganizationSetup = React.lazy(() => import('./pages/OrganizationSetup'));
 const Profile = React.lazy(() => import('./pages/profile/Profile'));
 
@@ -300,14 +298,6 @@ const AppRoutes: React.FC = () => {
           }
         />
         <Route
-          path="/glossary"
-          element={
-            <React.Suspense fallback={<PageLoader />}>
-              <GlossaryView />
-            </React.Suspense>
-          }
-        />
-        <Route
           path="/notifications"
           element={
             <React.Suspense fallback={<PageLoader />}>
@@ -394,14 +384,6 @@ const AppRoutes: React.FC = () => {
           element={
             <React.Suspense fallback={<PageLoader />}>
               <AdminUsers />
-            </React.Suspense>
-          }
-        />
-        <Route
-          path="glossaries"
-          element={
-            <React.Suspense fallback={<PageLoader />}>
-              <GlossariesAdmin />
             </React.Suspense>
           }
         />

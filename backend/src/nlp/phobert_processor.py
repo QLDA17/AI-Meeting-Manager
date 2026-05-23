@@ -13,7 +13,7 @@ class PhoBERTPostProcessor:
     """Orchestrates Vietnamese transcript post-processing.
 
     Chunk processing stays lightweight and does not load PhoBERT. Finalize may
-    run dialect hinting, glossary/rule corrections, and optional LLM correction.
+    run dialect hinting, rule corrections, and optional LLM correction.
     """
 
     def __init__(
@@ -34,17 +34,16 @@ class PhoBERTPostProcessor:
         self,
         text: str,
         segments: Optional[List[Dict[str, object]]] = None,
-        glossary: Optional[Dict[str, str]] = None,
     ) -> Dict[str, object]:
         started = time.perf_counter()
-        result = self.corrector.correct_rules(text or "", glossary)
+        result = self.corrector.correct_rules(text or "")
         corrected_text = str(result["text"])
         corrections = list(result["corrections"])
 
         processed_segments = []
         for segment in segments or []:
             original = str(segment.get("text", "") or "")
-            segment_result = self.corrector.correct_rules(original, glossary)
+            segment_result = self.corrector.correct_rules(original)
             new_segment = {**segment, "text": segment_result["text"]}
             if segment_result["text"] != original:
                 new_segment["original_text"] = original
@@ -68,7 +67,6 @@ class PhoBERTPostProcessor:
         self,
         text: str,
         segments: Optional[List[Dict[str, object]]] = None,
-        glossary: Optional[Dict[str, str]] = None,
     ) -> Dict[str, object]:
         started = time.perf_counter()
         original_text = text or ""
@@ -81,19 +79,18 @@ class PhoBERTPostProcessor:
         }
         correction_result = self.corrector.correct_finalize(
             original_text,
-            glossary,
             dialect_hint=str(dialect.get("dialect_hint", "unknown")),
         )
         corrected_text = str(correction_result["text"])
         corrections = list(correction_result["corrections"])
 
         processed_segments = []
-        all_terms = set(self.corrector.extract_terms(corrected_text, glossary))
+        all_terms = set(self.corrector.extract_terms(corrected_text))
         for segment in segments or []:
             original = str(segment.get("text", "") or "")
             segment_dialect = self.classifier.classify(original) if self.dialect_enabled else dialect
-            segment_result = self.corrector.correct_rules(original, glossary)
-            segment_terms = self.corrector.extract_terms(str(segment_result["text"]), glossary)
+            segment_result = self.corrector.correct_rules(original)
+            segment_terms = self.corrector.extract_terms(str(segment_result["text"]))
             all_terms.update(segment_terms)
             metadata = {
                 "dialect_hint": segment_dialect.get("dialect_hint", "unknown"),

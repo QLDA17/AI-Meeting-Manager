@@ -23,6 +23,7 @@ import { format } from 'date-fns';
 import { toast } from 'react-hot-toast';
 
 import { useAuth } from '../context/AuthContext';
+import { useOrgStore } from '../stores';
 import api from '../services/api';
 import { actionItemService } from '../services/actionItemService';
 import { normalizeMeeting } from '../services/mappers';
@@ -514,6 +515,7 @@ const TaskCard: React.FC<TaskCardProps> = ({
 const ActionItems: React.FC = () => {
   const queryClient = useQueryClient();
   const { user } = useAuth();
+  const currentOrgId = useOrgStore((s) => s.currentOrgId);
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [newTaskTitle, setNewTaskTitle] = useState('');
@@ -530,15 +532,18 @@ const ActionItems: React.FC = () => {
   const { data: actionItems = [], isLoading } = useQuery({
     queryKey: ['actionItems'],
     queryFn: () => actionItemService.list(),
-    refetchInterval: 3000,
-    refetchIntervalInBackground: true,
+    refetchInterval: 30000,
+    refetchIntervalInBackground: false,
+    staleTime: 10000,
   });
   const { data: meetings = [] } = useQuery({
-    queryKey: ['meetings-for-action-items'],
+    queryKey: ['meetings-for-action-items', currentOrgId],
     queryFn: async (): Promise<Meeting[]> => {
-      const response = await api.get('/api/meetings');
+      const params = currentOrgId ? `?organization_id=${currentOrgId}` : '';
+      const response = await api.get(`/api/meetings${params}`);
       return Array.isArray(response.data) ? response.data.map(normalizeMeeting) : [];
     },
+    enabled: !!currentOrgId,
   });
 
   const updateMutation = useMutation({

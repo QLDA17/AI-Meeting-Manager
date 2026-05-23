@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { AnimatePresence, motion } from 'framer-motion';
@@ -6,7 +7,6 @@ import {
   AlertCircle,
   ArrowDownWideNarrow,
   ArrowLeft,
-  BookOpen,
   Calendar,
   CheckCircle2,
   Clock,
@@ -1113,14 +1113,12 @@ const MeetingDetail: React.FC = () => {
       )}
 
       {!isUpcomingMeeting && meeting?.audioStatus === 'READY' && meeting.audioUrl && (
-        <div className="sticky top-0 z-30 mb-4" style={{ position: 'sticky', top: '0px', zIndex: 30 }}>
-          <AudioPlayer
-            ref={audioPlayerRef}
-            src={meeting.audioUrl}
-            onTimeUpdate={setCurrentAudioTime}
-            onReady={setIsAudioReady}
-          />
-        </div>
+        <AudioPlayer
+          ref={audioPlayerRef}
+          src={meeting.audioUrl}
+          onTimeUpdate={setCurrentAudioTime}
+          onReady={setIsAudioReady}
+        />
       )}
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
@@ -1319,14 +1317,12 @@ const MeetingDetail: React.FC = () => {
                               {group.corrections.length > 0 && (
                                 <div className="mt-2 flex flex-wrap gap-1.5">
                                   {group.corrections
-                                    .filter((c) => c.source === 'glossary')
                                     .map((c, idx) => (
                                       <span
                                         key={idx}
                                         className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700 ring-1 ring-amber-200 dark:bg-amber-900/20 dark:text-amber-300 dark:ring-amber-800"
-                                        title={`Glossary: "${c.wrong}" → "${c.right}"`}
+                                        title={`"${c.wrong}" → "${c.right}"`}
                                       >
-                                        <BookOpen size={11} />
                                         {c.wrong} → {c.right}
                                       </span>
                                     ))}

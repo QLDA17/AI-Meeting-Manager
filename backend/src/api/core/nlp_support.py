@@ -6,7 +6,6 @@ import re
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from src.api import models, schemas
@@ -187,7 +186,6 @@ def build_structured_summary_prompts(
     transcript: str,
     custom_instruction: str,
     language: str = "vi",
-    glossary_context: str = "",
     nlp_metadata: Optional[Dict[str, Any]] = None,
 ) -> tuple[str, str]:
     lang_names = {"vi": "Vietnamese", "en": "English", "zh": "Chinese", "ja": "Japanese", "ko": "Korean"}
@@ -212,11 +210,6 @@ def build_structured_summary_prompts(
         f"speaker_summaries has at most {AI_SPEAKER_SUMMARIES_LIMIT} short strings like 'Name: contribution'. "
         f"If the transcript is short or thin, still provide the useful facts available without padding."
     )
-    glossary_block = (
-        f"\nInternal glossary. Preserve these names/terms exactly when they appear, and use the translations as context:\n{glossary_context}\n"
-        if glossary_context
-        else ""
-    )
     nlp_block = ""
     if nlp_metadata:
         dialect_hint = nlp_metadata.get("dialect_hint") or "unknown"
@@ -232,7 +225,6 @@ def build_structured_summary_prompts(
         )
     user_prompt = (
         f"Admin guidance, lower priority than the concise JSON rules above:\n{custom_instruction.strip()}\n\n"
-        f"{glossary_block}\n"
         f"{nlp_block}\n"
         f"Return JSON in exactly this schema:\n"
         "{\n"
@@ -273,49 +265,3 @@ def build_speaker_aware_transcript(
     return "\n".join(lines) or transcript_text
 
 
-# ─── Glossary Builders ──────────────────────────────────────────────────────
-
-
-def build_glossary_context(db: Session, organization_id: Optional[str]) -> str:
-    query = db.query(models.GlossaryTerm).filter(models.GlossaryTerm.is_active == True)
-    if organization_id:
-        query = query.filter(or_(models.GlossaryTerm.organization_id.is_(None), models.GlossaryTerm.organization_id == organization_id))
-    else:
-        query = query.filter(models.GlossaryTerm.organization_id.is_(None))
-    terms = query.order_by(models.GlossaryTerm.term.asc()).limit(80).all()
-    if not terms:
-        return ""
-    lines = []
-    for term in terms:
-        translations = [
-            value for value in [
-                term.translation_vi,
-                term.translation_en,
-                term.translation_ja,
-                term.translation_zh,
-                term.translation_ko,
-            ] if value
-        ]
-        suffix = f" => {', '.join(translations)}" if translations else ""
-        alias_suffix = f" [aliases: {', '.join(term.aliases or [])}]" if term.aliases else ""
-        lines.append(f"- {term.term}{suffix}{alias_suffix}")
-    return "\n".join(lines)
-
-
-def build_glossary_dict(db: Session, organization_id: Optional[str]) -> Dict[str, str]:
-    query = db.query(models.GlossaryTerm).filter(models.GlossaryTerm.is_active == True)
-    if organization_id:
-        query = query.filter(or_(models.GlossaryTerm.organization_id.is_(None), models.GlossaryTerm.organization_id == organization_id))
-    else:
-        query = query.filter(models.GlossaryTerm.organization_id.is_(None))
-    terms = query.order_by(models.GlossaryTerm.term.asc()).limit(200).all()
-    glossary: Dict[str, str] = {}
-    for term in terms:
-        if not term.term:
-            continue
-        canonical = term.term
-        glossary[canonical] = canonical
-        for alias in sorted(term.aliases or [], key=lambda value: len(value or ""), reverse=True):
-            if alias:
-                glossary[alias] = canonical
-    return glossary

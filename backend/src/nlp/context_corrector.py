@@ -22,7 +22,7 @@ class Correction:
 
 
 class ContextCorrectionPipeline:
-    """Rule/glossary correction for STT text, with optional finalize-only LLM pass."""
+    """Rule-based correction for STT text, with optional finalize-only LLM pass."""
 
     DEFAULT_REPLACEMENTS: Dict[str, str] = {
         "ka pi ai": "KPI",
@@ -43,7 +43,7 @@ class ContextCorrectionPipeline:
             else enable_llm
         )
 
-    def correct_rules(self, text: str, glossary: Optional[Dict[str, str]] = None) -> Dict[str, object]:
+    def correct_rules(self, text: str) -> Dict[str, object]:
         corrected = text or ""
         corrections: List[Correction] = []
 
@@ -51,14 +51,6 @@ class ContextCorrectionPipeline:
             corrected, count = self._replace_phrase(corrected, wrong, right)
             if count:
                 corrections.append(Correction(wrong, right, "rule"))
-
-        glossary_items = sorted((glossary or {}).items(), key=lambda item: len((item[0] or "").strip()), reverse=True)
-        for term, canonical in glossary_items:
-            if not term or not canonical:
-                continue
-            corrected, count = self._replace_phrase(corrected, term, canonical)
-            if count and term != canonical:
-                corrections.append(Correction(term, canonical, "glossary"))
 
         return {
             "text": corrected,
@@ -68,15 +60,14 @@ class ContextCorrectionPipeline:
     def correct_finalize(
         self,
         text: str,
-        glossary: Optional[Dict[str, str]] = None,
         dialect_hint: str = "unknown",
     ) -> Dict[str, object]:
-        rule_result = self.correct_rules(text, glossary)
+        rule_result = self.correct_rules(text)
         corrected = str(rule_result["text"])
         corrections = list(rule_result["corrections"])
 
         if self.enable_llm and corrected.strip():
-            llm_text = self._correct_with_llm(corrected, glossary or {}, dialect_hint)
+            llm_text = self._correct_with_llm(corrected, dialect_hint)
             if llm_text and llm_text != corrected:
                 corrections.append({
                     "original": corrected,
@@ -91,26 +82,19 @@ class ContextCorrectionPipeline:
         }
 
     @staticmethod
-    def extract_terms(text: str, glossary: Optional[Dict[str, str]] = None) -> List[str]:
-        haystack = (text or "").lower()
-        terms = []
-        for term in (glossary or {}):
-            if term and re.search(rf"(?<!\w){re.escape(term.lower())}(?!\w)", haystack, flags=re.UNICODE):
-                terms.append(term)
-        return sorted(set(terms))
+    def extract_terms(text: str) -> List[str]:
+        return []
 
-    def _correct_with_llm(self, text: str, glossary: Dict[str, str], dialect_hint: str) -> Optional[str]:
+    def _correct_with_llm(self, text: str, dialect_hint: str) -> Optional[str]:
         try:
             from src.providers.router_llm import RouterLLMAdapter
 
-            glossary_lines = "\n".join(f"- {k} => {v}" for k, v in list(glossary.items())[:80])
             system_prompt = (
                 "You correct Vietnamese STT transcripts. Preserve meaning, speaker markers, timestamps, "
                 "and line breaks where possible. Do not summarize. Return corrected transcript text only."
             )
             user_prompt = (
-                f"Regional text hint: {dialect_hint}\n"
-                f"Glossary:\n{glossary_lines or '(none)'}\n\n"
+                f"Regional text hint: {dialect_hint}\n\n"
                 f"Transcript:\n{text}"
             )
             router = RouterLLMAdapter()
