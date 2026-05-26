@@ -53,6 +53,12 @@ const MeetingDetailPopup: React.FC<MeetingDetailPopupProps> = ({ meetingId, isOp
 
   const getDuration = () => {
     if (!meeting) return '';
+    if (meeting.status === 'live' && meeting.actual_start) {
+      const liveStart = new Date(meeting.actual_start);
+      if (!Number.isNaN(liveStart.getTime())) {
+        return `${Math.max(0, Math.floor((Date.now() - liveStart.getTime()) / 60000))} phút`;
+      }
+    }
     if (meeting.duration > 0) return `${meeting.duration} phút`;
     if (meeting.scheduled_start && meeting.scheduled_end) {
       const diff = new Date(meeting.scheduled_end).getTime() - new Date(meeting.scheduled_start).getTime();

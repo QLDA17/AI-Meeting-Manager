@@ -174,8 +174,13 @@ def create_meeting(db: Session, meeting_data: dict, created_by: str) -> models.M
         is_pinned=meeting_data.get("is_pinned", False),
         created_by=created_by,
     )
-    # Auto-compute duration from scheduled times if not set
-    if db_meeting.duration == 0 and db_meeting.scheduled_start and db_meeting.scheduled_end:
+    # Only persist planned duration once the meeting is no longer an active/live record.
+    if (
+        db_meeting.duration == 0
+        and db_meeting.status in {"completed", "processing", "failed", "canceled"}
+        and db_meeting.scheduled_start
+        and db_meeting.scheduled_end
+    ):
         db_meeting.duration = max(0, int((db_meeting.scheduled_end - db_meeting.scheduled_start).total_seconds() / 60))
     db.add(db_meeting)
     db.commit()

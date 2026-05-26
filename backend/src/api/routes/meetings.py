@@ -2,8 +2,8 @@ import logging
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, Request
-from sqlalchemy import func, or_
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, Request
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, joinedload
 
 from src.api import auth, models, schemas
@@ -24,6 +24,7 @@ from src.api.core.meeting_operations import (
     meeting_room_manager,
     normalize_meeting_datetime,
     require_meeting_manager,
+    select_summary_for_language,
     speaker_mapping_payload,
 )
 from src.api.core.user_payloads import get_meeting_by_id, require_meeting_room_access, user_org_ids, meeting_participant_meeting_ids_for_user, meeting_group_ids_for_user
@@ -87,15 +88,21 @@ def list_meetings(
 
     # Regular users can only see meetings they created or are invited to.
     if not can_view_all:
-        participant_meeting_ids = db.query(models.MeetingParticipant.meeting_id).filter(
+        participant_meeting_ids = select(models.MeetingParticipant.meeting_id).where(
             models.MeetingParticipant.user_id == current_user.id
-        ).subquery()
+        )
         query = query.filter(
             or_(
                 models.Meeting.created_by == current_user.id,
                 models.Meeting.id.in_(participant_meeting_ids)
             )
         )
+
+    meeting_time_order = func.coalesce(
+        models.Meeting.scheduled_start,
+        models.Meeting.actual_start,
+        models.Meeting.created_at,
+    )
 
     meetings = query.options(
         joinedload(models.Meeting.organization),
@@ -104,7 +111,7 @@ def list_meetings(
         joinedload(models.Meeting.participants).joinedload(models.MeetingParticipant.user),
         joinedload(models.Meeting.summaries),
         joinedload(models.Meeting.action_items),
-    ).order_by(models.Meeting.created_at.desc()).offset(skip).limit(limit).all()
+    ).order_by(meeting_time_order.desc()).offset(skip).limit(limit).all()
 
     # Enrich with computed fields for list view
     user_lang = getattr(current_user, "language", None) or "vi"
@@ -116,13 +123,12 @@ def list_meetings(
         m.attended_participants_count = len(m.attended_participants)
         m.duration = compute_meeting_duration_minutes(m)
         if m.summaries:
-            # Prefer summary in user's language, fall back to any
-            lang_match = [s for s in m.summaries if (s.language or "vi") == user_lang]
-            pool = lang_match if lang_match else m.summaries
-            latest = max(pool, key=lambda s: s.created_at or s.id)
-            m.summary_text = latest.meeting_summary
-            m.key_points_list = latest.key_points if isinstance(latest.key_points, list) else []
-            m.decisions_list = latest.decisions if isinstance(latest.decisions, list) else []
+            _, latest_any, latest_completed = select_summary_for_language(m.summaries, user_lang)
+            preview = latest_completed or latest_any
+            if preview and preview.processing_status == "COMPLETED":
+                m.summary_text = preview.meeting_summary
+                m.key_points_list = preview.key_points if isinstance(preview.key_points, list) else []
+                m.decisions_list = preview.decisions if isinstance(preview.decisions, list) else []
 
     return meetings
 
@@ -471,9 +477,12 @@ def create_meeting_endpoint(
         if not scheduled_end:
             scheduled_end = scheduled_start  # duration tracked via actual_start/actual_end
 
+    if not is_instant and not scheduled_start:
+        raise HTTPException(status_code=400, detail="Cuộc họp phải có thời gian bắt đầu")
+
     # Block meetings in the past (skip for instant live meetings)
     if not is_instant and scheduled_start:
-        if scheduled_start < datetime.now(timezone.utc):
+        if scheduled_start < datetime.now(timezone.utc).replace(tzinfo=None):
             raise HTTPException(status_code=400, detail="Không thể tạo cuộc họp trong quá khứ")
 
     # scheduled_end must be after scheduled_start (skip for instant)
@@ -542,6 +551,8 @@ def create_meeting_endpoint(
         action="CREATE_MEETING",
         target=meeting.title,
         role=current_user.role or "member",
+        org=meeting.organization.name if meeting.organization else meeting.organization_id,
+        db=db,
     )
 
     if current_user.role != "system-admin":
@@ -689,6 +700,8 @@ def update_meeting_endpoint(
         raise HTTPException(status_code=404, detail="Meeting not found")
     auth.require_org_member(db, current_user, existing.organization_id)
     require_meeting_manager(db, current_user, existing)
+    if existing.status in {"completed", "canceled", "failed"}:
+        raise HTTPException(status_code=400, detail="Không thể chỉnh sửa cuộc họp đã kết thúc")
     updates = meeting_data.model_dump(exclude_unset=True)
     if "scheduled_start" in updates:
         updates["scheduled_start"] = normalize_meeting_datetime(updates["scheduled_start"])
@@ -701,7 +714,7 @@ def update_meeting_endpoint(
         end = updates.get("scheduled_end", existing.scheduled_end)
         if start and end and end <= start:
             raise HTTPException(status_code=400, detail="Thời gian kết thúc phải sau thời gian bắt đầu")
-        if start and start < datetime.now(timezone.utc):
+        if start and start < datetime.now(timezone.utc).replace(tzinfo=None):
             raise HTTPException(status_code=400, detail="Không thể chuyển cuộc họp về thời gian trong quá khứ")
 
     if updates.get("group_id"):
@@ -738,6 +751,8 @@ def update_meeting_endpoint(
         action="UPDATE_MEETING",
         target=meeting.title if meeting else meeting_id,
         role=current_user.role or "member",
+        org=existing.organization.name if existing.organization else existing.organization_id,
+        db=db,
     )
     return meeting
 
@@ -818,6 +833,8 @@ def delete_meeting_endpoint(
             action="REQUEST_DELETE_MEETING",
             target=existing.title,
             role=current_user.role or "member",
+            org=existing.organization.name if existing.organization else existing.organization_id,
+            db=db,
         )
         raise HTTPException(status_code=403, detail="Ban khong co quyen xoa truc tiep. Yeu cau da gui cho org admin.")
 
@@ -829,6 +846,8 @@ def delete_meeting_endpoint(
         action="DELETE_MEETING",
         target=deleted_title,
         role=current_user.role or "admin",
+        org=existing.organization.name if existing.organization else existing.organization_id,
+        db=db,
     )
 
     if current_user.role != "system-admin":
@@ -855,11 +874,12 @@ def delete_meeting_endpoint(
 async def finalize_meeting(
     meeting_id: str,
     request: Request,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user=Depends(auth.get_current_user),
 ):
     body = await request.json()
-    return await finalize_meeting_transcript(meeting_id, db, current_user, body)
+    return await finalize_meeting_transcript(meeting_id, db, current_user, body, background_tasks)
 
 
 @router.get("/api/meetings/{meeting_id}/dialect")

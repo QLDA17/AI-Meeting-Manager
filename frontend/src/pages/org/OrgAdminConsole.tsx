@@ -8,11 +8,11 @@ import { motion } from 'framer-motion';
 import {
   ArrowLeft,
   BarChart3,
-  BookOpen,
   Building2,
   Clock,
   FileText,
   FolderOpen,
+  History,
   Settings,
   TrendingUp,
   UserPlus,
@@ -25,8 +25,9 @@ import { AnimatedCounter, PageState, StatCard } from '../../components/ui';
 import OrgUsersTab from './OrgUsersTab';
 import OrgGroupsTab from './OrgGroupsTab';
 import OrgSettingsTab from './OrgSettingsTab';
+import OrgAuditLogsTab from './OrgAuditLogsTab';
 
-type AdminTab = 'overview' | 'users' | 'groups' | 'settings';
+type AdminTab = 'overview' | 'users' | 'groups' | 'settings' | 'audit-logs';
 
 const OrgAdminConsole: React.FC = () => {
   const navigate = useNavigate();
@@ -38,7 +39,7 @@ const OrgAdminConsole: React.FC = () => {
 
   // Sync URL tab parameter with local state
   React.useEffect(() => {
-    if (tab && ['overview', 'users', 'groups', 'settings'].includes(tab)) {
+    if (tab && ['overview', 'users', 'groups', 'settings', 'audit-logs'].includes(tab)) {
       setActiveTab(tab as AdminTab);
     }
   }, [tab]);
@@ -82,6 +83,7 @@ const OrgAdminConsole: React.FC = () => {
     { key: 'users', label: 'Người dùng', icon: <Users size={16} /> },
     { key: 'groups', label: 'Nhóm', icon: <FolderOpen size={16} /> },
     { key: 'settings', label: 'Cài đặt', icon: <Settings size={16} /> },
+    { key: 'audit-logs', label: 'Nhật ký', icon: <History size={16} /> },
   ];
 
   const stats = [
@@ -274,6 +276,7 @@ const OrgAdminConsole: React.FC = () => {
           {activeTab === 'users' && currentOrg && <OrgUsersTab orgId={currentOrg.id} />}
           {activeTab === 'groups' && currentOrg && <OrgGroupsTab orgId={currentOrg.id} />}
           {activeTab === 'settings' && currentOrg && <OrgSettingsTab orgId={currentOrg.id} />}
+          {activeTab === 'audit-logs' && currentOrg && <OrgAuditLogsTab orgId={currentOrg.id} />}
         </div>
       </div>
     </div>

@@ -1,5 +1,4 @@
 import os
-import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Mapping
 
@@ -8,13 +7,15 @@ from sqlalchemy.orm import Session, joinedload
 
 from src.api import models
 from src.api.core.admin_runtime import (
-    ADMIN_BROADCAST_HISTORY,
-    ADMIN_PROMPTS,
-    ADMIN_SYSTEM_SETTINGS,
-    _save_admin_prompts,
-    _save_admin_settings,
     append_admin_audit_log,
+    create_admin_broadcast_record,
+    delete_admin_broadcast_record,
     ensure_audit_log_table,
+    get_admin_settings_snapshot,
+    list_admin_broadcasts,
+    list_admin_prompts,
+    update_admin_settings_values,
+    upsert_admin_prompt,
 )
 from src.api.core.notifications_support import create_persisted_notification
 from src.api.core.upload_jobs import feature_flags_for_user
@@ -54,9 +55,24 @@ def update_admin_user_status_payload(
     current_user: models.User,
 ) -> Dict[str, Any]:
     require_system_admin_user(current_user)
-    user = update_user(db, user_id, {"is_active": is_active})
+    if current_user.id == user_id:
+        raise HTTPException(status_code=400, detail="You cannot change your own active status")
+    user = db.query(models.User).filter(models.User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    if not is_active and user.role == "system-admin":
+        remaining_admins = (
+            db.query(models.User)
+            .filter(
+                models.User.role == "system-admin",
+                models.User.is_active == True,
+                models.User.id != user.id,
+            )
+            .count()
+        )
+        if remaining_admins == 0:
+            raise HTTPException(status_code=400, detail="Cannot disable the last active system admin")
+    user = update_user(db, user_id, {"is_active": is_active})
     append_admin_audit_log(
         actor=current_user.username,
         action="ACTIVATE_USER" if is_active else "SUSPEND_USER",
@@ -74,9 +90,24 @@ def update_admin_user_role_payload(
     require_system_admin_user(current_user)
     if role not in ("system-admin", "member"):
         raise HTTPException(status_code=400, detail="Role must be 'system-admin' or 'member'")
-    user = update_user(db, user_id, {"role": role})
+    if current_user.id == user_id:
+        raise HTTPException(status_code=400, detail="You cannot change your own system role")
+    user = db.query(models.User).filter(models.User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    if user.role == "system-admin" and role != "system-admin":
+        remaining_admins = (
+            db.query(models.User)
+            .filter(
+                models.User.role == "system-admin",
+                models.User.is_active == True,
+                models.User.id != user.id,
+            )
+            .count()
+        )
+        if remaining_admins == 0:
+            raise HTTPException(status_code=400, detail="Cannot demote the last active system admin")
+    user = update_user(db, user_id, {"role": role})
     append_admin_audit_log(
         actor=current_user.username,
         action="CHANGE_USER_ROLE",
@@ -87,15 +118,30 @@ def update_admin_user_role_payload(
 
 def delete_admin_user_payload(user_id: str, db: Session, current_user: models.User) -> Dict[str, Any]:
     require_system_admin_user(current_user)
-    user = update_user(db, user_id, {"is_active": False})
+    if current_user.id == user_id:
+        raise HTTPException(status_code=400, detail="You cannot deactivate your own account")
+    user = db.query(models.User).filter(models.User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    if user.role == "system-admin":
+        remaining_admins = (
+            db.query(models.User)
+            .filter(
+                models.User.role == "system-admin",
+                models.User.is_active == True,
+                models.User.id != user.id,
+            )
+            .count()
+        )
+        if remaining_admins == 0:
+            raise HTTPException(status_code=400, detail="Cannot deactivate the last active system admin")
+    user = update_user(db, user_id, {"is_active": False})
     append_admin_audit_log(
         actor=current_user.username,
-        action="DELETE_USER",
+        action="DEACTIVATE_USER",
         target=user.email,
     )
-    return {"detail": "User deactivated", "user_id": user_id}
+    return {"detail": "User account deactivated", "user_id": user_id}
 
 
 def get_admin_ai_services_payload(current_user: models.User) -> Dict[str, Any]:
@@ -202,34 +248,26 @@ def get_admin_ai_usage_payload(db: Session, current_user: models.User) -> Dict[s
     }
 
 
-def get_admin_prompts_payload(current_user: models.User) -> List[Dict[str, Any]]:
+def get_admin_prompts_payload(db: Session, current_user: models.User) -> List[Dict[str, Any]]:
     require_system_admin_user(current_user)
-    return list(ADMIN_PROMPTS.values())
+    return list_admin_prompts(db)
 
 
 def update_admin_prompt_payload(
     prompt_key: str,
     payload: Mapping[str, Any],
+    db: Session,
     current_user: models.User,
 ) -> Dict[str, Any]:
     require_system_admin_user(current_user)
-    next_version = payload.get("version") or ADMIN_PROMPTS.get(prompt_key, {}).get("version", "1.0.0")
-    ADMIN_PROMPTS[prompt_key] = {
-        "key": prompt_key,
-        "name": payload["name"],
-        "description": payload.get("description"),
-        "content": payload["content"],
-        "version": next_version,
-        "last_updated": datetime.now(timezone.utc).isoformat(),
-    }
-    _save_admin_prompts()
+    prompt = upsert_admin_prompt(prompt_key, payload, db)
     append_admin_audit_log(actor=current_user.username, action="UPDATE_PROMPT", target=prompt_key)
-    return ADMIN_PROMPTS[prompt_key]
+    return prompt
 
 
-def get_admin_broadcasts_payload(current_user: models.User) -> List[Dict[str, Any]]:
+def get_admin_broadcasts_payload(db: Session, current_user: models.User) -> List[Dict[str, Any]]:
     require_system_admin_user(current_user)
-    return ADMIN_BROADCAST_HISTORY
+    return list_admin_broadcasts(db)
 
 
 def create_admin_broadcast_payload(
@@ -238,23 +276,13 @@ def create_admin_broadcast_payload(
     current_user: models.User,
 ) -> Dict[str, Any]:
     require_system_admin_user(current_user)
-    item = {
-        "id": str(uuid.uuid4()),
-        "title": payload["title"],
-        "content": payload["content"],
-        "type": payload.get("type", "info"),
-        "target": payload.get("target", "all"),
-        "status": "sent",
-        "sentAt": datetime.now(timezone.utc).isoformat(),
-        "reach": 0,
-    }
-
     recipients: List[models.User] = []
-    if item["target"] == "all":
+    target = str(payload.get("target", "all"))
+    if target == "all":
         recipients = db.query(models.User).filter(models.User.is_active == True).all()
     else:
         recipients = db.query(models.User).join(models.UserOrganization).filter(
-            models.UserOrganization.organization_id == item["target"],
+            models.UserOrganization.organization_id == target,
             models.User.is_active == True,
         ).all()
 
@@ -264,25 +292,22 @@ def create_admin_broadcast_payload(
             recipient_user_id=recipient.id,
             notification_type="system",
             priority="today",
-            title=item["title"],
-            message=item["content"],
-            metadata={"target": item["target"]},
+            title=payload["title"],
+            message=payload["content"],
+            metadata={"target": target},
             source_type="admin-broadcast",
-            source_id=item["id"],
+            source_id=None,
             commit=False,
         )
-    item["reach"] = len(recipients)
     db.commit()
-    ADMIN_BROADCAST_HISTORY.insert(0, item)
-    append_admin_audit_log(actor=current_user.username, action="SEND_BROADCAST", target=item["target"])
+    item = create_admin_broadcast_record(payload, len(recipients), db)
+    append_admin_audit_log(actor=current_user.username, action="SEND_BROADCAST", target=target)
     return item
 
 
-def delete_admin_broadcast_payload(notification_id: str, current_user: models.User) -> Dict[str, str]:
+def delete_admin_broadcast_payload(notification_id: str, db: Session, current_user: models.User) -> Dict[str, str]:
     require_system_admin_user(current_user)
-    before = len(ADMIN_BROADCAST_HISTORY)
-    ADMIN_BROADCAST_HISTORY[:] = [item for item in ADMIN_BROADCAST_HISTORY if item.get("id") != notification_id]
-    if len(ADMIN_BROADCAST_HISTORY) == before:
+    if not delete_admin_broadcast_record(notification_id, db):
         raise HTTPException(status_code=404, detail="Notification not found")
     append_admin_audit_log(actor=current_user.username, action="DELETE_BROADCAST", target=notification_id)
     return {"message": "Notification deleted"}
@@ -295,7 +320,7 @@ def get_admin_audit_logs_payload(
     current_user: models.User,
 ) -> List[Dict[str, Any]]:
     require_system_admin_user(current_user)
-    ensure_audit_log_table()
+    ensure_audit_log_table(db)
     db_logs = (
         db.query(models.AuditLog)
         .order_by(models.AuditLog.time.desc())
@@ -318,18 +343,16 @@ def get_admin_audit_logs_payload(
     ]
 
 
-def get_admin_settings_payload(current_user: models.User) -> Dict[str, Any]:
+def get_admin_settings_payload(db: Session, current_user: models.User) -> Dict[str, Any]:
     require_system_admin_user(current_user)
-    return ADMIN_SYSTEM_SETTINGS
+    return get_admin_settings_snapshot(db)
 
 
-def update_admin_settings_payload(payload: Mapping[str, Any], current_user: models.User) -> Dict[str, Any]:
+def update_admin_settings_payload(payload: Mapping[str, Any], db: Session, current_user: models.User) -> Dict[str, Any]:
     require_system_admin_user(current_user)
-    for key, value in payload.items():
-        ADMIN_SYSTEM_SETTINGS[key] = value
-    _save_admin_settings()
+    settings = update_admin_settings_values(payload, db)
     append_admin_audit_log(actor=current_user.username, action="UPDATE_SYSTEM_SETTINGS", target="admin.settings")
-    return ADMIN_SYSTEM_SETTINGS
+    return settings
 
 
 def get_costs_payload() -> None:

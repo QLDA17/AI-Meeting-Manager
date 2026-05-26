@@ -61,6 +61,19 @@ def enrich_organization_payload(org: models.Organization) -> Dict[str, Any]:
     }
 
 
+def _format_audit_log_payload(log: models.AuditLog) -> Dict[str, Any]:
+    return {
+        "id": log.id,
+        "time": log.time.isoformat() if log.time else datetime.now(timezone.utc).isoformat(),
+        "user": log.user,
+        "role": log.role,
+        "action": log.action,
+        "target": log.target,
+        "org": log.org,
+        "ip": log.ip,
+    }
+
+
 def list_organizations_payload(
     skip: int,
     limit: int,
@@ -94,6 +107,8 @@ def create_organization_payload(
             action="CREATE_ORGANIZATION",
             target=org.name,
             role="System Admin",
+            org=org.name,
+            db=db,
         )
     else:
         org_payload["settings"] = {
@@ -108,6 +123,8 @@ def create_organization_payload(
             action="REQUEST_ORGANIZATION_APPROVAL",
             target=org.name,
             role=current_user.role or "member",
+            org=org.name,
+            db=db,
         )
 
     db.refresh(org)
@@ -145,6 +162,8 @@ def approve_organization_payload(
         action="APPROVE_ORGANIZATION",
         target=org.name,
         role="System Admin",
+        org=org.name,
+        db=db,
     )
     return schemas.Organization.model_validate(enrich_organization_payload(org))
 
@@ -168,6 +187,8 @@ def reject_organization_payload(org_id: str, db: Session, current_user: models.U
         actor=current_user.username,
         action="REJECT_ORGANIZATION",
         target=org.name,
+        org=org.name,
+        db=db,
     )
     return {"detail": "Organization rejected", "org_id": org_id}
 
@@ -191,6 +212,8 @@ def suspend_organization_payload(org_id: str, db: Session, current_user: models.
         actor=current_user.username,
         action="SUSPEND_ORGANIZATION",
         target=org.name,
+        org=org.name,
+        db=db,
     )
     return {"detail": "Organization suspended", "org_id": org_id}
 
@@ -215,6 +238,8 @@ def update_organization_payload(
         action="UPDATE_ORGANIZATION",
         target=org.name,
         role=current_user.role or "org-admin",
+        org=org.name,
+        db=db,
     )
     return schemas.Organization.model_validate(enrich_organization_payload(org))
 
@@ -229,6 +254,8 @@ def delete_organization_payload(org_id: str, db: Session, current_user: models.U
         action="DELETE_ORGANIZATION",
         target=org.name if org else org_id,
         role=current_user.role or "org-admin",
+        org=org.name if org else org_id,
+        db=db,
     )
     return {"message": "Organization deleted successfully"}
 
@@ -397,6 +424,8 @@ def create_invitation_payload(
         action="CREATE_ORG_INVITATION" if not target_user else "CREATE_REGISTERED_USER_INVITATION",
         target=f"{inv_data.email} -> {target_group.name if target_group else inv_data.organization_id}",
         role=current_user.role or "org-admin",
+        org=organization.name if organization else inv_data.organization_id,
+        db=db,
     )
 
     return {
@@ -535,6 +564,15 @@ def _accept_invitation_record(
     invitation.accepted_at = datetime.now(timezone.utc)
     invitation.accepted_by = current_user.id
     db.commit()
+    organization = db.query(models.Organization).filter(models.Organization.id == invitation.organization_id).first()
+    append_admin_audit_log(
+        actor=current_user.username,
+        action="ACCEPT_ORG_INVITATION",
+        target=organization.name if organization else invitation.organization_id,
+        role=current_user.role or "member",
+        org=organization.name if organization else invitation.organization_id,
+        db=db,
+    )
 
     return {
         "message": "Successfully joined the organization",
@@ -599,3 +637,22 @@ def list_organization_members_payload(
         joinedload(models.User.group_memberships).joinedload(models.GroupMembership.group),
     ).join(models.UserOrganization).filter(models.UserOrganization.organization_id == org_id).all()
     return [format_user_payload(member) for member in members]
+
+
+def get_organization_audit_logs_payload(
+    org_id: str,
+    skip: int,
+    limit: int,
+    db: Session,
+    current_user: models.User,
+) -> List[Dict[str, Any]]:
+    organization = auth.require_org_admin(db, current_user, org_id)
+    logs = (
+        db.query(models.AuditLog)
+        .filter(models.AuditLog.org == organization.name)
+        .order_by(models.AuditLog.time.desc())
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+    return [_format_audit_log_payload(log) for log in logs]

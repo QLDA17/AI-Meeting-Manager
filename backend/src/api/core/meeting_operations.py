@@ -24,7 +24,9 @@ from src.api.crud import get_user_by_username
 from src.api.core.meetings_support import estimate_segment_end, normalize_speaker_label
 from src.api.core.transcript_support import (
     _normalize_chunks_for_concat,
+    build_summary_generation_state,
     build_transcript_from_drafts,
+    normalize_summary_language,
     serialize_transcript_draft_chunks,
 )
 from src.api.core.user_payloads import format_user_payload
@@ -285,6 +287,35 @@ def _latest_processed_record(
     return max(pool, key=lambda item: getattr(item, "updated_at", None) or item.created_at or datetime.min, default=None)
 
 
+def get_current_generation_summaries(
+    summaries: List[models.MeetingSummary],
+) -> Tuple[Optional[models.MeetingSummary], List[models.MeetingSummary]]:
+    canonical_summaries = [s for s in summaries or [] if getattr(s, "summary_kind", None) == "canonical"]
+    latest_canonical_summary = _latest_processed_record(canonical_summaries, fallback_to_any=True) if canonical_summaries else None
+    current_generation_group_id = latest_canonical_summary.generation_group_id if latest_canonical_summary else None
+    current_generation_summaries = [
+        summary for summary in (summaries or [])
+        if not current_generation_group_id or summary.generation_group_id == current_generation_group_id
+    ]
+    return latest_canonical_summary, current_generation_summaries
+
+
+def select_summary_for_language(
+    summaries: List[models.MeetingSummary],
+    preferred_language: str,
+) -> Tuple[Optional[models.MeetingSummary], Optional[models.MeetingSummary], Optional[models.MeetingSummary]]:
+    latest_canonical_summary, current_generation_summaries = get_current_generation_summaries(summaries or [])
+    normalized_language = normalize_summary_language(preferred_language or "vi")
+    lang_match = [s for s in current_generation_summaries if (s.language or "vi") == normalized_language]
+    preferred_summary_any = _latest_processed_record(lang_match, fallback_to_any=True)
+    preferred_summary_completed = _latest_processed_record(lang_match, fallback_to_any=False)
+    canonical_completed = None
+    if latest_canonical_summary and latest_canonical_summary.processing_status == "COMPLETED":
+        canonical_completed = latest_canonical_summary
+    fallback_completed = preferred_summary_completed or canonical_completed or _latest_processed_record(current_generation_summaries, fallback_to_any=False)
+    return latest_canonical_summary, preferred_summary_any, fallback_completed
+
+
 def format_meeting_message_payload(message: models.MeetingMessage) -> Dict[str, Any]:
     return {
         "id": message.id,
@@ -314,6 +345,9 @@ def format_summary_payload(summary: Optional[models.MeetingSummary]) -> Optional
         "speaker_summaries": summary.speaker_summaries or [],
         "processing_status": summary.processing_status,
         "language": summary.language,
+        "generation_group_id": summary.generation_group_id,
+        "source_summary_id": summary.source_summary_id,
+        "summary_kind": summary.summary_kind,
         "ai_provider": summary.ai_provider,
         "model_name": summary.model_name,
         "created_at": summary.created_at.isoformat() if summary.created_at else None,
@@ -371,6 +405,8 @@ def split_transcript_content_for_display(content: str, max_chars: int = 700) -> 
 def transcript_segment_response_payloads(
     transcript: Optional[models.Transcript],
     speaker_map: Optional[Dict[str, str]] = None,
+    *,
+    use_original_text: bool = False,
 ) -> List[Dict[str, Any]]:
     if not transcript:
         return []
@@ -388,10 +424,12 @@ def transcript_segment_response_payloads(
     if ordered_segments:
         payloads: List[Dict[str, Any]] = []
         for segment in ordered_segments:
-            if not (segment.text or "").strip():
+            segment_text = (segment.original_text or segment.text or "") if use_original_text else (segment.text or "")
+            if not segment_text.strip():
                 continue
             raw_label = normalize_speaker_label(segment.speaker_label or "Speaker_01")
             display_name = speaker_map.get(raw_label, raw_label)
+            segment_metadata = segment.nlp_metadata or {}
             payloads.append({
                 "id": segment.id,
                 "transcript_id": segment.transcript_id,
@@ -400,9 +438,14 @@ def transcript_segment_response_payloads(
                 "speaker_display_name": display_name,
                 "start_time": float(segment.start_time or 0),
                 "end_time": float(segment.end_time or 0),
-                "text": segment.text or "",
+                "text": segment_text,
+                "original_text": segment.original_text or None,
                 "language": getattr(segment, "language", None) or transcript.language or "auto",
                 "confidence_score": float(segment.confidence_score) if segment.confidence_score is not None else None,
+                "speaker_source": segment_metadata.get("speaker_source"),
+                "speaker_confidence": segment_metadata.get("speaker_confidence"),
+                "corrections": segment_metadata.get("corrections") or [],
+                "nlp_metadata": segment_metadata or None,
                 "word_count": segment.word_count,
                 "created_at": segment.created_at,
             })
@@ -424,8 +467,13 @@ def transcript_segment_response_payloads(
             "start_time": start_time,
             "end_time": end_time,
             "text": chunk,
+            "original_text": chunk if use_original_text else None,
             "language": transcript.language or "auto",
             "confidence_score": None,
+            "speaker_source": None,
+            "speaker_confidence": None,
+            "corrections": [],
+            "nlp_metadata": None,
             "word_count": len(chunk.split()),
             "created_at": transcript.created_at,
         })
@@ -454,6 +502,7 @@ def draft_transcript_segment_response_payloads(
             "start_time": float(segment.get("start_time") or segment.get("start") or 0),
             "end_time": float(segment.get("end_time") or segment.get("end") or 0),
             "text": text,
+            "original_text": segment.get("original_text"),
             "language": str(segment.get("language") or "auto"),
             "confidence_score": (
                 float(segment.get("confidence_score"))
@@ -462,6 +511,10 @@ def draft_transcript_segment_response_payloads(
                 if segment.get("confidence") is not None
                 else None
             ),
+            "speaker_source": (segment.get("nlp_metadata") or {}).get("speaker_source") if isinstance(segment.get("nlp_metadata"), dict) else None,
+            "speaker_confidence": (segment.get("nlp_metadata") or {}).get("speaker_confidence") if isinstance(segment.get("nlp_metadata"), dict) else None,
+            "corrections": (segment.get("nlp_metadata") or {}).get("corrections") if isinstance(segment.get("nlp_metadata"), dict) else [],
+            "nlp_metadata": segment.get("nlp_metadata"),
             "word_count": len(text.split()),
             "created_at": datetime.now(timezone.utc),
         })
@@ -892,10 +945,10 @@ def build_meeting_detail_payload(
     speaker_mappings = sorted(meeting.speaker_mappings or [], key=lambda item: item.speaker_label)
     speaker_map = {item.speaker_label: item.display_name for item in speaker_mappings if item.display_name}
     summaries = meeting.summaries or []
-    lang_match = [s for s in summaries if (s.language or "vi") == user_lang]
-    summary_pool = lang_match if lang_match else summaries
-    latest_summary_any = _latest_processed_record(summary_pool, fallback_to_any=True)
-    latest_summary = _latest_processed_record(summary_pool, fallback_to_any=False)
+    latest_canonical_summary, current_generation_summaries = get_current_generation_summaries(summaries)
+    current_generation_group_id = latest_canonical_summary.generation_group_id if latest_canonical_summary else None
+    preferred_summary_language = normalize_summary_language(user_lang or "vi")
+    _, latest_summary_any, latest_summary = select_summary_for_language(current_generation_summaries, preferred_summary_language)
     summary_status = latest_summary_any.processing_status if latest_summary_any else None
     summary_error_text = (
         latest_summary_any.meeting_summary
@@ -903,17 +956,32 @@ def build_meeting_detail_payload(
         else None
     )
     serialized_action_items = [serialize_action_item_payload(item) for item in (meeting.action_items or [])]
-    transcript_segments = (
+    cleaned_transcript_segments = (
         transcript_segment_response_payloads(latest_transcript, speaker_map)
         if latest_transcript
         else draft_transcript_segment_response_payloads(draft_payload.get("segments") or [], speaker_map)
     )
-    transcript_content = latest_transcript.content if latest_transcript else (draft_payload.get("transcript") or None)
+    raw_transcript_segments = (
+        transcript_segment_response_payloads(latest_transcript, speaker_map, use_original_text=True)
+        if latest_transcript
+        else draft_transcript_segment_response_payloads(draft_payload.get("segments") or [], speaker_map)
+    )
+    cleaned_transcript_content = latest_transcript.content if latest_transcript else (draft_payload.get("transcript") or None)
+    raw_transcript_content = (
+        latest_transcript.raw_content
+        if latest_transcript and latest_transcript.raw_content
+        else cleaned_transcript_content
+    )
+    transcript_content = cleaned_transcript_content
     transcript_language = (
         latest_transcript.language
         if latest_transcript
         else draft_payload.get("language") if draft_payload.get("language") not in {None, "", "auto"} else None
     )
+    transcript_quality_metadata = None
+    if latest_transcript:
+        transcript_quality_metadata = latest_transcript.quality_metadata or (latest_transcript.nlp_metadata or {}).get("quality_metadata")
+    meeting_default_summary_language = normalize_summary_language(transcript_language or "vi")
     transcript_status = "COMPLETED" if latest_transcript else "DRAFT" if has_transcript_draft else "EMPTY"
     key_points_text = summarize_json_items(latest_summary.key_points if latest_summary else None)
     decisions_text = summarize_json_items(latest_summary.decisions if latest_summary else None)
@@ -960,24 +1028,42 @@ def build_meeting_detail_payload(
         "attended_participants_count": len(attended_participants),
         "audio_files": meeting.audio_files or [],
         "transcripts": meeting.transcripts or [],
-        "transcript_segments": transcript_segments,
+        "transcript_segments": cleaned_transcript_segments,
+        "cleaned_transcript_segments": cleaned_transcript_segments,
+        "raw_transcript_segments": raw_transcript_segments,
         "speaker_mappings": [speaker_mapping_payload(item) for item in speaker_mappings],
         "summaries": meeting.summaries or [],
         "action_items": serialized_action_items,
         "transcript_content": transcript_content,
+        "cleaned_transcript_content": cleaned_transcript_content,
+        "raw_transcript_content": raw_transcript_content,
         "transcript_language": transcript_language,
+        "transcript_quality_metadata": transcript_quality_metadata,
         "transcript_status": transcript_status,
         "has_transcript_draft": has_transcript_draft,
+        "preferred_summary_language": preferred_summary_language,
+        "meeting_default_summary_language": meeting_default_summary_language,
+        "canonical_summary_language": latest_canonical_summary.language if latest_canonical_summary else None,
+        "canonical_summary_id": latest_canonical_summary.id if latest_canonical_summary else None,
+        "generation_group_id": current_generation_group_id,
+        "available_summary_languages": sorted(
+            {
+                normalize_summary_language(summary.language)
+                for summary in current_generation_summaries
+                if summary.processing_status == "COMPLETED"
+            }
+        ),
+        "summary_generation_state": build_summary_generation_state(current_generation_summaries),
         "activity": activity,
         "meeting_summary_text": latest_summary.meeting_summary if latest_summary else None,
         "key_points_text": key_points_text,
-        "key_points_items": build_anchored_text_items(key_points_text, transcript_segments),
+        "key_points_items": build_anchored_text_items(key_points_text, cleaned_transcript_segments),
         "decisions_text": decisions_text,
-        "decisions_items": build_anchored_text_items(decisions_text, transcript_segments),
+        "decisions_items": build_anchored_text_items(decisions_text, cleaned_transcript_segments),
         "risks_text": summarize_json_items(latest_summary.risks if latest_summary else None),
         "open_questions_text": summarize_json_items(latest_summary.open_questions if latest_summary else None),
         "timeline_highlights_text": timeline_highlights_text,
-        "timeline_highlights_items": build_anchored_text_items(timeline_highlights_text, transcript_segments),
+        "timeline_highlights_items": build_anchored_text_items(timeline_highlights_text, cleaned_transcript_segments),
         "speaker_summaries_text": summarize_json_items(latest_summary.speaker_summaries if latest_summary else None),
         "summary_status": summary_status,
         "summary_error_text": summary_error_text,

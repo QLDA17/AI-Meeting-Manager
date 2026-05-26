@@ -1,18 +1,18 @@
-"""Admin runtime: prompts, settings, audit logs."""
+"""Persistent admin runtime state and audit helpers."""
 
-import json
-import os
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Mapping, Optional
+
+from sqlalchemy.orm import Session
 
 from src.api import models
-from src.api.core.app_state import logger
-from src.api.database import engine, SessionLocal
+from src.api.database import SessionLocal, engine
 
-MAX_ADMIN_AUDIT_LOGS = 2000
+SETTINGS_NAMESPACE = "settings"
+PROMPTS_NAMESPACE = "prompts"
 
-ADMIN_PROMPTS: Dict[str, Dict[str, Any]] = {
+DEFAULT_ADMIN_PROMPTS: Dict[str, Dict[str, Any]] = {
     "summary_vi": {
         "key": "summary_vi",
         "name": "Tóm tắt cuộc họp (VI)",
@@ -77,111 +77,232 @@ ADMIN_PROMPTS: Dict[str, Dict[str, Any]] = {
     },
 }
 
-ADMIN_SYSTEM_SETTINGS: Dict[str, Any] = {
-    "require_2fa_admin": True,
+DEFAULT_ADMIN_SETTINGS: Dict[str, Any] = {
     "public_registration_enabled": True,
     "storage_limit_gb_per_org": 50,
     "transcript_retention_policy": "forever",
     "maintenance_mode": False,
+    "upload_enabled": True,
+    "job_tracking_enabled": True,
 }
 
-ADMIN_BROADCAST_HISTORY: List[Dict[str, Any]] = []
 
-_SETTINGS_FILE = os.path.join(os.path.dirname(__file__), "..", "..", "data", "admin_settings.json")
-_PROMPTS_FILE = os.path.join(os.path.dirname(__file__), "..", "..", "data", "admin_prompts.json")
+def ensure_admin_runtime_tables(db: Optional[Session] = None) -> None:
+    bind = db.get_bind() if db is not None else engine
+    models.AuditLog.__table__.create(bind=bind, checkfirst=True)
+    models.AdminKV.__table__.create(bind=bind, checkfirst=True)
+    models.AdminBroadcast.__table__.create(bind=bind, checkfirst=True)
 
 
-def _load_admin_settings() -> None:
-    global ADMIN_SYSTEM_SETTINGS
+def _seed_namespace(db: Session, namespace: str, values: Mapping[str, Any]) -> None:
+    changed = False
+    existing_keys = {
+        row.key
+        for row in db.query(models.AdminKV.key).filter(models.AdminKV.namespace == namespace).all()
+    }
+    for key, value in values.items():
+        if key in existing_keys:
+            continue
+        db.add(models.AdminKV(key=key, namespace=namespace, value_json=value))
+        changed = True
+    if changed:
+        db.commit()
+
+
+def seed_admin_runtime_defaults(db: Session) -> None:
+    ensure_admin_runtime_tables(db)
+    _seed_namespace(db, SETTINGS_NAMESPACE, DEFAULT_ADMIN_SETTINGS)
+    _seed_namespace(db, PROMPTS_NAMESPACE, DEFAULT_ADMIN_PROMPTS)
+
+
+def _with_session(db: Optional[Session]) -> tuple[Session, bool]:
+    if db is not None:
+        return db, False
+    session = SessionLocal()
+    return session, True
+
+
+def _close_session(db: Session, should_close: bool) -> None:
+    if should_close:
+        db.close()
+
+
+def get_admin_settings_snapshot(db: Optional[Session] = None) -> Dict[str, Any]:
+    session, should_close = _with_session(db)
     try:
-        if os.path.exists(_SETTINGS_FILE):
-            with open(_SETTINGS_FILE, "r") as f:
-                saved = json.load(f)
-                ADMIN_SYSTEM_SETTINGS.update(saved)
-    except Exception:
-        pass
+        seed_admin_runtime_defaults(session)
+        settings = dict(DEFAULT_ADMIN_SETTINGS)
+        rows = session.query(models.AdminKV).filter(models.AdminKV.namespace == SETTINGS_NAMESPACE).all()
+        for row in rows:
+            settings[row.key] = row.value_json
+        return settings
+    finally:
+        _close_session(session, should_close)
 
 
-def _save_admin_settings() -> None:
+def update_admin_settings_values(payload: Mapping[str, Any], db: Optional[Session] = None) -> Dict[str, Any]:
+    session, should_close = _with_session(db)
     try:
-        os.makedirs(os.path.dirname(_SETTINGS_FILE), exist_ok=True)
-        with open(_SETTINGS_FILE, "w") as f:
-            json.dump(ADMIN_SYSTEM_SETTINGS, f, indent=2)
-    except Exception:
-        pass
+        seed_admin_runtime_defaults(session)
+        for key, value in payload.items():
+            row = session.get(models.AdminKV, key)
+            if row and row.namespace == SETTINGS_NAMESPACE:
+                row.value_json = value
+            else:
+                session.merge(models.AdminKV(key=key, namespace=SETTINGS_NAMESPACE, value_json=value))
+        session.commit()
+        return get_admin_settings_snapshot(session)
+    finally:
+        _close_session(session, should_close)
 
 
-def _load_admin_prompts() -> None:
-    global ADMIN_PROMPTS
+def get_admin_prompts_snapshot(db: Optional[Session] = None) -> Dict[str, Dict[str, Any]]:
+    session, should_close = _with_session(db)
     try:
-        if os.path.exists(_PROMPTS_FILE):
-            with open(_PROMPTS_FILE, "r") as f:
-                saved = json.load(f)
-                ADMIN_PROMPTS.update(saved)
-    except Exception:
-        pass
+        seed_admin_runtime_defaults(session)
+        prompts = {
+            key: dict(value)
+            for key, value in DEFAULT_ADMIN_PROMPTS.items()
+        }
+        rows = session.query(models.AdminKV).filter(models.AdminKV.namespace == PROMPTS_NAMESPACE).all()
+        for row in rows:
+            prompts[row.key] = dict(row.value_json or {})
+        return prompts
+    finally:
+        _close_session(session, should_close)
 
 
-def _save_admin_prompts() -> None:
+def list_admin_prompts(db: Optional[Session] = None) -> List[Dict[str, Any]]:
+    prompts = get_admin_prompts_snapshot(db)
+    return [prompts[key] for key in sorted(prompts.keys())]
+
+
+def upsert_admin_prompt(prompt_key: str, payload: Mapping[str, Any], db: Optional[Session] = None) -> Dict[str, Any]:
+    session, should_close = _with_session(db)
     try:
-        os.makedirs(os.path.dirname(_PROMPTS_FILE), exist_ok=True)
-        with open(_PROMPTS_FILE, "w") as f:
-            json.dump(ADMIN_PROMPTS, f, indent=2, ensure_ascii=False)
-    except Exception:
-        pass
+        seed_admin_runtime_defaults(session)
+        existing = get_admin_prompts_snapshot(session).get(prompt_key, {})
+        record = {
+            "key": prompt_key,
+            "name": payload["name"],
+            "description": payload.get("description"),
+            "content": payload["content"],
+            "version": payload.get("version") or existing.get("version", "1.0.0"),
+            "last_updated": datetime.now(timezone.utc).isoformat(),
+        }
+        row = session.get(models.AdminKV, prompt_key)
+        if row and row.namespace == PROMPTS_NAMESPACE:
+            row.value_json = record
+        else:
+            session.merge(models.AdminKV(key=prompt_key, namespace=PROMPTS_NAMESPACE, value_json=record))
+        session.commit()
+        return record
+    finally:
+        _close_session(session, should_close)
 
 
-_load_admin_settings()
-_load_admin_prompts()
-
-
-def ensure_audit_log_table() -> None:
+def list_admin_broadcasts(db: Optional[Session] = None) -> List[Dict[str, Any]]:
+    session, should_close = _with_session(db)
     try:
-        models.AuditLog.__table__.create(bind=engine, checkfirst=True)
-    except Exception:
-        pass
+        ensure_admin_runtime_tables(session)
+        rows = (
+            session.query(models.AdminBroadcast)
+            .order_by(models.AdminBroadcast.sent_at.desc())
+            .all()
+        )
+        return [
+            {
+                "id": row.id,
+                "title": row.title,
+                "content": row.content,
+                "type": row.type,
+                "target": row.target,
+                "status": row.status,
+                "sentAt": row.sent_at.isoformat() if row.sent_at else None,
+                "reach": row.reach,
+            }
+            for row in rows
+        ]
+    finally:
+        _close_session(session, should_close)
 
 
-def append_admin_audit_log(actor: str, action: str, target: str, ip: str = "system", role: str = "System Admin") -> None:
+def create_admin_broadcast_record(payload: Mapping[str, Any], reach: int, db: Optional[Session] = None) -> Dict[str, Any]:
+    session, should_close = _with_session(db)
+    try:
+        ensure_admin_runtime_tables(session)
+        record = models.AdminBroadcast(
+            id=str(uuid.uuid4()),
+            title=str(payload["title"]),
+            content=str(payload["content"]),
+            type=str(payload.get("type", "info")),
+            target=str(payload.get("target", "all")),
+            status="sent",
+            reach=reach,
+            sent_at=datetime.now(timezone.utc),
+        )
+        session.add(record)
+        session.commit()
+        return {
+            "id": record.id,
+            "title": record.title,
+            "content": record.content,
+            "type": record.type,
+            "target": record.target,
+            "status": record.status,
+            "sentAt": record.sent_at.isoformat(),
+            "reach": record.reach,
+        }
+    finally:
+        _close_session(session, should_close)
+
+
+def delete_admin_broadcast_record(notification_id: str, db: Optional[Session] = None) -> bool:
+    session, should_close = _with_session(db)
+    try:
+        ensure_admin_runtime_tables(session)
+        row = session.get(models.AdminBroadcast, notification_id)
+        if not row:
+            return False
+        session.delete(row)
+        session.commit()
+        return True
+    finally:
+        _close_session(session, should_close)
+
+
+def ensure_audit_log_table(db: Optional[Session] = None) -> None:
+    ensure_admin_runtime_tables(db)
+
+
+def append_admin_audit_log(
+    actor: str,
+    action: str,
+    target: str,
+    ip: str = "system",
+    role: str = "System Admin",
+    org: str = "System",
+    db: Optional[Session] = None,
+) -> None:
     actor_name = actor or "unknown"
     timestamp = datetime.now(timezone.utc)
-    entry = {
-        "id": str(uuid.uuid4()),
-        "time": timestamp.isoformat(),
-        "user": actor_name,
-        "role": role,
-        "action": action,
-        "target": target,
-        "org": "System",
-        "ip": ip,
-    }
-
-    db = None
+    session, should_close = _with_session(db)
     try:
-        ensure_audit_log_table()
-        db = SessionLocal()
-        db.add(
+        ensure_admin_runtime_tables(session)
+        session.add(
             models.AuditLog(
-                id=entry["id"],
+                id=str(uuid.uuid4()),
                 time=timestamp,
                 user=actor_name,
                 role=role,
                 action=action,
                 target=target,
-                org="System",
+                org=org,
                 ip=ip,
             )
         )
-        db.commit()
+        session.commit()
     except Exception:
-        try:
-            if db:
-                db.rollback()
-        except Exception:
-            pass
+        session.rollback()
     finally:
-        try:
-            if db:
-                db.close()
-        except Exception:
-            pass
+        _close_session(session, should_close)

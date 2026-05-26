@@ -243,6 +243,30 @@ def build_structured_summary_prompts(
     return system_prompt, user_prompt
 
 
+def build_structured_summary_translation_prompts(
+    canonical_summary: Dict[str, Any],
+    target_language: str,
+) -> tuple[str, str]:
+    lang_names = {"vi": "Vietnamese", "en": "English", "zh": "Chinese", "ja": "Japanese", "ko": "Korean"}
+    lang_name = lang_names.get(target_language, "Vietnamese")
+    system_prompt = (
+        f"You are a structured translation assistant. "
+        f"Translate the provided meeting summary JSON into {lang_name}. "
+        f"Return ONLY a valid JSON object, no markdown, no explanation. "
+        f"Do not summarize again. Do not add, remove, merge, split, or reorder items. "
+        f"Keep exactly the same JSON schema and exactly the same number of items in every array. "
+        f"Translate string values only. Preserve empty strings and empty arrays as-is. "
+        f"For action_items, keep the same number of tasks and the same task order. Translate task, owner, and deadline text only when natural; do not invent missing owners or deadlines."
+    )
+    user_prompt = (
+        "Translate this canonical meeting summary JSON one-to-one.\n"
+        "Every array length must stay identical to the source.\n"
+        "If a source field has 5 items, the translated field must also have 5 items.\n\n"
+        f"Canonical summary JSON:\n{json.dumps(canonical_summary, ensure_ascii=False)}"
+    )
+    return system_prompt, user_prompt
+
+
 # ─── Transcript Builder ──────────────────────────────────────────────────────
 
 
@@ -263,5 +287,4 @@ def build_speaker_aware_transcript(
         start = float(segment.get("start", segment.get("start_time", 0)) or 0)
         lines.append(f"[{start:0.1f}s] {display_name}: {text}")
     return "\n".join(lines) or transcript_text
-
 

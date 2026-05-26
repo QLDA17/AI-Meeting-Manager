@@ -36,6 +36,7 @@ def create_transcript(db: Session, transcript_data: dict) -> models.Transcript:
         meeting_id=transcript_data["meeting_id"],
         audio_file_id=transcript_data.get("audio_file_id"),
         content=transcript_data["content"],
+        raw_content=transcript_data.get("raw_content"),
         language=transcript_data.get("language", "vi"),
         word_count=transcript_data.get("word_count", 0),
         processing_status=transcript_data.get("processing_status", "PENDING"),
@@ -43,6 +44,7 @@ def create_transcript(db: Session, transcript_data: dict) -> models.Transcript:
         confidence_score=transcript_data.get("confidence_score"),
         post_processed=transcript_data.get("post_processed", False),
         nlp_metadata=transcript_data.get("nlp_metadata"),
+        quality_metadata=transcript_data.get("quality_metadata"),
     )
     db.add(db_transcript)
     db.commit()

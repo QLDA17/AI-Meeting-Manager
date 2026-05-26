@@ -70,6 +70,7 @@ class PhoBERTPostProcessor:
     ) -> Dict[str, object]:
         started = time.perf_counter()
         original_text = text or ""
+        original_segments = [{**segment} for segment in (segments or [])]
         dialect = self.classifier.classify(original_text) if self.dialect_enabled else {
             "dialect_hint": "unknown",
             "confidence": 0.0,
@@ -124,7 +125,9 @@ class PhoBERTPostProcessor:
             "mlm_correction_enabled": self.mlm_enabled,
         }
         return {
+            "raw_text": original_text,
             "text": corrected_text,
+            "raw_segments": original_segments,
             "segments": processed_segments,
             "nlp_metadata": metadata,
             "post_processed": True,

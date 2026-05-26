@@ -6,8 +6,8 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from src.api import models
+from src.api.core.admin_runtime import get_admin_settings_snapshot
 from src.api.core.user_payloads import user_org_ids
-from src.api.core.admin_operations import ADMIN_SYSTEM_SETTINGS
 
 
 def get_meeting_analytics_payload(db: Session, current_user: models.User) -> Dict[str, Any]:
@@ -93,6 +93,7 @@ def get_performance_analytics_payload() -> Dict[str, Any]:
 
 
 def get_stats_payload(db: Session, current_user: models.User) -> Dict[str, Any]:
+    settings = get_admin_settings_snapshot(db)
     base_query = db.query(models.Meeting)
     if current_user.role != "system-admin":
         org_ids = user_org_ids(current_user)
@@ -106,8 +107,8 @@ def get_stats_payload(db: Session, current_user: models.User) -> Dict[str, Any]:
                 "liveSuccessRate": "100%",
                 "modelHealth": {},
                 "features": {
-                    "uploadEnabled": ADMIN_SYSTEM_SETTINGS.get("upload_enabled", True),
-                    "jobTrackingEnabled": ADMIN_SYSTEM_SETTINGS.get("job_tracking_enabled", True),
+                    "uploadEnabled": settings.get("upload_enabled", True),
+                    "jobTrackingEnabled": settings.get("job_tracking_enabled", True),
                     "systemAdminEnabled": current_user.role == "system-admin",
                 },
             }
@@ -131,8 +132,8 @@ def get_stats_payload(db: Session, current_user: models.User) -> Dict[str, Any]:
         "liveSuccessRate": "100%",
         "modelHealth": {},
         "features": {
-            "uploadEnabled": ADMIN_SYSTEM_SETTINGS.get("upload_enabled", True),
-            "jobTrackingEnabled": ADMIN_SYSTEM_SETTINGS.get("job_tracking_enabled", True),
+            "uploadEnabled": settings.get("upload_enabled", True),
+            "jobTrackingEnabled": settings.get("job_tracking_enabled", True),
             "systemAdminEnabled": current_user.role == "system-admin",
         },
     }

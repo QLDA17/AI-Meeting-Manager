@@ -4,8 +4,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.api.core.app_state import config, logger
-from src.api.core.lifecycle import register_lifecycle
+from src.api.core.lifecycle import lifespan
 from src.api.logging_middleware import RequestLoggingMiddleware
+from src.api.maintenance_middleware import MaintenanceModeMiddleware
 from src.api.rate_limiting import RateLimitMiddleware
 from src.api.routes.admin import router as admin_router
 from src.api.routes.analytics import router as analytics_router
@@ -30,10 +31,12 @@ def create_app() -> FastAPI:
         docs_url="/docs",
         redoc_url="/redoc",
         openapi_url="/openapi.json",
+        lifespan=lifespan,
     )
     app.router.redirect_slashes = False
 
     app.add_middleware(RequestLoggingMiddleware)
+    app.add_middleware(MaintenanceModeMiddleware)
 
     if config.environment != "development":
         app.add_middleware(
@@ -53,8 +56,6 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-
-    register_lifecycle(app)
 
     app.include_router(auth_profile_router)
     app.include_router(organizations_router)

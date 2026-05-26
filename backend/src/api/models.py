@@ -389,6 +389,7 @@ class Transcript(Base):
     meeting_id: Mapped[str] = mapped_column(String(36), ForeignKey("meetings.id", ondelete="CASCADE"), nullable=False)
     audio_file_id: Mapped[str] = mapped_column(String(36), ForeignKey("audio_files.id", ondelete="SET NULL"), nullable=True)
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    raw_content: Mapped[str] = mapped_column(Text, nullable=True)
     language: Mapped[str] = mapped_column(String(10), default='vi')
     word_count: Mapped[int] = mapped_column(Integer, default=0)
     processing_status: Mapped[str] = mapped_column(String(20), default='PENDING')  # PENDING, PROCESSING, COMPLETED, FAILED
@@ -396,6 +397,7 @@ class Transcript(Base):
     confidence_score: Mapped[float] = mapped_column(Numeric(3, 2), nullable=True)
     post_processed: Mapped[bool] = mapped_column(Boolean, default=False)
     nlp_metadata: Mapped[dict] = mapped_column(JSON, nullable=True)
+    quality_metadata: Mapped[dict] = mapped_column(JSON, nullable=True)
     created_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
@@ -465,6 +467,9 @@ class MeetingSummary(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
     meeting_id: Mapped[str] = mapped_column(String(36), ForeignKey("meetings.id", ondelete="CASCADE"), nullable=False)
     language: Mapped[str] = mapped_column(String(10), default='vi')
+    generation_group_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
+    source_summary_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("meeting_summaries.id", ondelete="SET NULL"), nullable=True)
+    summary_kind: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     key_points: Mapped[dict] = mapped_column(JSON, nullable=True)
     decisions: Mapped[dict] = mapped_column(JSON, nullable=True)
     action_items: Mapped[dict] = mapped_column(JSON, nullable=True)
@@ -487,6 +492,7 @@ class MeetingSummary(Base):
     # Relationships
     meeting = relationship("Meeting", back_populates="summaries")
     linked_action_items = relationship("ActionItem", back_populates="summary", cascade="all, delete-orphan")
+    source_summary = relationship("MeetingSummary", remote_side=[id], foreign_keys=[source_summary_id])
 
 
 class ActionItem(Base):
@@ -611,4 +617,34 @@ class AuditLog(Base):
     __table_args__ = (
         Index('idx_audit_logs_time', 'time'),
         Index('idx_audit_logs_action', 'action'),
+    )
+
+
+class AdminKV(Base):
+    __tablename__ = "admin_kv"
+
+    key: Mapped[str] = mapped_column(String(120), primary_key=True)
+    namespace: Mapped[str] = mapped_column(String(40), nullable=False)
+    value_json: Mapped[object] = mapped_column(JSON, nullable=False)
+    updated_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        Index("idx_admin_kv_namespace", "namespace"),
+    )
+
+
+class AdminBroadcast(Base):
+    __tablename__ = "admin_broadcasts"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    type: Mapped[str] = mapped_column(String(30), nullable=False, default="info")
+    target: Mapped[str] = mapped_column(String(80), nullable=False, default="all")
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="sent")
+    reach: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    sent_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index("idx_admin_broadcasts_sent_at", "sent_at"),
     )

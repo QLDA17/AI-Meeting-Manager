@@ -185,19 +185,26 @@ export interface MeetingTranscriptSegment {
   startTime: number;
   endTime: number;
   text: string;
+  originalText?: string;
   language: string;
   confidenceScore?: number;
+  speakerSource?: string;
+  speakerConfidence?: number;
+  corrections?: Array<{
+    original?: string;
+    corrected?: string;
+    source: string;
+  }>;
   nlpMetadata?: {
-    corrections?: Array<{
-      wrong: string;
-      right: string;
-      source: string;
-    }>;
+    corrections?: Array<Record<string, unknown>>;
   };
 }
 
 export interface MeetingSummaryRecord {
   id: string;
+  generationGroupId?: string;
+  sourceSummaryId?: string;
+  summaryKind?: 'canonical' | 'translation';
   meetingSummary: string;
   keyPoints: unknown[];
   decisions: unknown[];
@@ -241,7 +248,12 @@ export interface MeetingDetail extends Meeting {
   summaries: MeetingSummaryRecord[];
   actionItems: ActionItem[];
   transcriptContent?: string;
+  cleanedTranscriptContent?: string;
+  rawTranscriptContent?: string;
   transcriptLanguage?: string;
+  cleanedTranscriptSegments?: MeetingTranscriptSegment[];
+  rawTranscriptSegments?: MeetingTranscriptSegment[];
+  transcriptQualityMetadata?: Record<string, unknown>;
   transcriptStatus?: string;
   hasTranscriptDraft?: boolean;
   activity: ActivityFeedItem[];
@@ -255,6 +267,13 @@ export interface MeetingDetail extends Meeting {
   timelineHighlightsText: string[];
   timelineHighlightsItems: AnchoredTextItem[];
   speakerSummariesText: string[];
+  preferredSummaryLanguage?: string;
+  meetingDefaultSummaryLanguage?: string;
+  canonicalSummaryLanguage?: string;
+  canonicalSummaryId?: string;
+  generationGroupId?: string;
+  availableSummaryLanguages: string[];
+  summaryGenerationState?: Record<string, string>;
   summaryStatus?: string;
   summaryErrorText?: string;
   summaryProvider?: string;

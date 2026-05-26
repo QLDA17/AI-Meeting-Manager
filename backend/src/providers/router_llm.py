@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import re
 from typing import Optional
 
 try:
@@ -30,6 +31,9 @@ class RouterLLMAdapter:
         self.enabled = bool(self.api_url and self.api_key and HAS_REQUESTS)
         self.last_error: Optional[str] = None
         self.last_usage: Optional[dict] = None
+        self.last_status_code: Optional[int] = None
+        self.last_error_type: Optional[str] = None
+        self.last_retry_after_seconds: Optional[float] = None
 
         if not self.enabled:
             reasons = []
@@ -71,6 +75,21 @@ class RouterLLMAdapter:
             if "unauthorized" in body_lower or "unauthenticated" in body_lower or "invalid" in body_lower:
                 return True
         return False
+
+    def _is_rate_limit_error(self, status_code: int, body: str) -> bool:
+        if status_code != 429:
+            return False
+        body_lower = body.lower()
+        return "rate limit" in body_lower or "rate_limit_exceeded" in body_lower or "tokens per minute" in body_lower
+
+    def _extract_retry_after_seconds(self, body: str) -> Optional[float]:
+        match = re.search(r"try again in\s+([0-9]+(?:\.[0-9]+)?)s", body, re.IGNORECASE)
+        if not match:
+            return None
+        try:
+            return float(match.group(1))
+        except ValueError:
+            return None
 
     def _call_single_model(
         self,
@@ -132,6 +151,9 @@ class RouterLLMAdapter:
             return None
 
         self.last_error = None
+        self.last_status_code = None
+        self.last_error_type = None
+        self.last_retry_after_seconds = None
 
         # Build list of models to try: primary first, then fallbacks
         models_to_try = [self.model] + [m for m in self.FALLBACK_MODELS if m != self.model]
@@ -154,12 +176,24 @@ class RouterLLMAdapter:
 
                 # Auth error — stop immediately, no point retrying other models
                 if status_code is not None and self._is_auth_error(status_code, err):
+                    self.last_status_code = status_code
+                    self.last_error_type = "auth"
                     self.last_error = f"Groq API authentication failed (HTTP {status_code}): API key is invalid or expired. Update GROQ_API_KEY in .env (get key from https://console.groq.com/keys)"
                     logger.error(self.last_error)
                     return None
 
+                if status_code is not None and self._is_rate_limit_error(status_code, err):
+                    self.last_status_code = status_code
+                    self.last_error_type = "rate_limit"
+                    self.last_retry_after_seconds = self._extract_retry_after_seconds(err)
+                    self.last_error = f"Groq rate limit exceeded (HTTP {status_code}): {err}"
+                    logger.error("Router LLM rate limit: status=%s, body=%s", status_code, err)
+                    return None
+
                 # Content-blocked — try next model
                 if status_code is not None and self._is_content_blocked(status_code, err):
+                    self.last_status_code = status_code
+                    self.last_error_type = "content_blocked"
                     logger.warning(
                         f"Router LLM content-blocked on model={attempt_model}, "
                         f"status={status_code}. Trying next model..."
@@ -168,19 +202,24 @@ class RouterLLMAdapter:
                     continue
 
                 # Other HTTP error — fail immediately
+                self.last_status_code = status_code
+                self.last_error_type = "http"
                 self.last_error = f"Router LLM HTTP {status_code}: {err}"
                 logger.error(f"Router LLM HTTP error: status={status_code}, body={err}")
                 return None
 
             except requests.exceptions.Timeout:
+                self.last_error_type = "timeout"
                 self.last_error = f"Router LLM request timed out after {self.timeout_seconds:g}s"
                 logger.error(self.last_error)
                 return None
             except requests.exceptions.RequestException as e:
+                self.last_error_type = "request"
                 self.last_error = f"Router LLM request failed: {e}"
                 logger.error(self.last_error)
                 return None
             except (KeyError, IndexError, json.JSONDecodeError) as e:
+                self.last_error_type = "parse"
                 self.last_error = f"Router LLM response parsing failed: {e}"
                 logger.error(self.last_error)
                 return None

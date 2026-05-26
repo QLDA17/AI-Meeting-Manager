@@ -26,6 +26,7 @@ dist/
 *.swp
 *.swo
 *~
+*.tsbuildinfo
 
 # OS
 .DS_Store

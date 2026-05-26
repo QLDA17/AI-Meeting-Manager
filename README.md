@@ -54,9 +54,8 @@ MUTI_AI/
 ├── 📄 docker-compose.yml           # Docker Compose configuration
 ├── 📄 Dockerfile                   # Docker image definition
 ├── 📄 nginx.conf                   # Nginx web server config
-├── 📄 package.json                 # Node.js dependencies
 │
-├── 📁 src/                         # Backend (Python FastAPI)
+├── 📁 backend/                     # Backend (Python FastAPI)
 │   ├── api/
 │   │   ├── main.py                 # FastAPI app entry
 │   │   ├── auth.py                 # Authentication endpoints
@@ -133,16 +132,18 @@ MUTI_AI/
 │   ├── train_ai_prompts.py        # Train/optimize prompts
 │   └── test_pipeline.py            # End-to-end pipeline test
 │
-├── 📁 tests/                       # Unit & integration tests
-│   ├── test_alert_service.py       # Alert system tests
-│   ├── test_cost_api.py            # Cost tracking tests
-│   ├── test_cost_logger.py         # Cost logger unit tests
-│   ├── test_diarization_metrics.py # Diarization DER tests
-│   ├── test_provider_failover.py   # Fallover mechanism tests
-│   ├── test_routing.py             # AI routing tests
-│   ├── test_security.py            # Security validation tests
-│   ├── test_stt_service.py         # STT quality tests
-│   └── test_translation_service.py # Translation BLEU tests
+├── 📁 backend/tests/               # Python tests grouped by module
+│   ├── api/                        # Route, CRUD, contract, security tests
+│   ├── cost/                       # Cost module tests
+│   ├── crewai/                     # Crew router/agent tests
+│   ├── manual/                     # Manual runners needing API keys/audio
+│   ├── smoke/                      # Smoke runners
+│   └── ...                         # Remaining module-focused suites
+│
+├── 📁 frontend/tests/              # Frontend tests mirrored from src/
+│   ├── components/
+│   ├── pages/
+│   └── services/
 │
 └── 📁 logs/                        # Application logs (gitignored)
 ```
@@ -367,13 +368,15 @@ Analytics:
 ### **Run All Tests**
 ```bash
 # Backend tests
+cd backend
 pytest tests/
 
 # Frontend tests
 cd frontend && npm test
 
 # Specific test file
-pytest tests/test_cost_api.py -v
+cd backend
+pytest tests/cost/test_cost_api.py -v
 ```
 
 ### **Run end-to-end pipeline test**

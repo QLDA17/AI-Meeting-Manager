@@ -66,5 +66,5 @@ Chuyển đổi từ Dashboard đơn giản sang mô hình **Organization/Group*
 - **Testing:** TDD (Viết test trước khi code tính năng).
 
 ---
-**Tham chiếu chi tiết:** `src/types/index.ts`, `src/data/mock-generator.ts`
+**Tham chiếu chi tiết:** `frontend/src/types/index.ts`, `frontend/src/data/mock-generator.ts`
 **Cập nhật:** 2026-04-28

@@ -47,8 +47,10 @@ type TranscriptGroup = {
   endTime: number;
   languages: string[];
   texts: string[];
-  corrections: Array<{ wrong: string; right: string; source: string }>;
+  corrections: Array<{ wrong?: string; right?: string; original?: string; corrected?: string; source: string }>;
 };
+
+type TranscriptVariant = 'cleaned' | 'raw';
 
 type ActionEditDraft = {
   title: string;
@@ -70,6 +72,8 @@ type ActivityFeedItem = {
 };
 
 const TRANSCRIPT_GROUP_GAP_SECONDS = 3;
+const endsWithStrongPunctuation = (value: string) => /[.!?]\s*$/.test(value.trim());
+
 const groupTranscriptSegments = (segments: MeetingTranscriptSegment[]): TranscriptGroup[] => {
   const sortedSegments = [...segments]
     .filter((segment) => segment.text?.trim())
@@ -82,7 +86,8 @@ const groupTranscriptSegments = (segments: MeetingTranscriptSegment[]): Transcri
     const shouldMerge =
       lastGroup &&
       lastGroup.speakerLabel === speakerLabel &&
-      segment.startTime - lastGroup.endTime <= TRANSCRIPT_GROUP_GAP_SECONDS;
+      segment.startTime - lastGroup.endTime <= TRANSCRIPT_GROUP_GAP_SECONDS &&
+      !endsWithStrongPunctuation(lastGroup.texts[lastGroup.texts.length - 1] || '');
 
     if (shouldMerge) {
       lastGroup.endTime = Math.max(lastGroup.endTime, segment.endTime || segment.startTime);
@@ -90,8 +95,10 @@ const groupTranscriptSegments = (segments: MeetingTranscriptSegment[]): Transcri
       if (!lastGroup.languages.includes(language)) {
         lastGroup.languages.push(language);
       }
-      if (segment.nlpMetadata?.corrections) {
-        lastGroup.corrections.push(...segment.nlpMetadata.corrections);
+      if (segment.corrections?.length) {
+        lastGroup.corrections.push(...segment.corrections);
+      } else if (segment.nlpMetadata?.corrections) {
+        lastGroup.corrections.push(...segment.nlpMetadata.corrections as TranscriptGroup['corrections']);
       }
       return groups;
     }
@@ -104,7 +111,11 @@ const groupTranscriptSegments = (segments: MeetingTranscriptSegment[]): Transcri
       endTime: segment.endTime || segment.startTime,
       languages: [language],
       texts: [segment.text.trim()],
-      corrections: segment.nlpMetadata?.corrections ? [...segment.nlpMetadata.corrections] : [],
+      corrections: segment.corrections?.length
+        ? [...segment.corrections]
+        : segment.nlpMetadata?.corrections
+          ? [...segment.nlpMetadata.corrections as TranscriptGroup['corrections']]
+          : [],
     });
     return groups;
   }, []);
@@ -273,14 +284,14 @@ const MeetingDetail: React.FC = () => {
   const [activeTab, setActiveTab] = useState<DetailTab>('summary');
   const [isRegenerating, setIsRegenerating] = useState(false);
   const [summaryLanguage, setSummaryLanguage] = useState<string>('vi');
-  const [languageInitialized, setLanguageInitialized] = useState(false);
+  const [generateAiTasks, setGenerateAiTasks] = useState(false);
   const [isEditTitleOpen, setIsEditTitleOpen] = useState(false);
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [exportFormat, setExportFormat] = useState<ExportFormat>('pdf');
   const [exportLanguage, setExportLanguage] = useState<ExportLanguage>('vi');
-  const [exportLanguageInitialized, setExportLanguageInitialized] = useState(false);
   const [includeTranscriptAppendix, setIncludeTranscriptAppendix] = useState(true);
   const [isExporting, setIsExporting] = useState(false);
+  const [transcriptVariant, setTranscriptVariant] = useState<TranscriptVariant>('cleaned');
   const [selectedTranscriptSpeaker, setSelectedTranscriptSpeaker] = useState('all');
   const [editingSpeakerLabel, setEditingSpeakerLabel] = useState<string | null>(null);
   const [speakerNameInput, setSpeakerNameInput] = useState('');
@@ -332,9 +343,29 @@ const MeetingDetail: React.FC = () => {
 
   const meeting = query.data;
   const selectedSummary = meeting?.summaries?.find((s) => s.language === summaryLanguage);
-  const actionItems = (meeting?.actionItems || []).filter(
-    (item) => !selectedSummary?.id || item.summary_id === selectedSummary.id,
+  const selectedSummaryReady = selectedSummary?.processingStatus === 'COMPLETED';
+  const meetingDefaultSummary = meeting?.summaries?.find(
+    (summary) => summary.language === meeting.meetingDefaultSummaryLanguage,
   );
+  const canonicalSummary = meeting?.summaries?.find(
+    (summary) => summary.language === meeting.canonicalSummaryLanguage,
+  );
+  const fallbackSummary = selectedSummaryReady ? selectedSummary : (canonicalSummary || meetingDefaultSummary);
+  const summaryGenerationState = meeting?.summaryGenerationState?.[summaryLanguage]
+    || selectedSummary?.processingStatus
+    || (summaryLanguage === meeting?.meetingDefaultSummaryLanguage && meeting?.summaryStatus)
+    || 'MISSING';
+  const isFallbackSummaryVisible = Boolean(
+    !selectedSummaryReady &&
+      fallbackSummary &&
+      fallbackSummary.language !== summaryLanguage,
+  );
+  const manualActionItems = (meeting?.actionItems || []).filter((item) => !item.summary_id);
+  const canonicalSummaryId = meeting?.canonicalSummaryId || canonicalSummary?.id;
+  const selectedAiActionItems = (meeting?.actionItems || []).filter(
+    (item) => Boolean(item.summary_id) && item.summary_id === canonicalSummaryId,
+  );
+  const actionItems = [...manualActionItems, ...selectedAiActionItems];
 
   const sectionLabels: Record<string, Record<string, string>> = {
     vi: { summary: 'Tóm tắt', keyPoints: 'Điểm chính', decisions: 'Quyết định',
@@ -364,6 +395,13 @@ const MeetingDetail: React.FC = () => {
       keyPointsDesc: '핵심 논의 포인트', decisionsDesc: '합의된 결정 사항' },
   };
   const L = sectionLabels[summaryLanguage] || sectionLabels.vi;
+  const languageNames: Record<string, string> = {
+    vi: 'Tiếng Việt',
+    en: 'English',
+    zh: '中文',
+    ja: '日本語',
+    ko: '한국어',
+  };
 
   const assigneeOptions = useMemo<ActionItemAssigneeOption[]>(() => {
     const options = new Map<string, ActionItemAssigneeOption>();
@@ -411,43 +449,53 @@ const MeetingDetail: React.FC = () => {
       setIsRsvpLoading(false);
     }
   };
-  const keyPoints = (selectedSummary?.keyPoints as string[])?.length
-    ? (selectedSummary.keyPoints as string[])
-    : summaryLanguage === 'vi'
+  const effectiveSummary = selectedSummaryReady ? selectedSummary : fallbackSummary;
+  const isMeetingDefaultLanguage = summaryLanguage === meeting?.meetingDefaultSummaryLanguage;
+  const keyPoints = (effectiveSummary?.keyPoints as string[])?.length
+    ? (effectiveSummary.keyPoints as string[])
+    : isMeetingDefaultLanguage
       ? (meeting?.keyPointsText?.length ? meeting.keyPointsText : meeting?.keyPoints || [])
       : [];
-  const keyPointItems: AnchoredTextItem[] = meeting?.keyPointsItems?.length && summaryLanguage === 'vi'
+  const keyPointItems: AnchoredTextItem[] = meeting?.keyPointsItems?.length && isMeetingDefaultLanguage
     ? meeting.keyPointsItems
     : keyPoints.map((text) => ({ text }));
-  const decisions = (selectedSummary?.decisions as string[])?.length
-    ? (selectedSummary.decisions as string[])
-    : summaryLanguage === 'vi'
+  const decisions = (effectiveSummary?.decisions as string[])?.length
+    ? (effectiveSummary.decisions as string[])
+    : isMeetingDefaultLanguage
       ? (meeting?.decisionsText?.length ? meeting.decisionsText : meeting?.decisions || [])
       : [];
-  const decisionItems: AnchoredTextItem[] = meeting?.decisionsItems?.length && summaryLanguage === 'vi'
+  const decisionItems: AnchoredTextItem[] = meeting?.decisionsItems?.length && isMeetingDefaultLanguage
     ? meeting.decisionsItems
     : decisions.map((text) => ({ text }));
-  const risks = (selectedSummary?.risks as string[])?.length
-    ? (selectedSummary.risks as string[])
-    : summaryLanguage === 'vi' ? (meeting?.risksText || []) : [];
-  const openQuestions = (selectedSummary?.openQuestions as string[])?.length
-    ? (selectedSummary.openQuestions as string[])
-    : summaryLanguage === 'vi' ? (meeting?.openQuestionsText || []) : [];
-  const timelineHighlights = (selectedSummary?.timelineHighlights as string[])?.length
-    ? (selectedSummary.timelineHighlights as string[])
-    : summaryLanguage === 'vi' ? (meeting?.timelineHighlightsText || []) : [];
-  const timelineHighlightItems: AnchoredTextItem[] = meeting?.timelineHighlightsItems?.length && summaryLanguage === 'vi'
+  const risks = (effectiveSummary?.risks as string[])?.length
+    ? (effectiveSummary.risks as string[])
+    : isMeetingDefaultLanguage ? (meeting?.risksText || []) : [];
+  const openQuestions = (effectiveSummary?.openQuestions as string[])?.length
+    ? (effectiveSummary.openQuestions as string[])
+    : isMeetingDefaultLanguage ? (meeting?.openQuestionsText || []) : [];
+  const timelineHighlights = (effectiveSummary?.timelineHighlights as string[])?.length
+    ? (effectiveSummary.timelineHighlights as string[])
+    : isMeetingDefaultLanguage ? (meeting?.timelineHighlightsText || []) : [];
+  const timelineHighlightItems: AnchoredTextItem[] = meeting?.timelineHighlightsItems?.length && isMeetingDefaultLanguage
     ? meeting.timelineHighlightsItems
     : timelineHighlights.map((text) => ({ text }));
-  const speakerSummaries = (selectedSummary?.speakerSummaries as string[])?.length
-    ? (selectedSummary.speakerSummaries as string[])
-    : summaryLanguage === 'vi' ? (meeting?.speakerSummariesText || []) : [];
-  const transcript = useMemo(() => {
-    if (!meeting) return '';
-    return meeting.transcriptContent || meeting.transcripts[0]?.content || '';
-  }, [meeting]);
-  const transcriptSegments = meeting?.transcriptSegments || [];
+  const speakerSummaries = (effectiveSummary?.speakerSummaries as string[])?.length
+    ? (effectiveSummary.speakerSummaries as string[])
+    : isMeetingDefaultLanguage ? (meeting?.speakerSummariesText || []) : [];
+  const cleanedTranscript = meeting?.cleanedTranscriptContent || meeting?.transcriptContent || meeting?.transcripts[0]?.content || '';
+  const rawTranscript = meeting?.rawTranscriptContent || cleanedTranscript;
+  const transcript = transcriptVariant === 'raw' ? rawTranscript : cleanedTranscript;
+  const transcriptSegments = transcriptVariant === 'raw'
+    ? (meeting?.rawTranscriptSegments?.length ? meeting.rawTranscriptSegments : meeting?.transcriptSegments || [])
+    : (meeting?.cleanedTranscriptSegments?.length ? meeting.cleanedTranscriptSegments : meeting?.transcriptSegments || []);
   const transcriptGroups = useMemo(() => groupTranscriptSegments(transcriptSegments), [transcriptSegments]);
+  const hasRawTranscriptVariant = Boolean(
+    meeting &&
+      (
+        (meeting.rawTranscriptContent && meeting.rawTranscriptContent !== (meeting.cleanedTranscriptContent || meeting.transcriptContent || ''))
+        || (meeting.rawTranscriptSegments?.some((segment, index) => segment.text !== meeting.cleanedTranscriptSegments?.[index]?.text))
+      ),
+  );
   const transcriptSpeakers = useMemo(
     () => Array.from(new Set(transcriptGroups.map((group) => group.speakerLabel))).sort(),
     [transcriptGroups],
@@ -459,11 +507,17 @@ const MeetingDetail: React.FC = () => {
         : transcriptGroups.filter((group) => group.speakerLabel === selectedTranscriptSpeaker),
     [selectedTranscriptSpeaker, transcriptGroups],
   );
-  const summary = selectedSummary?.meetingSummary
-    || (summaryLanguage === 'vi' ? (meeting?.meetingSummaryText || meeting?.summary || '') : '');
-  const summaryFailed = meeting?.summaryStatus === 'FAILED';
-  const summaryErrorText = meeting?.summaryErrorText || 'AgentRouter không tạo được AI Notes. Kiểm tra token, model hoặc log backend.';
-  const currentLanguage = meeting?.transcriptLanguage || summaryLanguage;
+  const summary = effectiveSummary?.meetingSummary
+    || (isMeetingDefaultLanguage ? (meeting?.meetingSummaryText || meeting?.summary || '') : '');
+  const summaryFailed = summaryGenerationState === 'FAILED' || (summaryLanguage === meeting?.meetingDefaultSummaryLanguage && meeting?.summaryStatus === 'FAILED');
+  const summaryErrorText = summaryFailed
+    ? (
+      (selectedSummary?.processingStatus === 'FAILED' ? selectedSummary.meetingSummary : undefined)
+      || meeting?.summaryErrorText
+      || 'AI Notes chưa hoàn tất. Kiểm tra log backend để biết chi tiết.'
+    )
+    : undefined;
+  const currentLanguage = summaryLanguage;
   const hasAiNotes = Boolean(
     summary ||
     keyPoints.length > 0 ||
@@ -478,6 +532,8 @@ const MeetingDetail: React.FC = () => {
     ? 'Đang tạo AI Notes'
     : summaryFailed
       ? 'Lỗi tạo AI Notes'
+      : summaryGenerationState === 'PROCESSING'
+        ? 'AI Notes đang xử lý'
       : hasAiNotes
         ? 'AI Notes đã sẵn sàng'
         : 'Chưa có AI Notes';
@@ -555,23 +611,28 @@ const MeetingDetail: React.FC = () => {
   }, [pendingTranscriptAnchor, transcriptGroups, isAudioReady, hasMeetingAudio]);
 
   useEffect(() => {
-    if (!languageInitialized && meeting?.transcriptLanguage) {
-      setSummaryLanguage(meeting.transcriptLanguage);
-      setLanguageInitialized(true);
-    }
-  }, [meeting?.transcriptLanguage, languageInitialized]);
+    if (!meeting?.id) return;
+    const nextLanguage = meeting.preferredSummaryLanguage || meeting.meetingDefaultSummaryLanguage || meeting.summaries?.[0]?.language || 'vi';
+    setSummaryLanguage(nextLanguage);
+  }, [meeting?.id, meeting?.preferredSummaryLanguage, meeting?.meetingDefaultSummaryLanguage, meeting?.summaries]);
 
   useEffect(() => {
-    if (!exportLanguageInitialized) {
-      const nextLanguage = (meeting?.transcriptLanguage || meeting?.summaries?.[0]?.language || 'vi') as ExportLanguage;
-      if (['vi', 'en', 'ja', 'zh', 'ko'].includes(nextLanguage)) {
-        setExportLanguage(nextLanguage);
-      }
-      if (meeting?.transcriptLanguage || meeting?.summaries?.[0]?.language) {
-        setExportLanguageInitialized(true);
-      }
+    if (!meeting?.id) return;
+    const nextLanguage = (
+      meeting.preferredSummaryLanguage ||
+      meeting.meetingDefaultSummaryLanguage ||
+      meeting.summaries?.[0]?.language ||
+      'vi'
+    ) as ExportLanguage;
+    if (['vi', 'en', 'ja', 'zh', 'ko'].includes(nextLanguage)) {
+      setExportLanguage(nextLanguage);
     }
-  }, [meeting?.transcriptLanguage, meeting?.summaries, exportLanguageInitialized]);
+  }, [meeting?.id, meeting?.preferredSummaryLanguage, meeting?.meetingDefaultSummaryLanguage, meeting?.summaries]);
+
+  useEffect(() => {
+    setTranscriptVariant('cleaned');
+    setSelectedTranscriptSpeaker('all');
+  }, [meeting?.id]);
 
   const nowMs = Date.now();
   const startMs = meeting ? new Date(meeting.startTime).getTime() : nowMs;
@@ -627,7 +688,7 @@ const MeetingDetail: React.FC = () => {
     setIsRegenerating(true);
     try {
       const response = await api.post(`/api/meetings/${id}/finalize`, {
-        transcript,
+        transcript: cleanedTranscript,
         segments: transcriptSegments.map((segment) => ({
           speaker: segment.speakerRawLabel || segment.speakerLabel,
           start: segment.startTime,
@@ -638,13 +699,18 @@ const MeetingDetail: React.FC = () => {
         })),
         language: targetLang,
         regenerate: true,
+        full_regenerate: true,
+        generate_action_items: generateAiTasks,
       });
       const result = response.data;
       if (result?.summary_status === "COMPLETED") {
-        showToast.success("Đã tạo lại AI Notes thành công!");
+        showToast.success(result?.translation_queue_started ? "Đã tạo bản gốc và đang xếp hàng dịch các ngôn ngữ còn lại." : "Đã tạo lại AI Notes thành công!");
         query.refetch();
       } else {
-        showToast.error("Tạo AI Notes thất bại. Kiểm tra log backend.");
+        const failureMessage = result?.summary_error_type === 'rate_limit'
+          ? (result?.summary_error_message || 'AI Notes đang chạm giới hạn Groq, vui lòng thử lại sau ít giây.')
+          : (result?.summary_error_message || result?.error || 'Tạo AI Notes thất bại. Kiểm tra log backend.');
+        showToast.error(failureMessage);
       }
     } catch (err: unknown) {
       showToast.error(getApiErrorDetail(err, "Lỗi khi tạo lại AI Notes"));
@@ -1245,6 +1311,27 @@ const MeetingDetail: React.FC = () => {
                           </p>
                         </div>
                         <div className="flex flex-wrap items-center gap-2">
+                          {hasRawTranscriptVariant && (
+                            <div className="inline-flex rounded-xl border border-gray-200 bg-white p-1 dark:border-slate-700 dark:bg-slate-900">
+                              {([
+                                { key: 'cleaned', label: 'Đã làm sạch' },
+                                { key: 'raw', label: 'Bản gốc' },
+                              ] as const).map((variant) => (
+                                <button
+                                  key={variant.key}
+                                  type="button"
+                                  onClick={() => setTranscriptVariant(variant.key)}
+                                  className={`rounded-lg px-3 py-1.5 text-xs font-black transition ${
+                                    transcriptVariant === variant.key
+                                      ? 'bg-primary-600 text-white'
+                                      : 'text-gray-600 hover:bg-gray-100 dark:text-slate-300 dark:hover:bg-slate-800'
+                                  }`}
+                                >
+                                  {variant.label}
+                                </button>
+                              ))}
+                            </div>
+                          )}
                           {transcriptSpeakers.length > 1 && (
                             <select
                               value={selectedTranscriptSpeaker}
@@ -1321,9 +1408,9 @@ const MeetingDetail: React.FC = () => {
                                       <span
                                         key={idx}
                                         className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700 ring-1 ring-amber-200 dark:bg-amber-900/20 dark:text-amber-300 dark:ring-amber-800"
-                                        title={`"${c.wrong}" → "${c.right}"`}
+                                        title={`"${c.original || c.wrong || ''}" → "${c.corrected || c.right || ''}"`}
                                       >
-                                        {c.wrong} → {c.right}
+                                        {c.original || c.wrong} → {c.corrected || c.right}
                                       </span>
                                     ))}
                                 </div>
@@ -1477,26 +1564,57 @@ const MeetingDetail: React.FC = () => {
 
                       {/* Language Selector + Generate/Regenerate Button */}
                       {transcript && (
-                        <div className="flex items-center gap-3">
-                          <select
-                            value={summaryLanguage}
-                            onChange={(e) => setSummaryLanguage(e.target.value)}
-                            className="rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-sm font-bold text-gray-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
-                          >
-                            <option value="vi">🇻🇳 Tiếng Việt</option>
-                            <option value="en">🇺🇸 English</option>
-                            <option value="zh">🇨🇳 中文</option>
-                            <option value="ja">🇯🇵 日本語</option>
-                            <option value="ko">🇰🇷 한국어</option>
-                          </select>
-                          <button
-                            onClick={() => handleRegenerateAINotes(summaryLanguage)}
-                            disabled={isRegenerating}
-                            className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 px-5 py-2.5 text-sm font-black text-white transition hover:from-indigo-500 hover:to-purple-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                          >
-                            <RefreshCw size={16} className={isRegenerating ? "animate-spin" : ""} />
-                            {isRegenerating ? "Đang tạo AI Notes..." : summaryFailed ? "Thử lại tạo AI Notes" : "Tạo lại AI Notes"}
-                          </button>
+                        <div className="space-y-3">
+                          <div className="flex flex-wrap items-center gap-3">
+                            <select
+                              aria-label="AI Notes language"
+                              value={summaryLanguage}
+                              onChange={(e) => setSummaryLanguage(e.target.value)}
+                              className="rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-sm font-bold text-gray-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
+                            >
+                              <option value="vi">🇻🇳 Tiếng Việt</option>
+                              <option value="en">🇺🇸 English</option>
+                              <option value="zh">🇨🇳 中文</option>
+                              <option value="ja">🇯🇵 日本語</option>
+                              <option value="ko">🇰🇷 한국어</option>
+                            </select>
+                            <label className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-sm font-bold text-gray-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
+                              <input
+                                type="checkbox"
+                                checked={generateAiTasks}
+                                onChange={(event) => setGenerateAiTasks(event.target.checked)}
+                                className="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                              />
+                              <span>Sinh AI tasks</span>
+                            </label>
+                            <button
+                              onClick={() => handleRegenerateAINotes(summaryLanguage)}
+                              disabled={isRegenerating}
+                              className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 px-5 py-2.5 text-sm font-black text-white transition hover:from-indigo-500 hover:to-purple-500 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              <RefreshCw size={16} className={isRegenerating ? "animate-spin" : ""} />
+                              {isRegenerating ? "Đang tạo AI Notes full..." : "Gen lại AI Notes full"}
+                            </button>
+                          </div>
+                          {summaryGenerationState === 'PROCESSING' && (
+                            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-900/40 dark:bg-amber-950/20 dark:text-amber-100">
+                              <p className="font-bold">
+                                {summaryLanguage === meeting?.canonicalSummaryLanguage
+                                  ? `Đang tạo bản gốc tiếng ${languageNames[summaryLanguage] || summaryLanguage}.`
+                                  : `Đang dịch AI Notes sang ${languageNames[summaryLanguage] || summaryLanguage}.`}
+                              </p>
+                              {isFallbackSummaryVisible && (
+                                <p className="mt-1 text-xs font-medium">
+                                  Đang tạm hiển thị bản gốc của cuộc họp trong lúc chờ bản dịch hoàn tất.
+                                </p>
+                              )}
+                            </div>
+                          )}
+                          {summaryGenerationState === 'MISSING' && (
+                            <div className="rounded-xl border border-dashed border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-600 dark:border-slate-700 dark:bg-slate-800/40 dark:text-slate-300">
+                              {`Chưa có AI Notes cho ${languageNames[summaryLanguage] || summaryLanguage}. Bạn có thể gen lại để tạo bản này.`}
+                            </div>
+                          )}
                         </div>
                       )}
 

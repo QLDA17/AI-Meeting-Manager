@@ -16,7 +16,8 @@ DEEPGRAM_LANGUAGE=vi
 
 ### 2. Test
 ```bash
-python backend/scripts/test_deepgram_nova3.py --info
+cd backend
+python tests/manual/deepgram_nova3_runner.py --info
 ```
 
 ### 3. Use in Code
@@ -114,13 +115,14 @@ print(result["text"])
 
 ```bash
 # Check setup
-python backend/scripts/test_deepgram_nova3.py --info
+cd backend
+python tests/manual/deepgram_nova3_runner.py --info
 
 # Transcribe file
-python backend/scripts/test_deepgram_nova3.py path/to/audio.mp3
+python tests/manual/deepgram_nova3_runner.py path/to/audio.mp3
 
 # Compare models
-python backend/scripts/test_deepgram_nova3.py path/to/audio.mp3 --compare
+python tests/manual/deepgram_nova3_runner.py path/to/audio.mp3 --compare
 ```
 
 ---

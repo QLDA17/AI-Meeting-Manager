@@ -128,6 +128,11 @@ const EditMeetingModal: React.FC<EditMeetingModalProps> = ({ meeting, isOpen, on
       return;
     }
 
+    if (start.getTime() < Date.now()) {
+      toast.error('Không thể chuyển cuộc họp về thời gian trong quá khứ');
+      return;
+    }
+
     setIsSubmitting(true);
     try {
       await api.put(`/api/meetings/${meeting.id}`, {

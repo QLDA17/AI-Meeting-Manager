@@ -105,13 +105,15 @@ def create_group_payload(
     db: Session,
     current_user: models.User,
 ) -> schemas.Group:
-    auth.require_org_admin(db, current_user, group_data.organization_id)
+    organization = auth.require_org_admin(db, current_user, group_data.organization_id)
     group = create_group(db, group_data.model_dump(), created_by=current_user.id)
     append_admin_audit_log(
         actor=current_user.username,
         action="CREATE_GROUP",
         target=group.name,
         role=current_user.role or "org-admin",
+        org=organization.name,
+        db=db,
     )
     return schemas.Group.model_validate(enrich_group_payload(group))
 
@@ -122,7 +124,7 @@ def update_group_payload(
     db: Session,
     current_user: models.User,
 ) -> schemas.Group:
-    auth.require_group_admin(db, current_user, group_id)
+    existing_group = auth.require_group_admin(db, current_user, group_id)
     group = update_group(db, group_id, updates.model_dump(exclude_unset=True))
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
@@ -131,12 +133,14 @@ def update_group_payload(
         action="UPDATE_GROUP",
         target=group.name,
         role=current_user.role or "group-admin",
+        org=existing_group.organization.name if existing_group.organization else existing_group.organization_id,
+        db=db,
     )
     return schemas.Group.model_validate(enrich_group_payload(group))
 
 
 def delete_group_payload(group_id: str, db: Session, current_user: models.User) -> Dict[str, str]:
-    auth.require_group_admin(db, current_user, group_id)
+    required_group = auth.require_group_admin(db, current_user, group_id)
     group = get_group_by_id(db, group_id)
     if not delete_group(db, group_id):
         raise HTTPException(status_code=404, detail="Group not found")
@@ -145,6 +149,8 @@ def delete_group_payload(group_id: str, db: Session, current_user: models.User) 
         action="DELETE_GROUP",
         target=group.name if group else group_id,
         role=current_user.role or "group-admin",
+        org=required_group.organization.name if required_group.organization else required_group.organization_id,
+        db=db,
     )
     return {"message": "Group deleted successfully"}
 
@@ -249,6 +255,8 @@ def add_group_member_payload(
         action="ADD_GROUP_MEMBER",
         target=f"{user.email} -> {group.name}",
         role=current_user.role or "group-admin",
+        org=group.organization.name if group.organization else group.organization_id,
+        db=db,
     )
     return created_membership
 
@@ -303,6 +311,8 @@ def add_group_member_by_email_payload(
         action="ADD_GROUP_MEMBER",
         target=f"{email} -> {group.name}",
         role=current_user.role or "group-admin",
+        org=group.organization.name if group.organization else group.organization_id,
+        db=db,
     )
     return membership
 

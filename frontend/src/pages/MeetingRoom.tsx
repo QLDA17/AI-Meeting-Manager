@@ -194,6 +194,11 @@ const MeetingRoomInner: React.FC = () => {
     if (!code) return null;
     return remoteMeeting || (meetings as any[]).find(m => m.code === code || m.id === code) || null;
   }, [code, meetings, remoteMeeting]);
+  const preferredNotesLanguage =
+    user?.language ||
+    remoteMeeting?.preferredSummaryLanguage ||
+    remoteMeeting?.meetingDefaultSummaryLanguage ||
+    'vi';
 
   const isOrganizer = meeting?.createdBy === user?.id;
   const isMeetingGuest = meeting?.accessMode === "meeting_guest";
@@ -730,7 +735,7 @@ const MeetingRoomInner: React.FC = () => {
         await api.post(`/api/meetings/${meetingId}/end`, { status: "processing" });
         if (isRecording) {
           try {
-            const result = await finalize(meetingId, "vi");
+            const result = await finalize(meetingId, preferredNotesLanguage);
             applyFinalizeResult(result);
           } catch (err: any) {
             if (err?.response?.status === 400) {
@@ -1404,7 +1409,7 @@ const MeetingRoomInner: React.FC = () => {
                            onClick={async () => {
                              setIsFinalizing(true);
                              try {
-                               const result = await finalize(meetingId, "vi");
+                               const result = await finalize(meetingId, preferredNotesLanguage);
                                applyFinalizeResult(result);
                              } catch {
                                showToast.error("Bản nháp transcript vẫn được giữ lại, nhưng chưa tạo được AI Notes.");

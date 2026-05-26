@@ -5,7 +5,7 @@
 ## 🚀 TỔNG KẾT MIGRATION V2 (BIG BANG)
 Backend đã hoàn thành việc đồng bộ hóa với **MySQL Schema V2**.
 - **SQLAlchemy 2.0:** Sử dụng `Mapped` types.
-- **Modular CRUD:** Tách thành các package `src/api/crud/`.
+- **Modular CRUD:** Tách thành các package `backend/src/api/crud/`.
 - **Pydantic v2:** Schemas chuẩn hóa cho 15 entities.
 
 ---
@@ -50,10 +50,10 @@ Backend đã hoàn thành việc đồng bộ hóa với **MySQL Schema V2**.
 ---
 
 ## ✅ KẾ HOẠCH KIỂM THỬ (TDD)
-- **Unit Tests:** `tests/test_crud/` (37/37 passed).
-- **Integration Tests:** `tests/test_api/` (Auth, Meetings).
+- **Unit Tests:** `backend/tests/api/crud/` (37/37 passed).
+- **Integration Tests:** `backend/tests/api/routes/` (Auth, Meetings).
 - **Smoke Tests:** Kiểm tra pipeline AI từ đầu đến cuối.
 
 ---
-**File quan trọng:** `src/api/models.py`, `database/mysql_schema.sql`
+**File quan trọng:** `backend/src/api/models.py`, `backend/database/mysql_schema.sql`
 **Cập nhật:** 2026-04-28

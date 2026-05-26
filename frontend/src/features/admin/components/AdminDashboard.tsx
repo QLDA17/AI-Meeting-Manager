@@ -5,29 +5,15 @@ import {
   Users,
   Clock,
   Zap,
-  ArrowUpRight,
-  ShieldCheck,
-  TrendingUp,
-  Globe,
-  ArrowRight,
   PieChart as PieIcon,
   Activity,
   UserPlus,
   Key,
   Settings,
   AlertCircle,
-  Radio,
   FileText,
-  CheckCircle2,
-  Database,
-  HardDrive
 } from 'lucide-react';
 import {
-  AreaChart,
-  Area,
-  XAxis,
-  YAxis,
-  CartesianGrid,
   Tooltip,
   ResponsiveContainer,
   PieChart,
@@ -219,41 +205,29 @@ const TopActiveTable: React.FC = () => {
     }).catch(() => {});
   }, []);
 
-  const topOrgs = useMemo(() => {
-    return orgs.map((org, idx) => ({
-      ...org,
-      activity: Math.max(100 - idx * 15, 20)
-    }));
-  }, [orgs]);
-
   return (
     <div className="bg-white dark:bg-slate-900 rounded-3xl border border-gray-100 dark:border-slate-800 p-8 shadow-sm">
       <div className="flex items-center justify-between mb-8">
         <div>
-          <h3 className="text-xl font-black text-gray-900 dark:text-white">Top Tổ chức hoạt động</h3>
-          <p className="mt-1 text-sm font-medium text-gray-500">Dựa trên tổng khối lượng xử lý dữ liệu</p>
+          <h3 className="text-xl font-black text-gray-900 dark:text-white">Tổ chức hiện có</h3>
+          <p className="mt-1 text-sm font-medium text-gray-500">Danh sách tổ chức gần đây trong hệ thống</p>
         </div>
         <button className="rounded-xl bg-gray-50 px-4 py-2 text-xs font-bold text-gray-600 transition-all hover:bg-gray-100 dark:bg-slate-800 dark:text-gray-300 dark:hover:bg-slate-700">Xem tất cả</button>
       </div>
       <div className="space-y-5">
-        {topOrgs.map((org, idx) => (
+        {orgs.map((org, idx) => (
           <div key={org.id} className="group flex items-center gap-4 rounded-2xl p-2 transition-all hover:bg-gray-50 dark:hover:bg-slate-800/50">
             <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-indigo-50 font-black text-indigo-600 shadow-sm dark:bg-indigo-900/30 dark:text-indigo-400">
               #{idx + 1}
             </div>
             <div className="flex-1">
-              <div className="mb-2 flex items-center justify-between">
+              <div className="mb-1 flex items-center justify-between">
                 <span className="text-sm font-bold text-gray-900 dark:text-slate-100">{org.name}</span>
-                <span className="text-xs font-black text-indigo-600 dark:text-indigo-400">{org.activity}% Tải</span>
+                <Building2 size={16} className="text-indigo-400" />
               </div>
-              <div className="h-2 w-full overflow-hidden rounded-full bg-gray-100 dark:bg-slate-800">
-                <motion.div 
-                  initial={{ width: 0 }}
-                  animate={{ width: `${org.activity}%` }}
-                  transition={{ duration: 1, delay: idx * 0.1 }}
-                  className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-blue-400" 
-                />
-              </div>
+              <p className="text-xs font-medium text-gray-500 dark:text-slate-400">
+                {org.description || 'Chưa có mô tả tổ chức'}
+              </p>
             </div>
           </div>
         ))}
@@ -340,17 +314,6 @@ const AdminDashboardContent: React.FC = () => {
     ].filter(item => item.value > 0);
   }, [meetings]);
 
-  // Mock Growth Data
-  const growthData = [
-    { name: 'T2', hours: 12, users: 45 },
-    { name: 'T3', hours: 19, users: 52 },
-    { name: 'T4', hours: 15, users: 48 },
-    { name: 'T5', hours: 25, users: 70 },
-    { name: 'T6', hours: 32, users: 85 },
-    { name: 'T7', hours: 40, users: 110 },
-    { name: 'CN', hours: 55, users: 135 },
-  ];
-
   if (!stats) return (
     <div className="flex h-64 flex-col items-center justify-center gap-4">
       <div className="h-8 w-8 animate-spin rounded-full border-4 border-indigo-500 border-t-transparent"></div>
@@ -385,82 +348,47 @@ const AdminDashboardContent: React.FC = () => {
         ))}
       </motion.div>
 
-      {/* Row 2: Performance & Storage */}
+      {/* Row 2: Recent Activity & Quick Actions */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* System Growth */}
         <div className="lg:col-span-8">
           <div className="bg-white dark:bg-slate-900 rounded-3xl border border-gray-100 dark:border-slate-800 p-8 shadow-sm h-full">
             <div className="flex items-center justify-between mb-8">
               <div>
-                <h3 className="text-xl font-black text-gray-900 dark:text-white">Tăng trưởng Khối lượng Xử lý</h3>
-                <p className="mt-1 text-sm font-medium text-gray-500">Giờ họp (Xanh dương) vs User (Xanh lá) 7 ngày qua</p>
+                <h3 className="text-xl font-black text-gray-900 dark:text-white">Hoạt động quản trị gần đây</h3>
+                <p className="mt-1 text-sm font-medium text-gray-500">Nguồn dữ liệu lấy trực tiếp từ audit log hệ thống</p>
               </div>
-              <select className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-2 text-xs font-bold text-gray-600 outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-gray-300">
-                <option>7 ngày qua</option>
-                <option>30 ngày qua</option>
-                <option>Năm nay</option>
-              </select>
+              <span className="rounded-xl bg-gray-50 px-4 py-2 text-xs font-bold text-gray-600 dark:bg-slate-800 dark:text-gray-300">
+                {recentActivities.length} sự kiện
+              </span>
             </div>
-            <div className="h-[320px] w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={growthData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                  <defs>
-                    <linearGradient id="colorHours" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#6366f1" stopOpacity={0.3}/>
-                      <stop offset="95%" stopColor="#6366f1" stopOpacity={0}/>
-                    </linearGradient>
-                    <linearGradient id="colorUsers" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#10b981" stopOpacity={0.3}/>
-                      <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                  <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#94a3b8', fontWeight: 600 }} dy={10} />
-                  <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#94a3b8', fontWeight: 600 }} />
-                  <Tooltip 
-                    contentStyle={{ borderRadius: '20px', border: 'none', boxShadow: '0 20px 25px -5px rgb(0 0 0 / 0.1)', padding: '16px' }}
-                    itemStyle={{ fontWeight: 'bold' }}
-                    labelStyle={{ fontWeight: 'black', color: '#64748b', marginBottom: '8px' }}
-                  />
-                  <Area type="monotone" dataKey="users" name="Người dùng" stroke="#10b981" strokeWidth={3} fill="url(#colorUsers)" />
-                  <Area type="monotone" dataKey="hours" name="Giờ xử lý AI" stroke="#6366f1" strokeWidth={4} fill="url(#colorHours)" />
-                </AreaChart>
-              </ResponsiveContainer>
+            <div className="space-y-4">
+              {recentActivities.length === 0 ? (
+                <div className="rounded-2xl border border-dashed border-gray-200 px-6 py-10 text-center text-sm font-medium text-gray-500 dark:border-slate-700 dark:text-slate-400">
+                  Chưa có sự kiện quản trị nào để hiển thị.
+                </div>
+              ) : (
+                recentActivities.map((activity) => (
+                  <div key={activity.id} className="rounded-2xl border border-gray-100 bg-gray-50/60 p-4 dark:border-slate-800 dark:bg-slate-800/40">
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <p className="text-sm font-black text-gray-900 dark:text-slate-100">{activity.action}</p>
+                        <p className="mt-1 text-sm text-gray-600 dark:text-slate-300">{activity.target}</p>
+                        <p className="mt-2 text-xs font-semibold uppercase tracking-widest text-gray-400">
+                          {activity.user} · {activity.role}
+                        </p>
+                      </div>
+                      <span className="shrink-0 text-xs font-bold text-gray-400">
+                        {new Date(activity.time).toLocaleString('vi-VN')}
+                      </span>
+                    </div>
+                  </div>
+                ))
+              )}
             </div>
           </div>
         </div>
 
-        {/* Resources & Quick Actions */}
         <div className="lg:col-span-4 flex flex-col gap-6">
-          {/* Storage Box */}
-          <div className="bg-gradient-to-br from-gray-900 to-slate-800 rounded-3xl border border-slate-700 p-8 shadow-lg h-full">
-            <div className="flex items-center justify-between mb-6">
-              <div className="flex items-center gap-3">
-                <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-slate-700/50 text-indigo-400">
-                  <Database size={20} />
-                </div>
-                <div>
-                  <h3 className="text-lg font-black text-white">Lưu trữ Server</h3>
-                  <p className="text-xs font-medium text-slate-400">Ổ cứng SSD NVMe</p>
-                </div>
-              </div>
-            </div>
-            
-            <div className="mt-8 space-y-3">
-              <div className="flex items-end justify-between">
-                <p className="text-4xl font-black text-white">450 <span className="text-xl text-slate-400">GB</span></p>
-                <p className="text-sm font-bold text-slate-400">/ 1 TB</p>
-              </div>
-              <div className="h-3 w-full overflow-hidden rounded-full bg-slate-700">
-                <div className="h-full w-[45%] rounded-full bg-gradient-to-r from-indigo-500 to-purple-400"></div>
-              </div>
-              <div className="flex justify-between text-xs font-bold text-slate-400 mt-2">
-                <span>Đã dùng 45%</span>
-                <span className="text-emerald-400">Trạng thái Tốt</span>
-              </div>
-            </div>
-          </div>
-
           <QuickActions />
         </div>
       </div>

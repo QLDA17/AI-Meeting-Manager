@@ -12,8 +12,9 @@ This is the React-based frontend for MultiMinutes AI, integrated with the Gemini
 ## Getting Started
 
 ### 1. Start the Backend API
-From the project root:
+From the `backend` folder:
 ```bash
+cd ../backend
 python src/api/main.py
 ```
 The API will run at `http://localhost:8000`.

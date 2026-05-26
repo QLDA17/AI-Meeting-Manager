@@ -2,6 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import {
+  Calendar,
   FileText,
   CheckCircle2,
   Clock,
@@ -12,11 +13,12 @@ import {
   ChevronLeft,
   ChevronRight,
 } from 'lucide-react';
-import { useAppStore, useOrgStore } from '../stores';
+import { useAppStore, useCalendarStore, useOrgStore } from '../stores';
 import { AnimatedCounter, PageState, StatCard } from '../components/ui';
 import EditMeetingModal from '../components/meeting/EditMeetingModal';
 import MeetingCard from '../components/meeting/MeetingCard';
 import MeetingFilters from '../components/meeting/MeetingFilters';
+import ScheduleMeetingModal from '../components/meeting/ScheduleMeetingModal';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { usePermission } from '../hooks/usePermission';
@@ -42,6 +44,7 @@ const MeetingList: React.FC = () => {
   const { isViewer } = usePermission();
   const { meetings } = useAppStore();
   const { currentOrg, currentOrgId, groups } = useOrgStore();
+  const { toggleScheduleModal } = useCalendarStore();
   const { loadMeetings } = useAppStore();
   const [searchTerm, setSearchTerm] = useState('');
   const [sortBy, setSortBy] = useState<SortOption>('newest');
@@ -154,6 +157,11 @@ const MeetingList: React.FC = () => {
             <button onClick={() => navigate('/upload')} className="inline-flex items-center gap-2 rounded-xl border border-gray-100 bg-white px-5 py-2.5 text-xs font-black text-gray-600 shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md">
               <Upload size={14} /> Tải âm thanh
             </button>
+            {!isViewer && (
+              <button onClick={() => toggleScheduleModal(true)} className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-5 py-2.5 text-xs font-black text-gray-700 shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md">
+                <Calendar size={14} /> Lịch họp
+              </button>
+            )}
             <button onClick={() => navigate('/meetings/create')} className="inline-flex items-center gap-2 rounded-xl bg-primary-600 px-5 py-2.5 text-xs font-black text-white shadow-lg shadow-primary-600/20 transition-all hover:-translate-y-0.5 hover:shadow-primary-600/30">
               <Plus size={14} className="stroke-[3]" /> Tạo live
             </button>
@@ -239,13 +247,22 @@ const MeetingList: React.FC = () => {
                 action={
                   <div className="flex flex-wrap justify-center gap-3">
                     {!isViewer && (
-                      <button
-                        onClick={() => navigate('/meetings/create')}
-                        className="inline-flex items-center gap-2 rounded-2xl bg-gray-900 px-8 py-4 text-sm font-black text-white shadow-xl shadow-gray-900/20 transition-all hover:-translate-y-1"
-                      >
-                        <Plus size={18} className="stroke-[3]" />
-                        Tạo cuộc họp
-                      </button>
+                      <>
+                        <button
+                          onClick={() => navigate('/meetings/create')}
+                          className="inline-flex items-center gap-2 rounded-2xl bg-gray-900 px-8 py-4 text-sm font-black text-white shadow-xl shadow-gray-900/20 transition-all hover:-translate-y-1"
+                        >
+                          <Plus size={18} className="stroke-[3]" />
+                          Tạo cuộc họp
+                        </button>
+                        <button
+                          onClick={() => toggleScheduleModal(true)}
+                          className="inline-flex items-center gap-2 rounded-2xl border border-gray-200 bg-white px-8 py-4 text-sm font-black text-gray-700 shadow-sm transition-all hover:-translate-y-1 hover:bg-gray-50"
+                        >
+                          <Calendar size={18} />
+                          Lịch họp
+                        </button>
+                      </>
                     )}
                     <button
                       onClick={() => navigate(orgMeetings.length === 0 ? '/join' : '/upload')}
@@ -330,6 +347,7 @@ const MeetingList: React.FC = () => {
         onClose={() => setEditingMeeting(null)}
         onUpdated={handleEditMeetingUpdated}
       />
+      <ScheduleMeetingModal />
     </>
   );
 };

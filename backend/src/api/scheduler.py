@@ -4,7 +4,9 @@ Runs as an asyncio loop alongside the FastAPI app.
 """
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+
+from src.api.crud.crud_meeting import update_meeting
 
 logger = logging.getLogger("scheduler")
 
@@ -23,7 +25,7 @@ async def reminder_loop():
     while True:
         db = _get_db()
         try:
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
             soon = now + timedelta(minutes=15)
 
             # Find upcoming meetings within 15 minutes that haven't been reminded
@@ -82,7 +84,7 @@ async def status_transition_loop():
     while True:
         db = _get_db()
         try:
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
 
             # Upcoming meetings that should now be live
             overdue = (
@@ -94,9 +96,18 @@ async def status_transition_loop():
                 .all()
             )
             for meeting in overdue:
-                meeting.status = "live"
-                meeting.actual_start = now
-                logger.info(f"Auto-transitioned '{meeting.title}' to live")
+                try:
+                    update_meeting(
+                        db,
+                        meeting.id,
+                        {
+                            "status": "live",
+                            "actual_start": meeting.actual_start or now,
+                        },
+                    )
+                    logger.info(f"Auto-transitioned '{meeting.title}' to live")
+                except ValueError as exc:
+                    logger.warning("Skipped invalid transition for meeting %s: %s", meeting.id, exc)
 
             # Live meetings running > 4 hours → auto-complete
             cutoff = now - timedelta(hours=4)
@@ -109,11 +120,17 @@ async def status_transition_loop():
                 .all()
             )
             for meeting in stale_live:
-                meeting.status = "completed"
-                meeting.actual_end = now
+                updates = {
+                    "status": "completed",
+                    "actual_end": now,
+                }
                 if meeting.actual_start:
-                    meeting.duration = int((now - meeting.actual_start).total_seconds() / 60)
-                logger.info(f"Auto-completed stale live meeting '{meeting.title}'")
+                    updates["duration"] = int((now - meeting.actual_start).total_seconds() / 60)
+                try:
+                    update_meeting(db, meeting.id, updates)
+                    logger.info(f"Auto-completed stale live meeting '{meeting.title}'")
+                except ValueError as exc:
+                    logger.warning("Skipped invalid transition for meeting %s: %s", meeting.id, exc)
 
             db.commit()
         except Exception as e:

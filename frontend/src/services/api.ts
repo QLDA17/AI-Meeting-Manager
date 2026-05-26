@@ -1,6 +1,7 @@
 import axios from "axios";
 
-const baseURL = import.meta.env.VITE_API_BASE_URL || window.location.origin;
+const browserOrigin = typeof window !== "undefined" ? window.location.origin : "http://localhost";
+const baseURL = import.meta.env.VITE_API_BASE_URL || browserOrigin;
 
 const api = axios.create({
   baseURL,
@@ -19,7 +20,7 @@ api.interceptors.request.use(
       config.url = config.url.replace(/^\/api/, "");
     }
 
-    const sessionStr = localStorage.getItem("session");
+    const sessionStr = typeof localStorage !== "undefined" ? localStorage.getItem("session") : null;
     if (sessionStr) {
       try {
         const session = JSON.parse(sessionStr);
@@ -40,6 +41,18 @@ api.interceptors.request.use(
 api.interceptors.response.use(
   (response) => response,
   (error) => {
+    if (
+      error?.response?.status === 403 &&
+      error?.response?.data?.detail === "Account is deactivated" &&
+      typeof window !== "undefined"
+    ) {
+      localStorage.removeItem("user");
+      localStorage.removeItem("session");
+      localStorage.removeItem("auth-storage");
+      if (window.location.pathname !== "/login") {
+        window.location.assign("/login");
+      }
+    }
     if (error?.response?.status === 401 && typeof window !== "undefined") {
       const url = String(error.config?.url || "");
       const isAuthAttempt = url.includes("/api/auth/login") || url.includes("/auth/login");

@@ -6,6 +6,7 @@ from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session, joinedload
 
 from src.api import models, schemas
+from src.api import auth
 from src.api.core.action_item_support import (
     action_item_assigned_to_user,
     action_item_manageable_by_user,
@@ -113,11 +114,17 @@ def create_action_item_payload(
 
     action_data = resolve_action_item_assignees(db, action_item.model_dump(), meeting)
     created = create_action_item(db, action_data, current_user.id)
+    audit_org = "System"
+    if meeting:
+        organization = auth.require_org_member(db, current_user, meeting.organization_id)
+        audit_org = organization.name
     append_admin_audit_log(
         actor=current_user.username,
         action="CREATE_ACTION_ITEM",
         target=created.title,
         role=current_user.role or "member",
+        org=audit_org,
+        db=db,
     )
     payload = serialize_action_item_payload(created)
     broadcast_action_item_updated(created)
@@ -157,11 +164,17 @@ def update_action_item_payload(
         current_assignees=list(db_action.assignees or []),
     )
     updated = update_action_item(db, action_id, update_data)
+    audit_org = "System"
+    if meeting:
+        organization = auth.require_org_member(db, current_user, meeting.organization_id)
+        audit_org = organization.name
     append_admin_audit_log(
         actor=current_user.username,
         action="UPDATE_ACTION_ITEM",
         target=updated.title if updated else action_id,
         role=current_user.role or "member",
+        org=audit_org,
+        db=db,
     )
     payload = serialize_action_item_payload(updated)
     broadcast_action_item_updated(updated)
@@ -230,11 +243,19 @@ def delete_action_item_payload(action_id: str, db: Session, current_user: models
     deleted_title = db_action.title
     deleted_meeting_id = db_action.meeting_id
     delete_action_item(db, action_id)
+    audit_org = "System"
+    if db_action.meeting_id:
+        meeting = db.query(models.Meeting).filter(models.Meeting.id == db_action.meeting_id).first()
+        if meeting:
+            organization = auth.require_org_member(db, current_user, meeting.organization_id)
+            audit_org = organization.name
     append_admin_audit_log(
         actor=current_user.username,
         action="DELETE_ACTION_ITEM",
         target=deleted_title,
         role=current_user.role or "member",
+        org=audit_org,
+        db=db,
     )
     broadcast_action_item_deleted(deleted_meeting_id, action_id)
     return {"message": "Action item deleted successfully"}

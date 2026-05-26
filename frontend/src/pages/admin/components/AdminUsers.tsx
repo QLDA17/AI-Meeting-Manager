@@ -78,16 +78,16 @@ const AdminUsers: React.FC = () => {
 
   const handleChangeRole = async (user: User) => {
     const newRole = user.systemRole === 'system-admin' ? 'member' : 'system-admin';
-    if (!confirm(`Bạn có chắc muốn đổi role của ${user.email} thành ${newRole}?`)) return;
+    if (!confirm(`Bạn có chắc muốn đổi vai trò hệ thống của ${user.email} thành ${newRole}?`)) return;
     setUpdatingId(user.id);
     try {
       const response = await api.patch(`/api/admin/users/${user.id}/role`, { role: newRole });
       const updated = normalizeUser(response.data);
       setUsers((current) => current.map((item) => (item.id === updated.id ? updated : item)));
       if (selectedUser?.id === user.id) setSelectedUser(updated);
-      toast.success(`Đã đổi role thành ${newRole}`);
+      toast.success(`Đã đổi vai trò hệ thống thành ${newRole}`);
     } catch (err: any) {
-      toast.error(err?.response?.data?.detail || 'Không đổi được role');
+      toast.error(err?.response?.data?.detail || 'Không đổi được vai trò hệ thống');
     } finally {
       setUpdatingId(null);
       setShowActionMenu(false);
@@ -95,7 +95,7 @@ const AdminUsers: React.FC = () => {
   };
 
   const handleDeleteUser = async (user: User) => {
-    if (!confirm(`Bạn có chắc muốn vô hiệu hóa vĩnh viễn tài khoản ${user.email}?`)) return;
+    if (!confirm(`Bạn có chắc muốn vô hiệu hóa tài khoản ${user.email}?`)) return;
     setUpdatingId(user.id);
     try {
       await api.delete(`/api/admin/users/${user.id}`);
@@ -222,7 +222,7 @@ const AdminUsers: React.FC = () => {
               <thead className="bg-gray-50/50 text-[10px] font-black uppercase tracking-widest text-gray-400 dark:bg-slate-800/30">
                 <tr>
                   <th className="px-6 py-4">Người dùng</th>
-                  <th className="px-6 py-4">Role</th>
+                  <th className="px-6 py-4">Vai trò hệ thống</th>
                   <th className="px-6 py-4">Tổ chức/Nhóm</th>
                   <th className="px-6 py-4">Trạng thái</th>
                   <th className="px-6 py-4 text-right"></th>
@@ -345,7 +345,7 @@ const AdminUsers: React.FC = () => {
                             className="flex items-center gap-2 rounded-xl px-4 py-2.5 text-left text-sm font-semibold text-gray-700 hover:bg-gray-50 dark:text-slate-200 dark:hover:bg-slate-800"
                           >
                             <ShieldCheck size={16} className="text-purple-500" />
-                            Đổi Role
+                            Đổi vai trò hệ thống
                           </button>
                           <button
                             onClick={() => handleToggleStatus(selectedUser)}
@@ -362,7 +362,7 @@ const AdminUsers: React.FC = () => {
                             onClick={() => handleDeleteUser(selectedUser)}
                             className="flex items-center gap-2 rounded-xl px-4 py-2.5 text-left text-sm font-bold text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20"
                           >
-                            <Trash2 size={16} /> Xóa tài khoản
+                            <Trash2 size={16} /> Vô hiệu hóa tài khoản
                           </button>
                         </div>
                       </div>

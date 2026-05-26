@@ -31,12 +31,12 @@
 
 ```bash
 MUTI_AI/
-├── src/ api/ models.py, crud/, main.py     # Backend
-├── frontend/ src/ pages/, components/      # Frontend
+├── backend/ src/ api/ models.py, crud/, main.py   # Backend
+├── frontend/ src/ pages/, components/            # Frontend
 ├── docs/                                   # Tài liệu (3 file chính)
-├── database/                               # SQL Schemas
-├── tests/                                  # TDD Test suite
-└── scripts/                                # Công cụ hỗ trợ
+├── backend/ tests/                         # Python test suite
+├── frontend/ tests/                        # Frontend test suite
+└── backend/ scripts/                       # Công cụ hỗ trợ backend
 ```
 
 ---
@@ -45,9 +45,9 @@ MUTI_AI/
 
 ### Backend
 ```bash
-# Cài đặt
+cd backend
 pip install -r requirements.txt
-# Chạy server
+
 python src/api/main.py
 ```
 - API Docs: `http://localhost:8000/docs`
@@ -62,7 +62,8 @@ npm run dev
 
 ### Testing
 ```bash
-pytest tests/test_crud/ -v
+cd backend
+pytest tests/api/crud/ -v
 ```
 
 ---

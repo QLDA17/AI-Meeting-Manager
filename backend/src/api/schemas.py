@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from pydantic import BaseModel, EmailStr, Field, ConfigDict
 from typing import Optional, List, Dict, Any
 from datetime import datetime, date
@@ -484,6 +486,7 @@ class AudioFile(AudioFileBase, TimestampMixin):
 
 class TranscriptBase(BaseSchema):
     content: str
+    raw_content: Optional[str] = None
     language: str = Field(default="vi", max_length=10)
     word_count: int = 0
     processing_status: str = Field(default="PENDING", pattern="^(PENDING|PROCESSING|COMPLETED|FAILED)$")
@@ -491,6 +494,7 @@ class TranscriptBase(BaseSchema):
     confidence_score: Optional[float] = None
     post_processed: bool = False
     nlp_metadata: Optional[Dict[str, Any]] = None
+    quality_metadata: Optional[Dict[str, Any]] = None
 
 
 class TranscriptCreate(TranscriptBase):
@@ -500,12 +504,14 @@ class TranscriptCreate(TranscriptBase):
 
 class TranscriptUpdate(BaseSchema):
     content: Optional[str] = None
+    raw_content: Optional[str] = None
     language: Optional[str] = Field(None, max_length=10)
     word_count: Optional[int] = None
     processing_status: Optional[str] = Field(None, pattern="^(PENDING|PROCESSING|COMPLETED|FAILED)$")
     confidence_score: Optional[float] = None
     post_processed: Optional[bool] = None
     nlp_metadata: Optional[Dict[str, Any]] = None
+    quality_metadata: Optional[Dict[str, Any]] = None
 
 
 class Transcript(TranscriptBase, TimestampMixin):
@@ -541,6 +547,9 @@ class TranscriptSegment(TranscriptSegmentBase, TimestampMixin):
 
 class MeetingSummaryBase(BaseSchema):
     language: str = Field(default="vi", max_length=10)
+    generation_group_id: Optional[str] = None
+    source_summary_id: Optional[str] = None
+    summary_kind: Optional[str] = Field(None, pattern="^(canonical|translation)$")
     key_points: Optional[List[Any]] = None
     decisions: Optional[List[Any]] = None
     action_items: Optional[List[Dict[str, Any]]] = None
@@ -732,13 +741,26 @@ class MeetingDetailResponse(Meeting):
     audio_files: List[AudioFile] = Field(default_factory=list)
     transcripts: List[Transcript] = Field(default_factory=list)
     transcript_segments: List[Dict[str, Any]] = Field(default_factory=list)
+    cleaned_transcript_segments: List[Dict[str, Any]] = Field(default_factory=list)
+    raw_transcript_segments: List[Dict[str, Any]] = Field(default_factory=list)
     speaker_mappings: List[MeetingSpeakerMapping] = Field(default_factory=list)
     summaries: List[MeetingSummary] = Field(default_factory=list)
     action_items: List[ActionItem] = Field(default_factory=list)
     transcript_content: Optional[str] = None
+    cleaned_transcript_content: Optional[str] = None
+    raw_transcript_content: Optional[str] = None
+    transcript_quality_metadata: Optional[Dict[str, Any]] = None
+    transcript_content: Optional[str] = None
     transcript_language: Optional[str] = None
     transcript_status: Optional[str] = None
     has_transcript_draft: bool = False
+    preferred_summary_language: Optional[str] = None
+    meeting_default_summary_language: Optional[str] = None
+    canonical_summary_language: Optional[str] = None
+    canonical_summary_id: Optional[str] = None
+    generation_group_id: Optional[str] = None
+    available_summary_languages: List[str] = Field(default_factory=list)
+    summary_generation_state: Dict[str, str] = Field(default_factory=dict)
     activity: List[Dict[str, Any]] = Field(default_factory=list)
     meeting_summary_text: Optional[str] = None
     key_points_text: List[str] = Field(default_factory=list)
@@ -788,9 +810,12 @@ class MeetingFinalizeResponse(BaseSchema):
     transcript_status: str
     summary_status: str
     has_transcript_draft: bool = False
-    summary: MeetingAnalysisOutput
+    summary: Optional[MeetingAnalysisOutput]
     nlp_metadata: Optional[Dict[str, Any]] = None
     errors: List[str] = Field(default_factory=list)
+    default_summary_language: Optional[str] = None
+    available_summary_languages: List[str] = Field(default_factory=list)
+    summary_generation_state: Dict[str, str] = Field(default_factory=dict)
 
 
 class TestSTTAnalyzeRequest(BaseSchema):

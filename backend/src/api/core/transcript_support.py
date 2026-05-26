@@ -1,20 +1,39 @@
 """Transcript draft persistence, normalization, chunk management, and finalization."""
 
+import asyncio
 import glob
 import logging
 import os
 import subprocess
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from fastapi import HTTPException
+from fastapi import BackgroundTasks, HTTPException
 from sqlalchemy import func, or_
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from src.api import models, schemas
+from src.api.database import SessionLocal
 from src.api.core.meetings_support import estimate_segment_end, normalize_speaker_label
 
 logger = logging.getLogger(__name__)
+SUPPORTED_SUMMARY_LANGUAGES = ("vi", "en", "zh", "ja", "ko")
+_translation_locks: Dict[str, asyncio.Lock] = {}
+_latest_translation_batches: Dict[str, str] = {}
+
+
+def _empty_summary_payload() -> schemas.MeetingAnalysisOutput:
+    return schemas.MeetingAnalysisOutput(
+        meeting_summary="",
+        key_points=[],
+        decisions=[],
+        action_items=[],
+        risks=[],
+        open_questions=[],
+        timeline_highlights=[],
+        speaker_summaries=[],
+    )
 
 
 def next_transcript_chunk_index(db: Session, meeting_id: str, user_id: str) -> int:
@@ -155,6 +174,427 @@ def normalize_segment_payload(segment: Dict[str, Any], default_language: str = "
     }
 
 
+def _segment_corrections(segment: Dict[str, Any]) -> List[Dict[str, Any]]:
+    metadata = segment.get("nlp_metadata") if isinstance(segment, dict) else None
+    corrections = metadata.get("corrections") if isinstance(metadata, dict) else None
+    return corrections if isinstance(corrections, list) else []
+
+
+def _speaker_assignment_rate(segments: List[Dict[str, Any]]) -> float:
+    if not segments:
+        return 0.0
+    assigned = 0
+    for segment in segments:
+        label = str(segment.get("speaker_label") or segment.get("speaker") or "").strip()
+        if label:
+            assigned += 1
+    return round(assigned / len(segments), 3)
+
+
+def _build_transcript_quality_metadata(
+    *,
+    provider: str,
+    provider_model: Optional[str],
+    detected_language: str,
+    raw_segments: List[Dict[str, Any]],
+    cleaned_segments: List[Dict[str, Any]],
+    post_processing_applied: bool,
+) -> Dict[str, Any]:
+    correction_count = sum(len(_segment_corrections(segment)) for segment in cleaned_segments)
+    low_confidence_segment_count = sum(
+        1
+        for segment in cleaned_segments
+        if segment.get("confidence_score") is not None and float(segment.get("confidence_score") or 0) < 0.6
+    )
+    quality_status = "healthy"
+    if not cleaned_segments or low_confidence_segment_count > max(1, len(cleaned_segments) // 2):
+        quality_status = "degraded"
+    return {
+        "provider": provider,
+        "provider_model": provider_model,
+        "detected_language": detected_language,
+        "raw_segment_count": len(raw_segments),
+        "cleaned_segment_count": len(cleaned_segments),
+        "correction_count": correction_count,
+        "speaker_assignment_rate": _speaker_assignment_rate(cleaned_segments),
+        "low_confidence_segment_count": low_confidence_segment_count,
+        "post_processing_applied": post_processing_applied,
+        "quality_status": quality_status,
+    }
+
+
+def build_transcript_artifacts(
+    *,
+    text: str,
+    segments: List[Dict[str, Any]],
+    language: str,
+    provider_name: str,
+    provider_model: Optional[str] = None,
+) -> Dict[str, Any]:
+    from src.api.core.nlp_support import get_phobert_processor, phobert_enabled_for
+
+    raw_text = text or ""
+    raw_segments = [normalize_segment_payload(segment, language) for segment in (segments or [])]
+    cleaned_text = raw_text
+    cleaned_segments = [dict(segment) for segment in raw_segments]
+    nlp_metadata = None
+    post_processed = False
+
+    if phobert_enabled_for(language):
+        try:
+            processor = get_phobert_processor()
+            processed = processor.process_finalize(raw_text, segments if isinstance(segments, list) else [])
+            cleaned_text = str(processed.get("text") or raw_text)
+            cleaned_segments = [
+                normalize_segment_payload(segment, language)
+                for segment in (processed.get("segments") or segments or [])
+            ]
+            nlp_metadata = processed.get("nlp_metadata")
+            post_processed = bool(processed.get("post_processed"))
+            raw_text = str(processed.get("raw_text") or raw_text)
+            raw_segments = [
+                normalize_segment_payload(segment, language)
+                for segment in (processed.get("raw_segments") or segments or [])
+            ]
+        except Exception as exc:
+            logger.warning("PhoBERT finalize post-processing skipped: %s", exc, exc_info=True)
+
+    quality_metadata = _build_transcript_quality_metadata(
+        provider=provider_name,
+        provider_model=provider_model,
+        detected_language=language,
+        raw_segments=raw_segments,
+        cleaned_segments=cleaned_segments,
+        post_processing_applied=post_processed,
+    )
+
+    return {
+        "raw_text": raw_text,
+        "cleaned_text": cleaned_text,
+        "raw_segments": raw_segments,
+        "cleaned_segments": cleaned_segments,
+        "nlp_metadata": nlp_metadata,
+        "post_processed": post_processed,
+        "quality_metadata": quality_metadata,
+    }
+
+
+def normalize_summary_language(language: Optional[str], fallback: str = "vi") -> str:
+    normalized = (language or fallback or "vi").lower().strip()
+    if normalized not in SUPPORTED_SUMMARY_LANGUAGES:
+        return fallback if fallback in SUPPORTED_SUMMARY_LANGUAGES else "vi"
+    return normalized
+
+
+def resolve_meeting_summary_language(
+    *,
+    requested_language: Optional[str],
+    current_user: models.User,
+    transcript_language: Optional[str],
+) -> str:
+    if requested_language and requested_language != "auto":
+        return normalize_summary_language(requested_language)
+    if getattr(current_user, "language", None):
+        return normalize_summary_language(current_user.language)
+    if transcript_language and transcript_language != "auto":
+        return normalize_summary_language(transcript_language)
+    return "vi"
+
+
+def ordered_summary_languages(primary_language: str) -> List[str]:
+    primary = normalize_summary_language(primary_language)
+    return [primary, *[language for language in SUPPORTED_SUMMARY_LANGUAGES if language != primary]]
+
+
+def build_summary_generation_state(summaries: List[models.MeetingSummary]) -> Dict[str, str]:
+    state: Dict[str, str] = {language: "MISSING" for language in SUPPORTED_SUMMARY_LANGUAGES}
+    for summary in summaries or []:
+        language = normalize_summary_language(getattr(summary, "language", None))
+        state[language] = getattr(summary, "processing_status", None) or "PENDING"
+    return state
+
+
+def _get_translation_lock(meeting_id: str) -> asyncio.Lock:
+    lock = _translation_locks.get(meeting_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _translation_locks[meeting_id] = lock
+    return lock
+
+
+def _serialize_summary_payload(payload: schemas.MeetingAnalysisOutput) -> Dict[str, Any]:
+    return {
+        "meeting_summary": payload.meeting_summary,
+        "key_points": payload.key_points,
+        "decisions": payload.decisions,
+        "action_items": [item.model_dump() for item in payload.action_items],
+        "risks": payload.risks,
+        "open_questions": payload.open_questions,
+        "timeline_highlights": payload.timeline_highlights,
+        "speaker_summaries": payload.speaker_summaries,
+    }
+
+
+def _deserialize_summary_payload(summary: models.MeetingSummary) -> schemas.MeetingAnalysisOutput:
+    return schemas.MeetingAnalysisOutput.model_validate(
+        {
+            "meeting_summary": summary.meeting_summary or "",
+            "key_points": summary.key_points or [],
+            "decisions": summary.decisions or [],
+            "action_items": summary.action_items or [],
+            "risks": summary.risks or [],
+            "open_questions": summary.open_questions or [],
+            "timeline_highlights": summary.timeline_highlights or [],
+            "speaker_summaries": summary.speaker_summaries or [],
+        }
+    )
+
+
+def _validate_translation_shape(
+    source_payload: schemas.MeetingAnalysisOutput,
+    translated_payload: schemas.MeetingAnalysisOutput,
+) -> None:
+    source = _serialize_summary_payload(source_payload)
+    translated = _serialize_summary_payload(translated_payload)
+    fields = (
+        "key_points",
+        "decisions",
+        "action_items",
+        "risks",
+        "open_questions",
+        "timeline_highlights",
+        "speaker_summaries",
+    )
+    for field in fields:
+        expected = len(source[field])
+        actual = len(translated[field])
+        if expected != actual:
+            raise ValueError(f"Translated field '{field}' count mismatch: expected {expected}, got {actual}")
+
+
+def _build_summary_data(
+    *,
+    language: str,
+    summary_payload: schemas.MeetingAnalysisOutput,
+    summary_status: str,
+    summary_error_message: str,
+    ai_provider_name: str,
+    model_name: str,
+    generation_group_id: str,
+    summary_kind: str,
+    source_summary_id: Optional[str],
+) -> Dict[str, Any]:
+    serialized_payload = _serialize_summary_payload(summary_payload)
+    return {
+        "language": language,
+        "generation_group_id": generation_group_id,
+        "source_summary_id": source_summary_id,
+        "summary_kind": summary_kind,
+        "key_points": serialized_payload["key_points"],
+        "decisions": serialized_payload["decisions"],
+        "action_items": serialized_payload["action_items"],
+        "risks": serialized_payload["risks"],
+        "open_questions": serialized_payload["open_questions"],
+        "timeline_highlights": serialized_payload["timeline_highlights"],
+        "speaker_summaries": serialized_payload["speaker_summaries"],
+        "meeting_summary": summary_payload.meeting_summary if summary_status == "COMPLETED" else summary_error_message,
+        "ai_provider": ai_provider_name,
+        "model_name": model_name,
+        "processing_status": summary_status,
+    }
+
+
+def _upsert_summary_row(
+    db: Session,
+    *,
+    meeting_id: str,
+    language: str,
+    summary_data: Dict[str, Any],
+) -> models.MeetingSummary:
+    from src.api.crud import create_meeting_summary
+
+    summary_db = (
+        db.query(models.MeetingSummary)
+        .filter(
+            models.MeetingSummary.meeting_id == meeting_id,
+            models.MeetingSummary.language == language,
+        )
+        .order_by(models.MeetingSummary.created_at.desc())
+        .first()
+    )
+    if summary_db:
+        for key, value in summary_data.items():
+            setattr(summary_db, key, value)
+        db.flush()
+        return summary_db
+    return create_meeting_summary(db, {"meeting_id": meeting_id, **summary_data})
+
+
+def _generate_and_persist_summary_for_language(
+    *,
+    meeting_id: str,
+    db: Session,
+    current_user: models.User,
+    transcript_text: str,
+    segments_to_save: List[Dict[str, Any]],
+    language: str,
+    prompts: Dict[str, Dict[str, Any]],
+    nlp_metadata: Optional[Dict[str, Any]],
+    persist_action_items_to_db: bool,
+    generation_group_id: str,
+    summary_kind: str,
+    source_summary_id: Optional[str] = None,
+    source_summary_payload: Optional[schemas.MeetingAnalysisOutput] = None,
+):
+    from src.api.core.meeting_operations import format_summary_payload, get_speaker_mapping_dict
+    from src.api.core.nlp_support import (
+        _extract_json_object,
+        _normalize_analysis_payload,
+        _split_ai_owner_text,
+        _try_parse_date,
+        build_speaker_aware_transcript,
+        build_structured_summary_prompts,
+        build_structured_summary_translation_prompts,
+    )
+    from src.api.crud import create_action_item
+    from src.providers.router_llm import RouterLLMAdapter
+
+    language = normalize_summary_language(language)
+    summary_status = "FAILED"
+    summary_payload = _empty_summary_payload()
+    summary_error_message = ""
+    ai_provider_name = "router"
+    router = RouterLLMAdapter()
+    if source_summary_payload is None:
+        prompt_key = f"summary_{language}"
+        custom_instruction = prompts.get(prompt_key, prompts.get("summary_vi", {})).get(
+            "content",
+            "Create a concise executive meeting brief. Focus on outcomes, explicit decisions, and next steps only.",
+        )
+        speaker_map = get_speaker_mapping_dict(db, meeting_id)
+        speaker_aware_transcript = build_speaker_aware_transcript(transcript_text, segments_to_save, speaker_map)
+        system_prompt, user_prompt = build_structured_summary_prompts(
+            speaker_aware_transcript,
+            custom_instruction,
+            language,
+            nlp_metadata,
+        )
+    else:
+        system_prompt, user_prompt = build_structured_summary_translation_prompts(
+            _serialize_summary_payload(source_summary_payload),
+            language,
+        )
+
+    raw_response = None
+    errors: List[str] = []
+    summary_error_type = ""
+    retry_after_seconds: Optional[float] = None
+    if router.enabled:
+        try:
+            raw_response = router.structured_completion(system_prompt, user_prompt)
+            if not raw_response:
+                raise ValueError(router.last_error or "Router LLM returned empty response")
+        except Exception as exc:
+            summary_error_message = f"Router LLM summarization failed: {exc}"
+            errors.append(summary_error_message)
+            raw_response = None
+    else:
+        summary_error_message = router.last_error or "Router LLM is not configured"
+        errors.append(summary_error_message)
+
+    if not raw_response and router.last_error:
+        summary_error_message = router.last_error
+        summary_error_type = router.last_error_type or "router_error"
+        retry_after_seconds = router.last_retry_after_seconds
+
+    if not raw_response:
+        google_key = os.getenv("GOOGLE_API_KEY")
+        if google_key:
+            try:
+                from src.providers.google_llm import GoogleLLMAdapter
+                google = GoogleLLMAdapter(api_key=google_key)
+                if google.client and source_summary_payload is None:
+                    raw_response = google.chat_completion(system_prompt, user_prompt)
+                    if raw_response:
+                        ai_provider_name = "google-gemini"
+                        if errors:
+                            errors.pop()
+            except Exception as exc:
+                fallback_error = f"Google Gemini fallback also failed: {exc}"
+                errors.append(fallback_error)
+
+    if raw_response:
+        try:
+            structured_payload = _extract_json_object(raw_response)
+            summary_payload = _normalize_analysis_payload(structured_payload)
+            if source_summary_payload is not None:
+                _validate_translation_shape(source_summary_payload, summary_payload)
+            summary_status = "COMPLETED"
+        except Exception as parse_error:
+            summary_error_message = f"Failed to parse LLM response: {parse_error}"
+            summary_error_type = "translation_shape_mismatch" if source_summary_payload is not None else "parse_error"
+            errors.append(summary_error_message)
+
+    summary_data = _build_summary_data(
+        language=language,
+        summary_payload=summary_payload,
+        summary_status=summary_status,
+        summary_error_message=summary_error_message,
+        ai_provider_name=ai_provider_name,
+        model_name=router.model if ai_provider_name == "router" else ai_provider_name,
+        generation_group_id=generation_group_id,
+        summary_kind=summary_kind,
+        source_summary_id=source_summary_id,
+    )
+    summary_db = _upsert_summary_row(db, meeting_id=meeting_id, language=language, summary_data=summary_data)
+    if persist_action_items_to_db:
+        db.query(models.ActionItem).filter(models.ActionItem.summary_id == summary_db.id).delete(synchronize_session=False)
+        db.flush()
+
+    if summary_status == "COMPLETED" and persist_action_items_to_db:
+        for ai in summary_payload.action_items:
+            owner = (ai.owner or "").strip() or None
+            deadline = (ai.deadline or "").strip() or None
+            resolved_assignees = []
+            for owner_part in _split_ai_owner_text(owner or ""):
+                participant = db.query(models.MeetingParticipant).filter(
+                    models.MeetingParticipant.meeting_id == meeting_id,
+                    or_(
+                        models.MeetingParticipant.name.ilike(f"%{owner_part}%"),
+                        models.MeetingParticipant.email.ilike(f"%{owner_part}%"),
+                    )
+                ).first()
+                if participant and (participant.email or (participant.user and participant.user.email)):
+                    resolved_assignees.append({
+                        "user_id": participant.user_id,
+                        "email": participant.email or participant.user.email,
+                        "display_name": participant.name or owner_part,
+                    })
+
+            create_action_item(db, {
+                "meeting_id": meeting_id,
+                "summary_id": summary_db.id,
+                "title": ai.task,
+                "description": None,
+                "assignees": resolved_assignees,
+                "assigned_email": resolved_assignees[0]["email"] if resolved_assignees else None,
+                "due_date": _try_parse_date(deadline),
+                "status": "PENDING",
+                "priority": "MEDIUM",
+            }, created_by=current_user.id)
+
+    return {
+        "summary_db": summary_db,
+        "summary_status": summary_status,
+        "summary_payload": summary_payload,
+        "summary_error_message": summary_error_message,
+        "summary_broadcast_payload": format_summary_payload(summary_db),
+        "errors": errors,
+        "summary_error_type": summary_error_type,
+        "retry_after_seconds": retry_after_seconds,
+    }
+
+
 # ─── Transcript Finalization ────────────────────────────────────────────────
 
 
@@ -190,57 +630,158 @@ def _normalize_chunks_for_concat(chunk_files: list[str], temp_dir: str) -> list[
     return normalized
 
 
+async def _process_translation_queue(
+    *,
+    meeting_id: str,
+    canonical_language: str,
+    canonical_summary_id: str,
+    generation_group_id: str,
+    current_user_id: str,
+    db_bind: Any = None,
+) -> None:
+    from src.api.core.meeting_operations import meeting_room_manager
+
+    lock = _get_translation_lock(meeting_id)
+    async with lock:
+        if _latest_translation_batches.get(meeting_id) != generation_group_id:
+            return
+
+        if db_bind is not None:
+            background_session_factory = sessionmaker(
+                autocommit=False,
+                autoflush=False,
+                bind=db_bind,
+                expire_on_commit=False,
+            )
+            session = background_session_factory()
+        else:
+            session = SessionLocal()
+        try:
+            current_user = session.query(models.User).filter(models.User.id == current_user_id).first()
+            canonical_summary = session.query(models.MeetingSummary).filter(models.MeetingSummary.id == canonical_summary_id).first()
+            if not current_user or not canonical_summary:
+                return
+
+            canonical_payload = _deserialize_summary_payload(canonical_summary)
+            for language in ordered_summary_languages(canonical_language):
+                if language == canonical_language:
+                    continue
+                if _latest_translation_batches.get(meeting_id) != generation_group_id:
+                    return
+
+                processing_data = _build_summary_data(
+                    language=language,
+                    summary_payload=_empty_summary_payload(),
+                    summary_status="PROCESSING",
+                    summary_error_message="Đang dịch từ bản gốc.",
+                    ai_provider_name=canonical_summary.ai_provider or "router",
+                    model_name=canonical_summary.model_name or "router",
+                    generation_group_id=generation_group_id,
+                    summary_kind="translation",
+                    source_summary_id=canonical_summary.id,
+                )
+                _upsert_summary_row(session, meeting_id=meeting_id, language=language, summary_data=processing_data)
+                session.commit()
+                await meeting_room_manager.broadcast(
+                    meeting_id,
+                    {
+                        "type": "ai.notes.started",
+                        "meeting_id": meeting_id,
+                        "summary_status": "PROCESSING",
+                        "language": language,
+                        "generation_group_id": generation_group_id,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
+
+                for attempt in range(1, 4):
+                    if _latest_translation_batches.get(meeting_id) != generation_group_id:
+                        return
+                    result = _generate_and_persist_summary_for_language(
+                        meeting_id=meeting_id,
+                        db=session,
+                        current_user=current_user,
+                        transcript_text="",
+                        segments_to_save=[],
+                        language=language,
+                        prompts={},
+                        nlp_metadata=None,
+                        persist_action_items_to_db=False,
+                        generation_group_id=generation_group_id,
+                        summary_kind="translation",
+                        source_summary_id=canonical_summary.id,
+                        source_summary_payload=canonical_payload,
+                    )
+                    session.commit()
+                    if result["summary_status"] == "COMPLETED":
+                        await meeting_room_manager.broadcast(
+                            meeting_id,
+                            {
+                                "type": "ai.notes.completed",
+                                "meeting_id": meeting_id,
+                                "summary_status": result["summary_status"],
+                                "language": language,
+                                "summary": result["summary_broadcast_payload"],
+                                "error": "",
+                                "error_type": None,
+                                "generation_group_id": generation_group_id,
+                                "timestamp": datetime.now(timezone.utc).isoformat(),
+                            },
+                        )
+                        break
+                    if result["summary_error_type"] != "rate_limit" or attempt >= 3:
+                        await meeting_room_manager.broadcast(
+                            meeting_id,
+                            {
+                                "type": "ai.notes.failed",
+                                "meeting_id": meeting_id,
+                                "summary_status": result["summary_status"],
+                                "language": language,
+                                "summary": result["summary_broadcast_payload"],
+                                "error": result["summary_error_message"],
+                                "error_type": result["summary_error_type"] or None,
+                                "generation_group_id": generation_group_id,
+                                "timestamp": datetime.now(timezone.utc).isoformat(),
+                            },
+                        )
+                        break
+                    retry_after = result["retry_after_seconds"] or 1.0
+                    await asyncio.sleep(max(retry_after, 0.5) * attempt)
+        finally:
+            session.close()
+
+
 async def finalize_meeting_transcript(
     meeting_id: str,
     db: Session,
     current_user: models.User,
     body: Optional[Dict[str, Any]] = None,
+    background_tasks: Optional[BackgroundTasks] = None,
 ):
     """Save transcript from request or drafts, then summarize and persist stable meeting artifacts."""
-    from src.api.core.admin_runtime import ADMIN_PROMPTS
-    from src.api.core.meeting_operations import (
-        format_summary_payload,
-        get_speaker_mapping_dict,
-        meeting_room_manager,
-        require_meeting_room_access,
-    )
-    from src.api.core.nlp_support import (
-        _extract_json_object,
-        _normalize_analysis_payload,
-        _split_ai_owner_text,
-        _try_parse_date,
-        build_speaker_aware_transcript,
-        build_structured_summary_prompts,
-        get_phobert_processor,
-        phobert_enabled_for,
-    )
+    from src.api.core.admin_runtime import get_admin_prompts_snapshot
+    from src.api.core.meeting_operations import meeting_room_manager, require_meeting_room_access
     from src.api.crud import (
-        create_action_item,
         create_audio_file,
-        create_meeting_summary,
         create_transcript,
         create_transcript_segments_bulk,
         update_meeting,
     )
-    from src.providers.router_llm import RouterLLMAdapter
 
+    prompts = get_admin_prompts_snapshot(db)
     body = body or {}
     full_text = body.get("transcript", "")
     segments = body.get("segments", [])
     req_language = body.get("language", "")
     regenerate = bool(body.get("regenerate", False))
+    full_regenerate = bool(body.get("full_regenerate", True))
     generate_summary = bool(body.get("generate_summary", True))
-    generate_action_items = bool(body.get("generate_action_items", True))
+    generate_action_items = bool(body.get("generate_action_items", False))
     errors: List[str] = []
 
     meeting = db.query(models.Meeting).filter(models.Meeting.id == meeting_id).first()
     if not meeting:
         raise HTTPException(status_code=404, detail="Meeting not found")
-
-    language = req_language or getattr(meeting, "language", None) or getattr(current_user, "language", None) or "vi"
-    language = language.lower().strip() if language else "vi"
-    if language not in ("vi", "en", "zh", "ja", "ko"):
-        language = "vi"
 
     require_meeting_room_access(db, current_user, meeting)
     original_meeting_status = meeting.status
@@ -254,10 +795,12 @@ async def finalize_meeting_transcript(
         full_text = draft_payload["transcript"]
     if not segments:
         segments = draft_payload["segments"]
-    if (not req_language or req_language == "auto") and draft_payload["language"] != "auto":
-        language = draft_payload["language"]
-        if language not in ("vi", "en", "zh", "ja", "ko"):
-            language = "vi"
+    transcript_language_hint = draft_payload["language"] if draft_payload["language"] != "auto" else None
+    language = resolve_meeting_summary_language(
+        requested_language=req_language,
+        current_user=current_user,
+        transcript_language=transcript_language_hint,
+    )
 
     if not isinstance(full_text, str) or not full_text.strip():
         return {
@@ -272,22 +815,30 @@ async def finalize_meeting_transcript(
                 action_items=[],
             ),
             "nlp_metadata": None,
+            "post_processing_applied": False,
+            "quality_status": "degraded",
+            "correction_count": 0,
             "errors": errors,
+            "canonical_summary_language": language,
+            "translation_queue_started": False,
+            "generation_group_id": None,
+            "summary_error_type": None,
+            "summary_error_message": None,
         }
 
-    nlp_metadata = None
-    post_processed = False
-    if phobert_enabled_for(language):
-        try:
-            processor = get_phobert_processor()
-            processed = processor.process_finalize(full_text, segments if isinstance(segments, list) else [])
-            full_text = str(processed.get("text") or full_text)
-            segments = processed.get("segments") or segments
-            nlp_metadata = processed.get("nlp_metadata")
-            post_processed = bool(processed.get("post_processed"))
-        except Exception as nlp_error:
-            logger.warning("PhoBERT finalize post-processing skipped: %s", nlp_error, exc_info=True)
-            errors.append(f"PhoBERT post-processing skipped: {nlp_error}")
+    provider_name = os.getenv("STT_PROVIDER", "deepgram")
+    transcript_artifacts = build_transcript_artifacts(
+        text=full_text,
+        segments=segments if isinstance(segments, list) else [],
+        language=language,
+        provider_name=provider_name,
+    )
+    full_text = transcript_artifacts["cleaned_text"]
+    segments = transcript_artifacts["cleaned_segments"]
+    raw_text = transcript_artifacts["raw_text"]
+    nlp_metadata = transcript_artifacts["nlp_metadata"]
+    post_processed = transcript_artifacts["post_processed"]
+    quality_metadata = transcript_artifacts["quality_metadata"]
 
     try:
         if meeting.status == "upcoming":
@@ -327,12 +878,14 @@ async def finalize_meeting_transcript(
                 if (segment.text or "").strip()
             ]
         db_transcript.content = full_text
+        db_transcript.raw_content = raw_text
         db_transcript.language = language
         db_transcript.word_count = len(full_text.split())
         db_transcript.processing_status = "COMPLETED"
-        db_transcript.stt_provider = os.getenv("STT_PROVIDER", "deepgram")
+        db_transcript.stt_provider = provider_name
         db_transcript.post_processed = post_processed
         db_transcript.nlp_metadata = nlp_metadata
+        db_transcript.quality_metadata = quality_metadata
         if segments_to_save:
             db.query(models.TranscriptSegment).filter(
                 models.TranscriptSegment.transcript_id == db_transcript.id,
@@ -342,12 +895,14 @@ async def finalize_meeting_transcript(
         db_transcript = create_transcript(db, {
             "meeting_id": meeting_id,
             "content": full_text,
+            "raw_content": raw_text,
             "language": language,
             "word_count": len(full_text.split()),
             "processing_status": "COMPLETED",
-            "stt_provider": os.getenv("STT_PROVIDER", "deepgram"),
+            "stt_provider": provider_name,
             "post_processed": post_processed,
             "nlp_metadata": nlp_metadata,
+            "quality_metadata": quality_metadata,
         })
 
     if segments_to_save:
@@ -445,17 +1000,6 @@ async def finalize_meeting_transcript(
     except Exception as e:
         logger.error(f"Audio concatenation failed for meeting {meeting_id}: {e}")
 
-    summary_status = "FAILED"
-    summary_payload = schemas.MeetingAnalysisOutput(
-        meeting_summary="",
-        key_points=[],
-        decisions=[],
-        action_items=[],
-    )
-    summary_error_message = ""
-    ai_provider_name = "router"
-    router = RouterLLMAdapter()
-
     if not generate_summary:
         try:
             update_meeting(db, meeting_id, {"status": "completed"})
@@ -469,153 +1013,51 @@ async def finalize_meeting_transcript(
             "has_transcript_draft": has_transcript_draft,
             "summary": None,
             "nlp_metadata": nlp_metadata,
+            "post_processing_applied": post_processed,
+            "quality_status": quality_metadata.get("quality_status"),
+            "correction_count": quality_metadata.get("correction_count"),
             "errors": errors,
+            "default_summary_language": language,
+            "canonical_summary_language": language,
+            "available_summary_languages": [],
+            "summary_generation_state": {},
+            "translation_queue_started": False,
+            "generation_group_id": None,
+            "summary_error_type": None,
+            "summary_error_message": None,
         }
-
-    prompt_key = f"summary_{language}"
-    custom_instruction = ADMIN_PROMPTS.get(prompt_key, ADMIN_PROMPTS.get("summary_vi", {})).get(
-        "content",
-        "Create a concise executive meeting brief. Focus on outcomes, explicit decisions, and next steps only.",
-    )
-    speaker_map = get_speaker_mapping_dict(db, meeting_id)
-    speaker_aware_transcript = build_speaker_aware_transcript(full_text, segments_to_save, speaker_map)
-    system_prompt, user_prompt = build_structured_summary_prompts(
-        speaker_aware_transcript,
-        custom_instruction,
-        language,
-        nlp_metadata,
-    )
-
-    raw_response = None
     await meeting_room_manager.broadcast(
         meeting_id,
         {
             "type": "ai.notes.started",
             "meeting_id": meeting_id,
             "summary_status": "PROCESSING",
+            "language": language,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         },
     )
-
-    if router.enabled:
-        try:
-            raw_response = router.structured_completion(system_prompt, user_prompt)
-            if not raw_response:
-                raise ValueError(router.last_error or "Router LLM returned empty response")
-            if router.last_usage:
-                try:
-                    from src.api.crud.crud_system import create_cost_tracking
-                    usage = router.last_usage
-                    create_cost_tracking(db, {
-                        "meeting_id": meeting_id,
-                        "service": "llm",
-                        "api_endpoint": "groq",
-                        "model_name": usage.get("model", "unknown"),
-                        "input_tokens": usage.get("prompt_tokens", 0),
-                        "output_tokens": usage.get("completion_tokens", 0),
-                        "cost_usd": 0.0,
-                    })
-                except Exception as cost_err:
-                    logger.warning(f"Failed to log Groq LLM cost: {cost_err}")
-        except Exception as e:
-            error_message = f"Router LLM summarization failed: {e}"
-            logger.error(error_message, exc_info=True)
-            errors.append(error_message)
-            summary_error_message = error_message
-            raw_response = None
-    else:
-        summary_error_message = router.last_error or "Router LLM is not configured"
-        errors.append(summary_error_message)
-
-    if not raw_response:
-        google_key = os.getenv("GOOGLE_API_KEY")
-        if google_key:
-            logger.info("Router LLM failed, falling back to Google Gemini for summarization")
-            try:
-                from src.providers.google_llm import GoogleLLMAdapter
-                google = GoogleLLMAdapter(api_key=google_key)
-                if google.client:
-                    raw_response = google.chat_completion(system_prompt, user_prompt)
-                    if raw_response:
-                        ai_provider_name = "google-gemini"
-                        if errors:
-                            errors.pop()
-                        logger.info("Google Gemini fallback succeeded")
-            except Exception as ge:
-                fallback_error = f"Google Gemini fallback also failed: {ge}"
-                logger.error(fallback_error, exc_info=True)
-                errors.append(fallback_error)
-
-    if raw_response:
-        try:
-            structured_payload = _extract_json_object(raw_response)
-            summary_payload = _normalize_analysis_payload(structured_payload)
-            summary_status = "COMPLETED"
-        except Exception as parse_error:
-            error_message = f"Failed to parse LLM response: {parse_error}"
-            logger.error(error_message, exc_info=True)
-            errors.append(error_message)
-            summary_error_message = error_message
-
-    summary_db = db.query(models.MeetingSummary).filter(
-        models.MeetingSummary.meeting_id == meeting_id,
-        models.MeetingSummary.language == language,
-    ).order_by(models.MeetingSummary.created_at.desc()).first()
-    summary_action_items = [item.model_dump() for item in summary_payload.action_items] if generate_action_items else []
-    summary_data = {
-        "language": language,
-        "key_points": summary_payload.key_points,
-        "decisions": summary_payload.decisions,
-        "action_items": summary_action_items,
-        "risks": summary_payload.risks,
-        "open_questions": summary_payload.open_questions,
-        "timeline_highlights": summary_payload.timeline_highlights,
-        "speaker_summaries": summary_payload.speaker_summaries,
-        "meeting_summary": summary_payload.meeting_summary if summary_status == "COMPLETED" else summary_error_message,
-        "ai_provider": ai_provider_name,
-        "model_name": router.model if ai_provider_name == "router" else ai_provider_name,
-        "processing_status": summary_status,
-    }
-    if summary_db:
-        for key, value in summary_data.items():
-            setattr(summary_db, key, value)
-        db.query(models.ActionItem).filter(models.ActionItem.summary_id == summary_db.id).delete(synchronize_session=False)
-        db.flush()
-    else:
-        summary_db = create_meeting_summary(db, {"meeting_id": meeting_id, **summary_data})
-
-    if summary_status == "COMPLETED" and generate_action_items:
-        for ai in summary_payload.action_items:
-            owner = (ai.owner or "").strip() or None
-            deadline = (ai.deadline or "").strip() or None
-
-            resolved_assignees = []
-            for owner_part in _split_ai_owner_text(owner or ""):
-                participant = db.query(models.MeetingParticipant).filter(
-                    models.MeetingParticipant.meeting_id == meeting_id,
-                    or_(
-                        models.MeetingParticipant.name.ilike(f"%{owner_part}%"),
-                        models.MeetingParticipant.email.ilike(f"%{owner_part}%"),
-                    )
-                ).first()
-                if participant and (participant.email or (participant.user and participant.user.email)):
-                    resolved_assignees.append({
-                        "user_id": participant.user_id,
-                        "email": participant.email or participant.user.email,
-                        "display_name": participant.name or owner_part,
-                    })
-
-            create_action_item(db, {
-                "meeting_id": meeting_id,
-                "summary_id": summary_db.id,
-                "title": ai.task,
-                "description": None,
-                "assignees": resolved_assignees,
-                "assigned_email": resolved_assignees[0]["email"] if resolved_assignees else None,
-                "due_date": _try_parse_date(deadline),
-                "status": "PENDING",
-                "priority": "MEDIUM",
-            }, created_by=current_user.id)
+    generation_group_id = str(uuid.uuid4())
+    primary_summary_result = _generate_and_persist_summary_for_language(
+        meeting_id=meeting_id,
+        db=db,
+        current_user=current_user,
+        transcript_text=full_text,
+        segments_to_save=segments_to_save,
+        language=language,
+        prompts=prompts,
+        nlp_metadata=nlp_metadata,
+        persist_action_items_to_db=generate_action_items,
+        generation_group_id=generation_group_id,
+        summary_kind="canonical",
+        source_summary_id=None,
+        source_summary_payload=None,
+    )
+    summary_db = primary_summary_result["summary_db"]
+    summary_status = primary_summary_result["summary_status"]
+    summary_payload = primary_summary_result["summary_payload"]
+    summary_error_message = primary_summary_result["summary_error_message"]
+    summary_error_type = primary_summary_result["summary_error_type"]
+    errors.extend(primary_summary_result["errors"])
 
     final_meeting_status = "completed" if summary_status == "COMPLETED" else "failed" if regenerate else "completed"
     if regenerate and original_meeting_status == "completed" and summary_status != "COMPLETED":
@@ -625,7 +1067,52 @@ async def finalize_meeting_transcript(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     db.commit()
-    summary_broadcast_payload = format_summary_payload(summary_db) or {
+
+    translation_queue_started = False
+    if summary_status == "COMPLETED" and full_regenerate:
+        _latest_translation_batches[meeting_id] = generation_group_id
+        for summary_language in ordered_summary_languages(language):
+            if summary_language == language:
+                continue
+            processing_data = _build_summary_data(
+                language=summary_language,
+                summary_payload=_empty_summary_payload(),
+                summary_status="PROCESSING",
+                summary_error_message="Đang dịch từ bản gốc.",
+                ai_provider_name=summary_db.ai_provider or "router",
+                model_name=summary_db.model_name or "router",
+                generation_group_id=generation_group_id,
+                summary_kind="translation",
+                source_summary_id=summary_db.id,
+            )
+            _upsert_summary_row(db, meeting_id=meeting_id, language=summary_language, summary_data=processing_data)
+        db.commit()
+        translation_queue_started = True
+        if background_tasks is not None:
+                background_tasks.add_task(
+                    _process_translation_queue,
+                    meeting_id=meeting_id,
+                    canonical_language=language,
+                    canonical_summary_id=summary_db.id,
+                    generation_group_id=generation_group_id,
+                    current_user_id=current_user.id,
+                    db_bind=db.get_bind(),
+                )
+        else:
+            asyncio.create_task(
+                _process_translation_queue(
+                    meeting_id=meeting_id,
+                    canonical_language=language,
+                    canonical_summary_id=summary_db.id,
+                    generation_group_id=generation_group_id,
+                    current_user_id=current_user.id,
+                    db_bind=db.get_bind(),
+                )
+            )
+
+    available_summaries = db.query(models.MeetingSummary).filter(models.MeetingSummary.meeting_id == meeting_id).all()
+    summary_generation_state = build_summary_generation_state(available_summaries)
+    summary_broadcast_payload = primary_summary_result["summary_broadcast_payload"] or {
         "meeting_summary": summary_payload.meeting_summary,
         "key_points": summary_payload.key_points,
         "decisions": summary_payload.decisions,
@@ -644,8 +1131,11 @@ async def finalize_meeting_transcript(
             "type": ai_event_type,
             "meeting_id": meeting_id,
             "summary_status": summary_status,
+            "language": language,
             "summary": summary_broadcast_payload,
             "error": summary_error_message if summary_status != "COMPLETED" else "",
+            "error_type": summary_error_type or None,
+            "generation_group_id": generation_group_id,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         },
     )
@@ -657,5 +1147,16 @@ async def finalize_meeting_transcript(
         "has_transcript_draft": has_transcript_draft,
         "summary": summary_payload,
         "nlp_metadata": nlp_metadata,
+        "post_processing_applied": post_processed,
+        "quality_status": quality_metadata.get("quality_status"),
+        "correction_count": quality_metadata.get("correction_count"),
         "errors": errors,
+        "default_summary_language": language,
+        "canonical_summary_language": language,
+        "available_summary_languages": [summary.language for summary in available_summaries if summary.processing_status == "COMPLETED"],
+        "summary_generation_state": summary_generation_state,
+        "translation_queue_started": translation_queue_started,
+        "generation_group_id": generation_group_id,
+        "summary_error_type": summary_error_type or None,
+        "summary_error_message": summary_error_message or None,
     }

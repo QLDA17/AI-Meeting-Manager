@@ -83,7 +83,23 @@ class ContextCorrectionPipeline:
 
     @staticmethod
     def extract_terms(text: str) -> List[str]:
-        return []
+        if not text:
+            return []
+
+        patterns = [
+            r"\b[A-Z]{2,}(?:/[A-Z]{2,})*\b",
+            r"\b[A-Z][a-z]+(?:/[A-Z][a-z]+)?\b",
+            r"\bv\d+(?:\.\d+)+\b",
+        ]
+        terms: List[str] = []
+        seen = set()
+        for pattern in patterns:
+            for match in re.finditer(pattern, text):
+                token = match.group(0)
+                if token not in seen:
+                    seen.add(token)
+                    terms.append(token)
+        return terms
 
     def _correct_with_llm(self, text: str, dialect_hint: str) -> Optional[str]:
         try:

@@ -53,7 +53,6 @@ class AdminBroadcastRequest(BaseModel):
 
 
 class AdminSettingsUpdateRequest(BaseModel):
-    require_2fa_admin: Optional[bool] = None
     public_registration_enabled: Optional[bool] = None
     storage_limit_gb_per_org: Optional[int] = None
     transcript_retention_policy: Optional[str] = None
@@ -124,22 +123,29 @@ def admin_get_ai_usage(
 
 
 @router.get("/api/admin/prompts")
-def admin_get_prompts(current_user=Depends(auth.get_current_user)):
-    return get_admin_prompts_payload(current_user)
+def admin_get_prompts(
+    db: Session = Depends(get_db),
+    current_user=Depends(auth.get_current_user),
+):
+    return get_admin_prompts_payload(db, current_user)
 
 
 @router.put("/api/admin/prompts/{prompt_key}")
 def admin_update_prompt(
     prompt_key: str,
     payload: AdminPromptUpdateRequest,
+    db: Session = Depends(get_db),
     current_user=Depends(auth.get_current_user),
 ):
-    return update_admin_prompt_payload(prompt_key, payload.model_dump(), current_user)
+    return update_admin_prompt_payload(prompt_key, payload.model_dump(), db, current_user)
 
 
 @router.get("/api/admin/notifications")
-def admin_list_broadcasts(current_user=Depends(auth.get_current_user)):
-    return get_admin_broadcasts_payload(current_user)
+def admin_list_broadcasts(
+    db: Session = Depends(get_db),
+    current_user=Depends(auth.get_current_user),
+):
+    return get_admin_broadcasts_payload(db, current_user)
 
 
 @router.post("/api/admin/notifications")
@@ -152,8 +158,12 @@ def admin_create_broadcast(
 
 
 @router.delete("/api/admin/notifications/{notification_id}")
-def admin_delete_broadcast(notification_id: str, current_user=Depends(auth.get_current_user)):
-    return delete_admin_broadcast_payload(notification_id, current_user)
+def admin_delete_broadcast(
+    notification_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(auth.get_current_user),
+):
+    return delete_admin_broadcast_payload(notification_id, db, current_user)
 
 
 @router.get("/api/admin/audit-logs")
@@ -167,16 +177,20 @@ def admin_get_audit_logs(
 
 
 @router.get("/api/admin/settings")
-def admin_get_settings(current_user=Depends(auth.get_current_user)):
-    return get_admin_settings_payload(current_user)
+def admin_get_settings(
+    db: Session = Depends(get_db),
+    current_user=Depends(auth.get_current_user),
+):
+    return get_admin_settings_payload(db, current_user)
 
 
 @router.patch("/api/admin/settings")
 def admin_update_settings(
     payload: AdminSettingsUpdateRequest,
+    db: Session = Depends(get_db),
     current_user=Depends(auth.get_current_user),
 ):
-    return update_admin_settings_payload(payload.model_dump(exclude_unset=True), current_user)
+    return update_admin_settings_payload(payload.model_dump(exclude_unset=True), db, current_user)
 
 
 @router.get("/api/config/features")

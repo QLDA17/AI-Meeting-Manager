@@ -71,6 +71,15 @@ function getAuthToken(): string {
   }
 }
 
+function getPreferredLanguage(): string {
+  const sessionStr = localStorage.getItem("session");
+  try {
+    return JSON.parse(sessionStr || "{}")?.user?.language || "vi";
+  } catch {
+    return "vi";
+  }
+}
+
 function writeString(view: DataView, offset: number, str: string) {
   for (let i = 0; i < str.length; i++) {
     view.setUint8(offset + i, str.charCodeAt(i));
@@ -369,7 +378,7 @@ export function useAudioRecorder(
     ws.send(JSON.stringify({
       type: "stt.config",
       sampleRate: sampleRateRef.current,
-      language: "vi",
+      language: getPreferredLanguage(),
     }));
 
     const source = audioContext.createMediaStreamSource(localStream);
@@ -625,7 +634,7 @@ export function useAudioRecorder(
           {
             transcript: fullTranscriptRef.current,
             segments: allSegmentsRef.current,
-            language: language || "vi",
+            language: language || getPreferredLanguage(),
           },
           { timeout: 120000 }
         );

@@ -16,10 +16,9 @@ from sqlalchemy.orm import Session
 from src.api import models
 from src.api.core.app_state import config
 from src.api.core.meeting_operations import ensure_speaker_mapping
-from src.api.core.transcript_support import finalize_meeting_transcript
+from src.api.core.transcript_support import build_transcript_artifacts, finalize_meeting_transcript
 from src.api.database import SessionLocal
 from src.api.crud import create_transcript, create_transcript_segments_bulk, update_audio_file, update_meeting
-from src.api.core.nlp_support import get_phobert_processor, phobert_enabled_for
 from src.api.core.transcript_support import normalize_segment_payload
 from src.diarization.service import DiarizationService, Segment as DiarizationSegment
 from src.stt.service import STTService
@@ -279,30 +278,32 @@ def persist_transcript_without_summary(
     language: str,
     provider_name: str,
 ) -> None:
-    post_processed = False
-    nlp_metadata = None
-    if phobert_enabled_for(language):
-        try:
-            processor = get_phobert_processor()
-            processed = processor.process_finalize(text, segments)
-            text = str(processed.get("text") or text)
-            segments = processed.get("segments") or segments
-            nlp_metadata = processed.get("nlp_metadata")
-            post_processed = bool(processed.get("post_processed"))
-        except Exception as exc:
-            logger.warning("PhoBERT upload post-processing skipped: %s", exc, exc_info=True)
+    transcript_artifacts = build_transcript_artifacts(
+        text=text,
+        segments=segments,
+        language=language,
+        provider_name=provider_name,
+    )
+    text = transcript_artifacts["cleaned_text"]
+    segments = transcript_artifacts["cleaned_segments"]
+    raw_text = transcript_artifacts["raw_text"]
+    nlp_metadata = transcript_artifacts["nlp_metadata"]
+    post_processed = transcript_artifacts["post_processed"]
+    quality_metadata = transcript_artifacts["quality_metadata"]
 
     transcript = db.query(models.Transcript).filter(
         models.Transcript.meeting_id == meeting.id,
     ).order_by(models.Transcript.created_at.desc()).first()
     if transcript:
         transcript.content = text
+        transcript.raw_content = raw_text
         transcript.language = language
         transcript.word_count = len(text.split())
         transcript.processing_status = "COMPLETED"
         transcript.stt_provider = provider_name
         transcript.post_processed = post_processed
         transcript.nlp_metadata = nlp_metadata
+        transcript.quality_metadata = quality_metadata
         db.query(models.TranscriptSegment).filter(
             models.TranscriptSegment.transcript_id == transcript.id,
         ).delete(synchronize_session=False)
@@ -311,12 +312,14 @@ def persist_transcript_without_summary(
         transcript = create_transcript(db, {
             "meeting_id": meeting.id,
             "content": text,
+            "raw_content": raw_text,
             "language": language,
             "word_count": len(text.split()),
             "processing_status": "COMPLETED",
             "stt_provider": provider_name,
             "post_processed": post_processed,
             "nlp_metadata": nlp_metadata,
+            "quality_metadata": quality_metadata,
         })
 
     normalized_rows = []
@@ -343,7 +346,7 @@ class UploadMeetingJob:
     language: str = "auto"
     enable_diarization: bool = True
     enable_summary: bool = True
-    enable_action_items: bool = True
+    enable_action_items: bool = False
     enable_noise_cleanup: bool = True
     job_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     status: str = "queued"

@@ -42,7 +42,7 @@ from src.api.core.user_payloads import get_meeting_by_id, require_meeting_room_a
 from src.api.crud import add_meeting_participant, create_audio_file, create_meeting, update_meeting
 from src.api.database import SessionLocal, get_db
 from src.cost.cost_logger import CostLogger
-from src.api.core.admin_operations import ADMIN_PROMPTS
+from src.api.core.admin_runtime import get_admin_prompts_snapshot
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["stt"])
@@ -129,7 +129,7 @@ async def upload_audio(
     stt_provider: str = Form("deepgram"),
     enable_diarization: bool = Form(True),
     enable_summary: bool = Form(True),
-    enable_action_items: bool = Form(True),
+    enable_action_items: bool = Form(False),
     enable_noise_cleanup: bool = Form(True),
     db: Session = Depends(get_db),
     current_user = Depends(auth.get_current_user)
@@ -216,7 +216,7 @@ async def upload_audio(
         language=normalized_language,
         enable_diarization=parse_bool_form(enable_diarization, True),
         enable_summary=parse_bool_form(enable_summary, True),
-        enable_action_items=parse_bool_form(enable_action_items, True),
+        enable_action_items=parse_bool_form(enable_action_items, False),
         enable_noise_cleanup=parse_bool_form(enable_noise_cleanup, True),
     ))
     start_upload_job(job)
@@ -1051,7 +1051,8 @@ async def test_stt_analyze(
     )
     summary_error_message = ""
     prompt_key = f"summary_{language}"
-    custom_instruction = ADMIN_PROMPTS.get(prompt_key, ADMIN_PROMPTS.get("summary_vi", {})).get(
+    prompts = get_admin_prompts_snapshot(db)
+    custom_instruction = prompts.get(prompt_key, prompts.get("summary_vi", {})).get(
         "content",
         "Create a concise meeting brief. Focus on outcomes, explicit decisions, and next steps only.",
     )

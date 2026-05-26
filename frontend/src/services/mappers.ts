@@ -289,8 +289,50 @@ export const normalizeMeetingDetail = (meeting: any): MeetingDetail => ({
         startTime: asNumber(segment.start_time),
         endTime: asNumber(segment.end_time),
         text: segment.text ?? '',
+        originalText: segment.original_text ?? undefined,
         language: segment.language ?? 'auto',
         confidenceScore: segment.confidence_score != null ? asNumber(segment.confidence_score) : undefined,
+        speakerSource: segment.speaker_source ?? undefined,
+        speakerConfidence: segment.speaker_confidence != null ? asNumber(segment.speaker_confidence) : undefined,
+        corrections: Array.isArray(segment.corrections) ? segment.corrections : undefined,
+        nlpMetadata: segment.nlp_metadata ?? segment.nlpMetadata ?? undefined,
+      }))
+    : [],
+  cleanedTranscriptSegments: Array.isArray(meeting.cleaned_transcript_segments)
+    ? meeting.cleaned_transcript_segments.map((segment: any) => ({
+        id: segment.id,
+        transcriptId: segment.transcript_id,
+        speakerLabel: segment.speaker_display_name ?? segment.speaker_label ?? 'Speaker_01',
+        speakerRawLabel: segment.speaker_raw_label ?? segment.speaker_label ?? 'Speaker_01',
+        speakerDisplayName: segment.speaker_display_name ?? segment.speaker_label ?? 'Speaker_01',
+        startTime: asNumber(segment.start_time),
+        endTime: asNumber(segment.end_time),
+        text: segment.text ?? '',
+        originalText: segment.original_text ?? undefined,
+        language: segment.language ?? 'auto',
+        confidenceScore: segment.confidence_score != null ? asNumber(segment.confidence_score) : undefined,
+        speakerSource: segment.speaker_source ?? undefined,
+        speakerConfidence: segment.speaker_confidence != null ? asNumber(segment.speaker_confidence) : undefined,
+        corrections: Array.isArray(segment.corrections) ? segment.corrections : undefined,
+        nlpMetadata: segment.nlp_metadata ?? segment.nlpMetadata ?? undefined,
+      }))
+    : [],
+  rawTranscriptSegments: Array.isArray(meeting.raw_transcript_segments)
+    ? meeting.raw_transcript_segments.map((segment: any) => ({
+        id: segment.id,
+        transcriptId: segment.transcript_id,
+        speakerLabel: segment.speaker_display_name ?? segment.speaker_label ?? 'Speaker_01',
+        speakerRawLabel: segment.speaker_raw_label ?? segment.speaker_label ?? 'Speaker_01',
+        speakerDisplayName: segment.speaker_display_name ?? segment.speaker_label ?? 'Speaker_01',
+        startTime: asNumber(segment.start_time),
+        endTime: asNumber(segment.end_time),
+        text: segment.text ?? '',
+        originalText: segment.original_text ?? undefined,
+        language: segment.language ?? 'auto',
+        confidenceScore: segment.confidence_score != null ? asNumber(segment.confidence_score) : undefined,
+        speakerSource: segment.speaker_source ?? undefined,
+        speakerConfidence: segment.speaker_confidence != null ? asNumber(segment.speaker_confidence) : undefined,
+        corrections: Array.isArray(segment.corrections) ? segment.corrections : undefined,
         nlpMetadata: segment.nlp_metadata ?? segment.nlpMetadata ?? undefined,
       }))
     : [],
@@ -309,6 +351,9 @@ export const normalizeMeetingDetail = (meeting: any): MeetingDetail => ({
   summaries: Array.isArray(meeting.summaries)
     ? meeting.summaries.map((summary: any) => ({
         id: summary.id,
+        generationGroupId: summary.generation_group_id ?? summary.generationGroupId ?? undefined,
+        sourceSummaryId: summary.source_summary_id ?? summary.sourceSummaryId ?? undefined,
+        summaryKind: summary.summary_kind ?? summary.summaryKind ?? undefined,
         meetingSummary: summary.meeting_summary ?? '',
         keyPoints: summary.key_points ?? [],
         decisions: summary.decisions ?? [],
@@ -324,7 +369,10 @@ export const normalizeMeetingDetail = (meeting: any): MeetingDetail => ({
     : [],
   actionItems: Array.isArray(meeting.action_items) ? meeting.action_items.map(normalizeActionItem) : [],
   transcriptContent: meeting.transcript_content ?? undefined,
+  cleanedTranscriptContent: meeting.cleaned_transcript_content ?? meeting.transcript_content ?? undefined,
+  rawTranscriptContent: meeting.raw_transcript_content ?? meeting.transcript_content ?? undefined,
   transcriptLanguage: meeting.transcript_language ?? undefined,
+  transcriptQualityMetadata: meeting.transcript_quality_metadata ?? undefined,
   transcriptStatus: meeting.transcript_status ?? undefined,
   hasTranscriptDraft: Boolean(meeting.has_transcript_draft),
   activity: Array.isArray(meeting.activity)
@@ -385,6 +433,17 @@ export const normalizeMeetingDetail = (meeting: any): MeetingDetail => ({
       }))
     : [],
   speakerSummariesText: Array.isArray(meeting.speaker_summaries_text) ? meeting.speaker_summaries_text : [],
+  preferredSummaryLanguage: meeting.preferred_summary_language ?? meeting.preferredSummaryLanguage ?? undefined,
+  meetingDefaultSummaryLanguage: meeting.meeting_default_summary_language ?? meeting.meetingDefaultSummaryLanguage ?? undefined,
+  canonicalSummaryLanguage: meeting.canonical_summary_language ?? meeting.canonicalSummaryLanguage ?? undefined,
+  canonicalSummaryId: meeting.canonical_summary_id ?? meeting.canonicalSummaryId ?? undefined,
+  generationGroupId: meeting.generation_group_id ?? meeting.generationGroupId ?? undefined,
+  availableSummaryLanguages: Array.isArray(meeting.available_summary_languages)
+    ? meeting.available_summary_languages
+    : Array.isArray(meeting.availableSummaryLanguages)
+      ? meeting.availableSummaryLanguages
+      : [],
+  summaryGenerationState: meeting.summary_generation_state ?? meeting.summaryGenerationState ?? undefined,
   summaryStatus: meeting.summary_status ?? undefined,
   summaryErrorText: meeting.summary_error_text ?? undefined,
   summaryProvider: meeting.summary_provider ?? undefined,

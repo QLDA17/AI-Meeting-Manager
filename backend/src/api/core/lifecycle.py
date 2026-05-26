@@ -1,14 +1,17 @@
 """Application lifecycle: startup and shutdown events."""
 
+import asyncio
 import os
 import time
 import uuid
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
 from sqlalchemy.orm import joinedload
 
 from src.api import models
 from src.api.core.app_state import config, logger
+from src.api.core.admin_runtime import ensure_admin_runtime_tables, seed_admin_runtime_defaults
 from src.api.database import engine, SessionLocal, health_check as db_health_check, close_db_connections
 
 
@@ -40,7 +43,9 @@ def _ensure_column(table_name: str, column_name: str, ddl: str) -> None:
 def _ensure_meeting_runtime_columns() -> None:
     _ensure_column("transcript_segments", "language", "language VARCHAR(10) DEFAULT 'auto'")
     _ensure_column("transcripts", "post_processed", "post_processed BOOLEAN DEFAULT FALSE")
+    _ensure_column("transcripts", "raw_content", "raw_content TEXT")
     _ensure_column("transcripts", "nlp_metadata", "nlp_metadata JSON")
+    _ensure_column("transcripts", "quality_metadata", "quality_metadata JSON")
     _ensure_column("transcript_segments", "original_text", "original_text TEXT")
     _ensure_column("transcript_segments", "nlp_metadata", "nlp_metadata JSON")
     _ensure_column("meetings", "reminder_sent", "reminder_sent BOOLEAN DEFAULT FALSE")
@@ -49,6 +54,9 @@ def _ensure_meeting_runtime_columns() -> None:
     _ensure_column("meeting_summaries", "open_questions", "open_questions JSON")
     _ensure_column("meeting_summaries", "timeline_highlights", "timeline_highlights JSON")
     _ensure_column("meeting_summaries", "speaker_summaries", "speaker_summaries JSON")
+    _ensure_column("meeting_summaries", "generation_group_id", "generation_group_id VARCHAR(36)")
+    _ensure_column("meeting_summaries", "source_summary_id", "source_summary_id VARCHAR(36)")
+    _ensure_column("meeting_summaries", "summary_kind", "summary_kind VARCHAR(20)")
     _ensure_column("users", "bio", "bio TEXT")
 
 
@@ -90,17 +98,18 @@ def _ensure_action_item_assignee_backfill() -> None:
         logger.warning("Failed to ensure action item assignee backfill: %s", exc)
 
 
-async def startup_event():
+async def startup_event(*, start_scheduler: bool = True) -> asyncio.Task | None:
     """Initialize application on startup"""
     logger.info("Starting MultiMinutes AI API...")
     start_time = time.time()
 
-    from src.api.scheduler import run_scheduler
-    import asyncio
-    asyncio.create_task(run_scheduler())
+    scheduler_task = None
+    if start_scheduler:
+        from src.api.scheduler import run_scheduler
+        scheduler_task = asyncio.create_task(run_scheduler(), name="meeting-scheduler")
 
     try:
-        models.AuditLog.__table__.create(bind=engine, checkfirst=True)
+        ensure_admin_runtime_tables()
         models.Notification.__table__.create(bind=engine, checkfirst=True)
         models.MeetingTranscriptDraft.__table__.create(bind=engine, checkfirst=True)
         models.MeetingMessage.__table__.create(bind=engine, checkfirst=True)
@@ -108,6 +117,11 @@ async def startup_event():
         models.ActionItemAssignee.__table__.create(bind=engine, checkfirst=True)
         _ensure_meeting_runtime_columns()
         _ensure_action_item_assignee_backfill()
+        session = SessionLocal()
+        try:
+            seed_admin_runtime_defaults(session)
+        finally:
+            session.close()
 
         db_status = db_health_check()
         if db_status["status"] != "healthy":
@@ -131,14 +145,24 @@ async def startup_event():
     except Exception as e:
         logger.error(f"Startup failed: {e}", exc_info=True)
 
+    return scheduler_task
 
-async def shutdown_event():
+
+async def shutdown_event(scheduler_task: asyncio.Task | None = None):
     """Cleanup on shutdown"""
     logger.info("Shutting down MultiMinutes AI API...")
+    if scheduler_task is not None:
+        scheduler_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await scheduler_task
     close_db_connections()
     logger.info("Shutdown complete")
 
 
-def register_lifecycle(app: FastAPI) -> None:
-    app.on_event("startup")(startup_event)
-    app.on_event("shutdown")(shutdown_event)
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    scheduler_task = await startup_event()
+    try:
+        yield
+    finally:
+        await shutdown_event(scheduler_task)

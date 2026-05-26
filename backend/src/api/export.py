@@ -22,6 +22,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from . import auth, models
+from .core.admin_runtime import append_admin_audit_log
 from .database import get_db
 
 router = APIRouter(prefix="/api/export", tags=["export"])
@@ -1023,7 +1024,9 @@ def create_pdf_export(meeting: models.Meeting, request: ExportRequest, db: Sessi
             _pdf_safe_multicell(pdf, 6, line)
             pdf.ln(1)
 
-    output = pdf.output(dest="S")
+    output = pdf.output()
+    if output is None:
+        return b""
     if isinstance(output, str):
         return output.encode("latin-1", "replace")
     return bytes(output)
@@ -1261,6 +1264,12 @@ async def generate_export(
         file_path = os.path.join(tempfile.gettempdir(), filename)
         with open(file_path, "wb") as handle:
             handle.write(file_content)
+        append_admin_audit_log(
+            actor=current_user.username,
+            action="GENERATE_EXPORT",
+            target=f"{meeting.title} ({extension.upper()})",
+            role=current_user.role or "member",
+        )
 
         return ExportResponse(
             download_url=f"/api/export/download/{filename}?meeting_id={meeting.id}",
@@ -1311,6 +1320,12 @@ async def download_export(
 
     with open(file_path, "rb") as handle:
         file_content = handle.read()
+    append_admin_audit_log(
+        actor=current_user.username,
+        action="DOWNLOAD_EXPORT",
+        target=f"{meeting.title} ({filename})",
+        role=current_user.role or "member",
+    )
 
     return Response(
         content=file_content,

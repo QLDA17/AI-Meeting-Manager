@@ -178,7 +178,8 @@ const MeetingCard: React.FC<MeetingCardProps> = ({
 
   // Time-based join gating
   const now = new Date();
-  const isStartingSoon = start.getTime() - now.getTime() <= 15 * 60 * 1000;
+  const timeDiff = start.getTime() - now.getTime();
+  const isStartingSoon = timeDiff > 0 && timeDiff <= 15 * 60 * 1000;
   const isLive = meeting.status === 'live';
   const canJoin = isLive || isStartingSoon;
 
