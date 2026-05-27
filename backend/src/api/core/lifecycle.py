@@ -190,6 +190,22 @@ def _normalize_legacy_group_access_and_roles() -> None:
         logger.warning("Failed to normalize legacy group access and roles: %s", exc)
 
 
+def _warm_up_nlp_models() -> None:
+    try:
+        from src.nlp import PhoBERTPostProcessor
+
+        processor = PhoBERTPostProcessor()
+        phobert_loaded = processor.classifier.ensure_model_loaded()
+        bartpho_loaded = processor.bartpho.warm_up()
+        logger.info(
+            "NLP model warm-up complete: PhoBERT=%s, BARTpho=%s",
+            "loaded" if phobert_loaded else "fallback",
+            "loaded" if bartpho_loaded else "fallback",
+        )
+    except Exception as exc:
+        logger.warning("NLP model warm-up skipped: %s", exc)
+
+
 async def startup_event(*, start_scheduler: bool = True) -> asyncio.Task | None:
     """Initialize application on startup"""
     logger.info("Starting MultiMinutes AI API...")
@@ -233,6 +249,8 @@ async def startup_event(*, start_scheduler: bool = True) -> asyncio.Task | None:
             logger.warning("Google API key not configured - AI features will be disabled")
         elif config.ai.provider == "openai" and not config.ai.openai_api_key:
             logger.warning("OpenAI API key not configured - AI features will be disabled")
+
+        _warm_up_nlp_models()
 
         elapsed = (time.time() - start_time) * 1000
         logger.info(f"Startup complete in {elapsed:.0f}ms")

@@ -213,6 +213,7 @@ const MeetingRoomInner: React.FC = () => {
   const [aiNotesStatus, setAiNotesStatus] = useState<string | null>(remoteMeeting?.summaryStatus || null);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [mainView, setMainView] = useState<"camera" | "screen">("camera");
+  const [transcriptPreviewVariant, setTranscriptPreviewVariant] = useState<"canonical" | "raw">("canonical");
   
   const [remoteParticipants, setRemoteParticipants] = useState<Participant[]>([]);
   const selfParticipantId = user?.id || "me";
@@ -478,7 +479,11 @@ const MeetingRoomInner: React.FC = () => {
       }
     } else if (wsEvent.type === "ai.notes.started") {
       setAiNotesStatus("PROCESSING");
-      setRemoteMeeting((current) => current ? { ...current, summaryStatus: "PROCESSING" } : current);
+      setRemoteMeeting((current) => current ? {
+        ...current,
+        summaryStatus: "PROCESSING",
+        transcriptionRuntime: wsEvent.transcription_runtime ?? current.transcriptionRuntime,
+      } : current);
       showToast.info("AI Notes đang được tạo...");
     } else if ((wsEvent.type === "ai.notes.completed" || wsEvent.type === "ai.notes") && wsEvent.summary_status === "COMPLETED") {
       setAiNotes(wsEvent.summary || null);
@@ -494,6 +499,63 @@ const MeetingRoomInner: React.FC = () => {
       setRemoteMeeting((current) => current ? {
         ...current,
         transcriptionRuntime: wsEvent.transcription_runtime,
+      } : current);
+    } else if (wsEvent.type === "transcript.raw.completed" && wsEvent.transcript) {
+      setTranscriptPreviewVariant("raw");
+      setRemoteMeeting((current) => current ? {
+        ...current,
+        rawTranscriptContent: wsEvent.transcript.content ?? current.rawTranscriptContent,
+        rawTranscriptSegments: Array.isArray(wsEvent.transcript.segments)
+          ? wsEvent.transcript.segments.map((segment: any, index: number) => ({
+              id: segment.id ?? `raw-${index}`,
+              transcriptId: segment.transcript_id ?? "runtime",
+              speakerLabel: segment.speaker_display_name ?? segment.speaker_label ?? segment.speaker ?? "Speaker_01",
+              speakerRawLabel: segment.speaker_raw_label ?? segment.speaker_label ?? segment.speaker ?? "Speaker_01",
+              speakerDisplayName: segment.speaker_display_name ?? segment.speaker_label ?? segment.speaker ?? "Speaker_01",
+              startTime: Number(segment.start_time ?? segment.start ?? 0),
+              endTime: Number(segment.end_time ?? segment.end ?? 0),
+              text: segment.text ?? "",
+              originalText: segment.original_text ?? undefined,
+              language: segment.language ?? "auto",
+              confidenceScore: segment.confidence_score != null ? Number(segment.confidence_score) : segment.confidence != null ? Number(segment.confidence) : undefined,
+              corrections: Array.isArray(segment.corrections) ? segment.corrections : undefined,
+              nlpMetadata: segment.nlp_metadata ?? undefined,
+            }))
+          : current.rawTranscriptSegments,
+        transcriptStatus: "DRAFT",
+      } : current);
+    } else if (wsEvent.type === "transcript.canonical.completed" && wsEvent.transcript) {
+      setTranscriptPreviewVariant("canonical");
+      setRemoteMeeting((current) => current ? {
+        ...current,
+        transcriptStatus: "COMPLETED",
+        transcriptContent: wsEvent.transcript.content ?? current.transcriptContent,
+        cleanedTranscriptContent: wsEvent.transcript.content ?? current.cleanedTranscriptContent,
+        rawTranscriptContent: wsEvent.transcript.raw_content ?? current.rawTranscriptContent,
+        transcriptQualityMetadata: wsEvent.transcript.quality_metadata ?? current.transcriptQualityMetadata,
+        cleanedTranscriptSegments: Array.isArray(wsEvent.transcript.segments)
+          ? wsEvent.transcript.segments.map((segment: any, index: number) => ({
+              id: segment.id ?? `canonical-${index}`,
+              transcriptId: segment.transcript_id ?? "runtime",
+              speakerLabel: segment.speaker_display_name ?? segment.speaker_label ?? segment.speaker ?? "Speaker_01",
+              speakerRawLabel: segment.speaker_raw_label ?? segment.speaker_label ?? segment.speaker ?? "Speaker_01",
+              speakerDisplayName: segment.speaker_display_name ?? segment.speaker_label ?? segment.speaker ?? "Speaker_01",
+              startTime: Number(segment.start_time ?? segment.start ?? 0),
+              endTime: Number(segment.end_time ?? segment.end ?? 0),
+              text: segment.text ?? "",
+              originalText: segment.original_text ?? undefined,
+              language: segment.language ?? "auto",
+              confidenceScore: segment.confidence_score != null ? Number(segment.confidence_score) : segment.confidence != null ? Number(segment.confidence) : undefined,
+              corrections: Array.isArray(segment.corrections) ? segment.corrections : undefined,
+              nlpMetadata: segment.nlp_metadata ?? undefined,
+            }))
+          : current.cleanedTranscriptSegments,
+      } : current);
+      showToast.success("Transcript hoàn chỉnh đã sẵn sàng");
+    } else if (wsEvent.type === "action_items.created" && Array.isArray(wsEvent.action_items)) {
+      setRemoteMeeting((current) => current ? {
+        ...current,
+        actionItems: dedupeActionItems(wsEvent.action_items),
       } : current);
     } else if (wsEvent.type === "meeting.status" && wsEvent.status) {
       showToast.info(`Trạng thái cuộc họp: ${wsEvent.status}`);
@@ -803,15 +865,40 @@ const MeetingRoomInner: React.FC = () => {
     : Array.isArray(aiNotes?.keyPoints)
       ? aiNotes.keyPoints
       : remoteMeeting?.keyPointsText || [];
+  const transcriptionRuntime = remoteMeeting?.transcriptionRuntime;
+  const canonicalTranscriptPreview = remoteMeeting?.cleanedTranscriptContent || remoteMeeting?.transcriptContent || "";
+  const rawTranscriptPreview = remoteMeeting?.rawTranscriptContent || canonicalTranscriptPreview;
+  const hasCanonicalTranscriptDiff = Boolean(rawTranscriptPreview && canonicalTranscriptPreview && rawTranscriptPreview !== canonicalTranscriptPreview);
+  const displayedTranscriptPreview = transcriptPreviewVariant === "raw" ? rawTranscriptPreview : canonicalTranscriptPreview;
+  const runtimeStageLabel = (() => {
+    switch (transcriptionRuntime?.status) {
+      case "recording":
+        return "Đang ghi nhận âm thanh";
+      case "raw_transcript_ready":
+        return "Đang tạo transcript thô";
+      case "canonicalizing":
+      case "finalizing":
+        return "Đang chuẩn hóa transcript";
+      case "canonical_completed":
+        return "Transcript hoàn chỉnh đã sẵn sàng";
+      case "summary_processing":
+        return "Đang tạo biên bản AI";
+      case "completed":
+        return "Đã hoàn tất";
+      case "failed":
+        return "Xử lý transcript thất bại";
+      default:
+        return "Chưa bắt đầu";
+    }
+  })();
   const transcriptPersistenceLabel =
     displayTranscripts.length > 0 || fullTranscript.trim()
       ? "Đang lưu bản nháp transcript"
       : meeting?.transcriptStatus === "COMPLETED"
-        ? "Đã lưu transcript"
-        : meeting?.hasTranscriptDraft
+        ? "Đã lưu transcript hoàn chỉnh"
+      : meeting?.hasTranscriptDraft
           ? "Đang lưu bản nháp transcript"
           : "Chưa có transcript";
-  const transcriptionRuntime = remoteMeeting?.transcriptionRuntime;
   const summaryPersistenceLabel =
     aiNotesStatus === "COMPLETED"
       ? "AI Notes đã sẵn sàng"
@@ -1299,6 +1386,7 @@ const MeetingRoomInner: React.FC = () => {
                           <p><span className="font-bold text-slate-200">Nhóm:</span> {meeting.groupName || meeting.group?.name || "Chưa gắn nhóm"}</p>
                           <p><span className="font-bold text-slate-200">Người tham gia:</span> {participants.length}</p>
                           <p><span className="font-bold text-slate-200">Transcript:</span> {transcriptPersistenceLabel}</p>
+                          <p><span className="font-bold text-slate-200">Trạng thái xử lý:</span> {runtimeStageLabel}</p>
                           <p><span className="font-bold text-slate-200">Tóm tắt:</span> {summaryPersistenceLabel}</p>
                         </div>
                       </div>
@@ -1347,7 +1435,7 @@ const MeetingRoomInner: React.FC = () => {
                                   <span className="h-2 w-2 rounded-full bg-amber-500 animate-pulse" />
                                   <span className="font-semibold text-amber-300">Đang ghi âm...</span>
                                 </div>
-                                <p className="text-xs text-slate-500">Audio đang được chia thành từng đoạn và lưu trên máy chủ. Transcript sẽ được xử lý sau khi kết thúc cuộc họp.</p>
+                                <p className="text-xs text-slate-500">Audio đang được chia thành từng đoạn và lưu trên máy chủ. Transcript thô sẽ được tạo trước, sau đó chuẩn hóa thành transcript hoàn chỉnh khi kết thúc cuộc họp.</p>
                               </div>
                             ) : (
                               "Chờ bắt đầu ghi âm..."
@@ -1365,9 +1453,7 @@ const MeetingRoomInner: React.FC = () => {
                               <p>Chunk đang chờ: <span className="font-bold text-slate-200">{pendingChunkCount}</span></p>
                               <p>Chunk retry: <span className="font-bold text-slate-200">{retryingChunkCount}</span></p>
                               <p>Mic: <span className="font-bold text-slate-200">{micOn ? "Hoạt động bình thường" : "Đang tắt"}</span></p>
-                              {transcriptionRuntime?.status === "finalizing" && (
-                                <p className="text-amber-300">Đang xử lý transcript và AI Notes sau khi kết thúc cuộc họp.</p>
-                              )}
+                              <p>Pipeline: <span className="font-bold text-slate-200">{runtimeStageLabel}</span></p>
                               {transcriptionRuntime?.last_error && (
                                 <p className="text-rose-300">{String(transcriptionRuntime.last_error)}</p>
                               )}
@@ -1425,17 +1511,39 @@ const MeetingRoomInner: React.FC = () => {
                           </div>
 
                           {/* Full Transcript Preview */}
-                      {fullTranscript && (
+                      {(displayedTranscriptPreview || fullTranscript) && (
                          <div className="space-y-4">
                            <div className="flex items-center gap-2 text-emerald-400">
                                <Target size={16} />
-                               <span className="text-xs font-bold uppercase tracking-widest">Toàn bộ transcript</span>
+                               <span className="text-xs font-bold uppercase tracking-widest">Transcript sau họp</span>
                             </div>
                             <p className="text-[11px] font-black uppercase tracking-widest text-emerald-300">
                                {transcriptPersistenceLabel}
                             </p>
+                            {hasCanonicalTranscriptDiff && (
+                              <div className="inline-flex rounded-xl border border-slate-700 bg-slate-950 p-1">
+                                {([
+                                  { key: "canonical", label: "Hoàn chỉnh" },
+                                  { key: "raw", label: "Thô" },
+                                ] as const).map((variant) => (
+                                  <button
+                                    key={variant.key}
+                                    type="button"
+                                    onClick={() => setTranscriptPreviewVariant(variant.key)}
+                                    className={clsx(
+                                      "rounded-lg px-3 py-1.5 text-[11px] font-black transition",
+                                      transcriptPreviewVariant === variant.key
+                                        ? "bg-emerald-600 text-white"
+                                        : "text-slate-400 hover:bg-slate-800 hover:text-slate-200",
+                                    )}
+                                  >
+                                    {variant.label}
+                                  </button>
+                                ))}
+                              </div>
+                            )}
                             <div className="p-4 rounded-2xl bg-emerald-500/5 border border-emerald-500/10 text-sm text-slate-400 max-h-40 overflow-y-auto custom-scrollbar leading-relaxed">
-                               {fullTranscript}
+                               {displayedTranscriptPreview || fullTranscript}
                             </div>
                          </div>
                       )}

@@ -22,7 +22,7 @@ class Correction:
 
 
 class ContextCorrectionPipeline:
-    """Rule-based correction for STT text, with optional finalize-only LLM pass."""
+    """Cleanup and rule-based correction for Vietnamese STT text."""
 
     DEFAULT_REPLACEMENTS: Dict[str, str] = {
         "ka pi ai": "KPI",
@@ -35,6 +35,10 @@ class ContextCorrectionPipeline:
         "cu bờ nét": "Kubernetes",
         "mi tinh": "meeting",
     }
+    FILLER_PATTERNS = (
+        r"\b(?:ờm|ừm|à|ờ|ơ|ờ thì|kiểu như)\b",
+        r"\b(?:uh|um+|ah+)\b",
+    )
 
     def __init__(self, enable_llm: Optional[bool] = None):
         self.enable_llm = (
@@ -44,7 +48,7 @@ class ContextCorrectionPipeline:
         )
 
     def correct_rules(self, text: str) -> Dict[str, object]:
-        corrected = text or ""
+        corrected = self.basic_cleanup(text or "")
         corrections: List[Correction] = []
 
         for wrong, right in self.DEFAULT_REPLACEMENTS.items():
@@ -56,6 +60,14 @@ class ContextCorrectionPipeline:
             "text": corrected,
             "corrections": [item.to_dict() for item in corrections],
         }
+
+    def basic_cleanup(self, text: str) -> str:
+        cleaned = self._normalize_whitespace(text or "")
+        cleaned = self._strip_fillers(cleaned)
+        cleaned = self._normalize_whitespace(cleaned)
+        cleaned = self._restore_spacing_around_punctuation(cleaned)
+        cleaned = self._normalize_phrase_case(cleaned)
+        return cleaned.strip()
 
     def correct_finalize(
         self,
@@ -123,3 +135,25 @@ class ContextCorrectionPipeline:
     def _replace_phrase(text: str, source: str, target: str) -> tuple[str, int]:
         pattern = re.compile(rf"(?<!\w){re.escape(source)}(?!\w)", flags=re.IGNORECASE | re.UNICODE)
         return pattern.subn(target, text)
+
+    @staticmethod
+    def _normalize_whitespace(text: str) -> str:
+        return re.sub(r"\s+", " ", text or "").strip()
+
+    def _strip_fillers(self, text: str) -> str:
+        cleaned = text
+        for pattern in self.FILLER_PATTERNS:
+            cleaned = re.sub(pattern, " ", cleaned, flags=re.IGNORECASE | re.UNICODE)
+        return cleaned
+
+    @staticmethod
+    def _restore_spacing_around_punctuation(text: str) -> str:
+        compact = re.sub(r"\s+([,.!?;:])", r"\1", text)
+        compact = re.sub(r"([,.!?;:])(?=\w)", r"\1 ", compact)
+        return compact
+
+    @staticmethod
+    def _normalize_phrase_case(text: str) -> str:
+        if not text:
+            return ""
+        return text[0].upper() + text[1:] if len(text) > 1 else text.upper()

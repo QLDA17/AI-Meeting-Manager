@@ -499,9 +499,10 @@ def test_finalize_meeting_single_router_call_success(client, auth_context):
     assert detail["transcript_content"] == "Hom nay chung ta chot luong live chunk va dung Router de tom tat."
     assert detail["cleaned_transcript_content"] == "Hom nay chung ta chot luong live chunk va dung Router de tom tat."
     assert detail["raw_transcript_content"] == "Hom nay chung ta chot luong live chunk va dung Router de tom tat."
-    assert detail["cleaned_transcript_segments"][0]["text"] == "Noi dung hop"
+    assert detail["cleaned_transcript_segments"][0]["text"] == "Noi dung hop."
     assert detail["raw_transcript_segments"][0]["text"] == "Noi dung hop"
     assert detail["transcript_quality_metadata"]["provider"] == "deepgram"
+    assert "canonical_quality_score" in detail["transcript_quality_metadata"]
     assert detail["meeting_summary_text"] == "Cuoc hop thong nhat chot scope STT va summary."
     assert detail["key_points_text"] == ["Chot luong live chunk", "Dung Router cho summary"]
     assert detail["decisions_text"] == ["Bo 4 call rieng trong finalize"]

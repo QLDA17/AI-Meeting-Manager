@@ -216,23 +216,44 @@ def _build_transcript_quality_metadata(
     post_processing_applied: bool,
 ) -> Dict[str, Any]:
     correction_count = sum(len(_segment_corrections(segment)) for segment in cleaned_segments)
+    raw_confidence_values = [
+        float(segment.get("confidence_score") or 0)
+        for segment in raw_segments
+        if segment.get("confidence_score") is not None
+    ]
     low_confidence_segment_count = sum(
         1
         for segment in cleaned_segments
         if segment.get("confidence_score") is not None and float(segment.get("confidence_score") or 0) < 0.6
     )
+    low_confidence_phrase_count = 0
+    for segment in cleaned_segments:
+        metadata = segment.get("nlp_metadata") if isinstance(segment, dict) else None
+        if isinstance(metadata, dict):
+            low_confidence_phrase_count += len(metadata.get("low_confidence_phrases") or [])
     quality_status = "healthy"
     if not cleaned_segments or low_confidence_segment_count > max(1, len(cleaned_segments) // 2):
         quality_status = "degraded"
+    raw_confidence = round(sum(raw_confidence_values) / len(raw_confidence_values), 3) if raw_confidence_values else None
+    canonical_quality_score = round(
+        max(
+            0.0,
+            1.0 - (low_confidence_segment_count / max(1, len(cleaned_segments))) * 0.4 - min(correction_count, 10) * 0.02,
+        ),
+        3,
+    ) if cleaned_segments else 0.0
     return {
         "provider": provider,
         "provider_model": provider_model,
         "detected_language": detected_language,
         "raw_segment_count": len(raw_segments),
         "cleaned_segment_count": len(cleaned_segments),
+        "raw_confidence": raw_confidence,
+        "canonical_quality_score": canonical_quality_score,
         "correction_count": correction_count,
         "speaker_assignment_rate": _speaker_assignment_rate(cleaned_segments),
         "low_confidence_segment_count": low_confidence_segment_count,
+        "low_confidence_phrase_count": low_confidence_phrase_count,
         "post_processing_applied": post_processing_applied,
         "quality_status": quality_status,
     }
@@ -273,6 +294,12 @@ def build_transcript_artifacts(
             ]
         except Exception as exc:
             logger.warning("PhoBERT finalize post-processing skipped: %s", exc, exc_info=True)
+            nlp_metadata = {
+                "processor": "fallback-cleanup",
+                "cleanup": {"applied": True},
+                "phobert": {"model": os.getenv("PHOBERT_MODEL", "vinai/phobert-base-v2"), "fallback": True},
+                "bartpho": {"model": os.getenv("BARTPHO_MODEL", "vinai/bartpho-word-base"), "fallback": True},
+            }
 
     quality_metadata = _build_transcript_quality_metadata(
         provider=provider_name,
@@ -961,6 +988,42 @@ async def finalize_meeting_transcript(
         transcript_language=transcript_language_hint,
     )
 
+    await meeting_room_manager.broadcast(
+        meeting_id,
+        {
+            "type": "transcript.raw.completed",
+            "meeting_id": meeting_id,
+            "transcript": {
+                "content": full_text,
+                "segments": segments if isinstance(segments, list) else [],
+                "language": language,
+            },
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+    meeting = update_meeting(
+        db,
+        meeting_id,
+        {
+            "settings": merge_meeting_settings(
+                getattr(meeting, "settings", None),
+                runtime_updates={
+                    "status": "canonicalizing",
+                    "finalization_status": "processing",
+                },
+            ),
+        },
+    )
+    await meeting_room_manager.broadcast(
+        meeting_id,
+        {
+            "type": "transcription.runtime",
+            "meeting_id": meeting_id,
+            "transcription_runtime": (meeting.settings or {}).get("transcription_runtime"),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+
     if not isinstance(full_text, str) or not full_text.strip():
         runtime_settings = merge_meeting_settings(
             getattr(meeting, "settings", None),
@@ -1088,6 +1151,41 @@ async def finalize_meeting_transcript(
             create_transcript_segments_bulk(db, segments_data)
 
     db.commit()
+    runtime_settings = merge_meeting_settings(
+        getattr(meeting, "settings", None),
+        runtime_updates={
+            "status": "canonical_completed",
+            "finalization_status": "processing",
+            "processed_chunk_count": deferred_metrics.get("processed_chunk_count", 0),
+            "stored_chunk_count": deferred_metrics.get("stored_chunk_count", 0),
+        },
+    )
+    meeting = update_meeting(db, meeting_id, {"settings": runtime_settings})
+    await meeting_room_manager.broadcast(
+        meeting_id,
+        {
+            "type": "transcript.canonical.completed",
+            "meeting_id": meeting_id,
+            "transcript": {
+                "content": full_text,
+                "raw_content": raw_text,
+                "segments": segments_to_save,
+                "language": language,
+                "quality_metadata": quality_metadata,
+                "nlp_metadata": nlp_metadata,
+            },
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+    await meeting_room_manager.broadcast(
+        meeting_id,
+        {
+            "type": "transcription.runtime",
+            "meeting_id": meeting_id,
+            "transcription_runtime": runtime_settings.get("transcription_runtime"),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        },
+    )
 
     audio_file_id = None
     try:
@@ -1211,6 +1309,13 @@ async def finalize_meeting_transcript(
             "meeting_id": meeting_id,
             "summary_status": "PROCESSING",
             "language": language,
+            "transcription_runtime": merge_meeting_settings(
+                getattr(meeting, "settings", None),
+                runtime_updates={
+                    "status": "summary_processing",
+                    "finalization_status": "processing",
+                },
+            ).get("transcription_runtime"),
             "timestamp": datetime.now(timezone.utc).isoformat(),
         },
     )
@@ -1327,6 +1432,22 @@ async def finalize_meeting_transcript(
             "timestamp": datetime.now(timezone.utc).isoformat(),
         },
     )
+    if summary_status == "COMPLETED":
+        from src.api.core.meeting_operations import serialize_action_item_payload
+
+        created_action_items = [
+            serialize_action_item_payload(item)
+            for item in db.query(models.ActionItem).filter(models.ActionItem.summary_id == summary_db.id).all()
+        ]
+        await meeting_room_manager.broadcast(
+            meeting_id,
+            {
+                "type": "action_items.created",
+                "meeting_id": meeting_id,
+                "action_items": created_action_items,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+        )
 
     return {
         "meeting_id": meeting_id,

@@ -181,7 +181,16 @@ export interface Meeting {
   transcriptionRuntime?: {
     provider: string;
     mode: string;
-    status: 'idle' | 'recording' | 'finalizing' | 'completed' | 'failed';
+    status:
+      | 'idle'
+      | 'recording'
+      | 'raw_transcript_ready'
+      | 'canonicalizing'
+      | 'canonical_completed'
+      | 'summary_processing'
+      | 'finalizing'
+      | 'completed'
+      | 'failed';
     stored_chunk_count: number;
     processed_chunk_count: number;
     last_error?: string | null;

@@ -19,7 +19,6 @@ AI_KEY_POINTS_LIMIT = 8
 AI_DECISIONS_LIMIT = 6
 AI_ACTION_ITEMS_LIMIT = 7
 AI_RISKS_LIMIT = 4
-AI_OPEN_QUESTIONS_LIMIT = 4
 AI_TIMELINE_HIGHLIGHTS_LIMIT = 6
 AI_SPEAKER_SUMMARIES_LIMIT = 6
 
@@ -38,7 +37,7 @@ def get_phobert_processor():
 
 
 def phobert_enabled_for(language: str) -> bool:
-    return os.getenv("PHOBERT_ENABLED", "false").lower() == "true" and (language or "vi").lower() in {"vi", "auto"}
+    return os.getenv("PHOBERT_ENABLED", "true").lower() == "true" and (language or "vi").lower() in {"vi", "auto"}
 
 
 # ─── AI Text Utilities ──────────────────────────────────────────────────────
@@ -172,7 +171,7 @@ def _normalize_analysis_payload(payload: Dict[str, Any]) -> schemas.MeetingAnaly
         "decisions": _normalize_ai_string_list(payload.get("decisions"), AI_DECISIONS_LIMIT),
         "action_items": normalized_action_items,
         "risks": _normalize_ai_string_list(payload.get("risks"), AI_RISKS_LIMIT),
-        "open_questions": _normalize_ai_string_list(payload.get("open_questions"), AI_OPEN_QUESTIONS_LIMIT),
+        "open_questions": [],
         "timeline_highlights": _normalize_ai_string_list(payload.get("timeline_highlights"), AI_TIMELINE_HIGHLIGHTS_LIMIT),
         "speaker_summaries": _normalize_ai_string_list(payload.get("speaker_summaries"), AI_SPEAKER_SUMMARIES_LIMIT),
     }
@@ -195,7 +194,7 @@ def build_structured_summary_prompts(
         f"You are an executive meeting note assistant. "
         f"Respond ONLY in {lang_name}. "
         f"Return ONLY a valid JSON object, no markdown, no explanation, no extra text. "
-        f"JSON must have exactly 8 keys: meeting_summary, key_points, decisions, action_items, risks, open_questions, timeline_highlights, speaker_summaries. "
+        f"JSON must have exactly 7 keys: meeting_summary, key_points, decisions, action_items, risks, timeline_highlights, speaker_summaries. "
         f"Create a balanced, useful meeting brief: complete enough to preserve the important content, but not a verbatim transcript. "
         f"Use only facts explicitly supported by the transcript. Do not invent decisions, owners, deadlines, or tasks. "
         f"meeting_summary must be 4-7 clear sentences and under {AI_SUMMARY_MAX_CHARS} characters. It must mention the meeting objective/context, main discussion themes, outcomes, and next direction when present. "
@@ -205,7 +204,6 @@ def build_structured_summary_prompts(
         f"For owner: use the speaker's display name from the transcript if a person is clearly responsible. If not stated, use empty string \"\". "
         f"For deadline: use the exact date/time mentioned. If not stated, use empty string \"\". "
         f"risks has at most {AI_RISKS_LIMIT} explicit blockers or risks, or an empty array. "
-        f"open_questions has at most {AI_OPEN_QUESTIONS_LIMIT} unresolved questions, or an empty array. "
         f"timeline_highlights has at most {AI_TIMELINE_HIGHLIGHTS_LIMIT} short highlights with timestamps or order markers when available; use it to preserve the flow of meaningful discussion. "
         f"speaker_summaries has at most {AI_SPEAKER_SUMMARIES_LIMIT} short strings like 'Name: contribution'. "
         f"If the transcript is short or thin, still provide the useful facts available without padding."
@@ -233,7 +231,6 @@ def build_structured_summary_prompts(
         '  "decisions": ["max 6 explicit decisions, agreements, approvals, or confirmed directions only"],\n'
         '  "action_items": [{"task": "string", "owner": "string", "deadline": "string"}],\n'
         '  "risks": ["max 4 explicit risks or blockers"],\n'
-        '  "open_questions": ["max 4 unresolved questions"],\n'
         '  "timeline_highlights": ["max 6 short timeline highlights"],\n'
         '  "speaker_summaries": ["max 6 speaker contribution summaries"]\n'
         "}\n\n"
@@ -287,4 +284,3 @@ def build_speaker_aware_transcript(
         start = float(segment.get("start", segment.get("start_time", 0)) or 0)
         lines.append(f"[{start:0.1f}s] {display_name}: {text}")
     return "\n".join(lines) or transcript_text
-

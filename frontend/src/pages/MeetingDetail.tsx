@@ -1352,8 +1352,8 @@ const MeetingDetail: React.FC = () => {
                           {hasRawTranscriptVariant && (
                             <div className="inline-flex rounded-xl border border-gray-200 bg-white p-1 dark:border-slate-700 dark:bg-slate-900">
                               {([
-                                { key: 'cleaned', label: 'Đã làm sạch' },
-                                { key: 'raw', label: 'Bản gốc' },
+                                { key: 'cleaned', label: 'Hoàn chỉnh' },
+                                { key: 'raw', label: 'Thô' },
                               ] as const).map((variant) => (
                                 <button
                                   key={variant.key}

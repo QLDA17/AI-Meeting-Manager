@@ -2,7 +2,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +62,7 @@ class DialectClassifier:
         },
     }
 
-    def __init__(self, model_name: str = "vinai/phobert-base", device: str = "auto", max_length: int = 256):
+    def __init__(self, model_name: str = "vinai/phobert-base-v2", device: str = "auto", max_length: int = 256):
         self.model_name = model_name
         self.device = device
         self.max_length = max_length
@@ -121,8 +121,8 @@ class DialectClassifier:
             selected_device = "cuda" if self.device == "auto" and torch.cuda.is_available() else self.device
             if selected_device == "auto":
                 selected_device = "cpu"
-            self._tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-            self._model = AutoModel.from_pretrained(self.model_name).to(selected_device)
+            self._tokenizer = self._load_tokenizer(AutoTokenizer)
+            self._model = self._load_model(AutoModel).to(selected_device)
             self._model.eval()
             logger.info("PhoBERT model loaded for dialect classifier: %s on %s", self.model_name, selected_device)
             return True
@@ -131,6 +131,104 @@ class DialectClassifier:
             self._model = None
             self._tokenizer = None
             return False
+
+    def analyze_semantics(
+        self,
+        text: str,
+        candidate_phrases: Optional[List[Dict[str, object]]] = None,
+    ) -> Dict[str, object]:
+        if not text.strip():
+            return {
+                "model_loaded": False,
+                "embedding_available": False,
+                "low_confidence_phrase_count": 0,
+                "candidate_scores": [],
+            }
+
+        if not self.ensure_model_loaded():
+            return {
+                "model_loaded": False,
+                "embedding_available": False,
+                "low_confidence_phrase_count": len(candidate_phrases or []),
+                "candidate_scores": [],
+            }
+
+        try:
+            import torch
+
+            transcript_embedding = self._embed_text(text)
+            candidate_scores = []
+            for index, phrase in enumerate(candidate_phrases or []):
+                phrase_text = str(phrase.get("text") or "").strip()
+                if not phrase_text:
+                    continue
+                phrase_embedding = self._embed_text(phrase_text)
+                similarity = torch.nn.functional.cosine_similarity(
+                    transcript_embedding,
+                    phrase_embedding,
+                    dim=0,
+                ).item()
+                candidate_scores.append({
+                    "index": index,
+                    "text": phrase_text,
+                    "score": round(float(similarity), 4),
+                    "confidence": phrase.get("confidence"),
+                    "speaker": phrase.get("speaker"),
+                })
+
+            candidate_scores.sort(key=lambda item: item["score"], reverse=True)
+            return {
+                "model_loaded": True,
+                "embedding_available": True,
+                "low_confidence_phrase_count": len(candidate_scores),
+                "candidate_scores": candidate_scores[:10],
+            }
+        except Exception as exc:
+            logger.warning("PhoBERT semantic analysis unavailable: %s", exc)
+            return {
+                "model_loaded": False,
+                "embedding_available": False,
+                "low_confidence_phrase_count": len(candidate_phrases or []),
+                "candidate_scores": [],
+                "error": str(exc),
+            }
+
+    def _embed_text(self, text: str):
+        import torch
+
+        encoded = self._tokenizer(
+            text,
+            return_tensors="pt",
+            truncation=True,
+            max_length=self.max_length,
+        )
+        encoded = {key: value.to(next(self._model.parameters()).device) for key, value in encoded.items()}
+        with torch.no_grad():
+            outputs = self._model(**encoded)
+        hidden = outputs.last_hidden_state.squeeze(0)
+        attention_mask = encoded["attention_mask"].squeeze(0).unsqueeze(-1)
+        pooled = (hidden * attention_mask).sum(dim=0) / attention_mask.sum(dim=0).clamp(min=1)
+        return pooled
+
+    def _load_tokenizer(self, loader_cls):
+        offline_only = os.getenv("HF_HUB_OFFLINE", "false").lower() == "true" or os.getenv("TRANSFORMERS_OFFLINE", "false").lower() == "true"
+        try:
+            return loader_cls.from_pretrained(self.model_name, local_files_only=offline_only)
+        except Exception:
+            if offline_only:
+                raise
+            logger.info("PhoBERT tokenizer online load failed, retrying from local cache: %s", self.model_name)
+            return loader_cls.from_pretrained(self.model_name, local_files_only=True)
+
+    def _load_model(self, loader_cls):
+        offline_only = os.getenv("HF_HUB_OFFLINE", "false").lower() == "true" or os.getenv("TRANSFORMERS_OFFLINE", "false").lower() == "true"
+        try:
+            return loader_cls.from_pretrained(self.model_name, local_files_only=offline_only)
+        except Exception:
+            if offline_only:
+                raise
+            logger.info("PhoBERT model online load failed, retrying from local cache: %s", self.model_name)
+            return loader_cls.from_pretrained(self.model_name, local_files_only=True)
 
     @staticmethod
     def _normalize(text: str) -> str:

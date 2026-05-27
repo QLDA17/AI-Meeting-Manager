@@ -185,12 +185,23 @@ def get_admin_ai_services_payload(current_user: models.User) -> Dict[str, Any]:
     if phobert_enabled:
         nlp_services.append({
             "name": "PhoBERT Post-Processor",
-            "model": os.getenv("PHOBERT_MODEL", "vinai/phobert-base"),
+            "model": os.getenv("PHOBERT_MODEL", "vinai/phobert-base-v2"),
             "enabled": True,
             "features": {
                 "dialect_detection": os.getenv("PHOBERT_DIALECT_ENABLED", "true").lower() == "true",
                 "context_correction": True,
                 "llm_correction": os.getenv("PHOBERT_LLM_CORRECTION_ENABLED", "false").lower() == "true",
+            },
+        })
+    if os.getenv("BARTPHO_ENABLED", "true").lower() == "true":
+        nlp_services.append({
+            "name": "BARTpho Transcript Corrector",
+            "model": os.getenv("BARTPHO_MODEL", "vinai/bartpho-word-base"),
+            "enabled": True,
+            "features": {
+                "asr_error_correction": True,
+                "terminology_normalization": True,
+                "semantic_rewrite": True,
             },
         })
 
