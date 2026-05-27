@@ -80,12 +80,12 @@ class UserOrganization(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
     user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     organization_id: Mapped[str] = mapped_column(String(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
-    role: Mapped[str] = mapped_column(String(20), nullable=False)  # org-admin, member, viewer
+    role: Mapped[str] = mapped_column(String(20), nullable=False)  # org-admin, member
     joined_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now())
 
     __table_args__ = (
         UniqueConstraint('user_id', 'organization_id', name='uq_user_org'),
-        CheckConstraint("role IN ('org-admin', 'member', 'viewer')", name='check_user_org_role'),
+        CheckConstraint("role IN ('org-admin', 'member')", name='check_user_org_role'),
     )
 
     # Relationships
@@ -102,7 +102,8 @@ class Group(Base):
     organization_id: Mapped[str] = mapped_column(String(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=True)
-    privacy_level: Mapped[str] = mapped_column(String(20), default="private")
+    visibility: Mapped[str] = mapped_column(String(20), default="organization")
+    join_policy: Mapped[str] = mapped_column(String(20), default="invite_only")
     settings: Mapped[dict] = mapped_column(JSON, nullable=True)
     created_by: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now())
@@ -117,7 +118,11 @@ class Group(Base):
     messages = relationship("GroupMessage", back_populates="group", cascade="all, delete-orphan")
 
     __table_args__ = (
-        CheckConstraint("privacy_level IN ('private', 'internal', 'public')", name='check_group_privacy'),
+        CheckConstraint("visibility IN ('hidden', 'organization')", name='check_group_visibility'),
+        CheckConstraint(
+            "join_policy IN ('invite_only', 'request_approval', 'open_join')",
+            name='check_group_join_policy',
+        ),
     )
 
 
@@ -135,7 +140,7 @@ class GroupMembership(Base):
 
     __table_args__ = (
         UniqueConstraint('group_id', 'user_id', name='uq_group_user'),
-        CheckConstraint("role IN ('group-admin', 'member', 'viewer')", name='check_group_membership_role'),
+        CheckConstraint("role IN ('group-admin', 'member')", name='check_group_membership_role'),
     )
 
     group = relationship("Group", back_populates="memberships")
@@ -180,7 +185,7 @@ class Invitation(Base):
     updated_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
     __table_args__ = (
-        CheckConstraint("role IN ('org-admin', 'group-admin', 'member', 'viewer')", name='check_invitation_role'),
+        CheckConstraint("role IN ('org-admin', 'group-admin', 'member')", name='check_invitation_role'),
         CheckConstraint("status IN ('pending', 'accepted', 'revoked', 'expired')", name='check_invitation_status'),
         Index('idx_invitations_email', 'email'),
     )
@@ -393,7 +398,7 @@ class Transcript(Base):
     language: Mapped[str] = mapped_column(String(10), default='vi')
     word_count: Mapped[int] = mapped_column(Integer, default=0)
     processing_status: Mapped[str] = mapped_column(String(20), default='PENDING')  # PENDING, PROCESSING, COMPLETED, FAILED
-    stt_provider: Mapped[str] = mapped_column(String(50), default='whisper')
+    stt_provider: Mapped[str] = mapped_column(String(50), default='deepgram')
     confidence_score: Mapped[float] = mapped_column(Numeric(3, 2), nullable=True)
     post_processed: Mapped[bool] = mapped_column(Boolean, default=False)
     nlp_metadata: Mapped[dict] = mapped_column(JSON, nullable=True)

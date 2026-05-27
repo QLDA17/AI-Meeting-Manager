@@ -231,26 +231,26 @@ const GroupMeetingsTab: React.FC<GroupMeetingsTabProps> = ({ meetings }) => {
                       </span>
                       <span className="flex items-center gap-1">
                         <Clock size={12} />
-                        {meeting.duration || 0} min
+                        {meeting.duration || 0} phút
                       </span>
                       <span className="flex items-center gap-1">
                         <Users size={12} />
-                        {Array.isArray(meeting.attendees) ? meeting.attendees.length : 0} attendees
+                        {Array.isArray(meeting.attendees) ? meeting.attendees.length : 0} người tham gia
                       </span>
                     </div>
 
                     {meeting.keyPoints && (
                       <div className="mt-3 flex flex-wrap gap-2">
                         <span className="flex items-center gap-1 rounded-md bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700 dark:bg-blue-900/20 dark:text-blue-300">
-                          <Key size={10} /> {meeting.keyPoints.length} Key Points
+                          <Key size={10} /> {meeting.keyPoints.length} ý chính
                         </span>
                         {meeting.decisions && meeting.decisions.length > 0 && (
                           <span className="flex items-center gap-1 rounded-md bg-green-50 px-2 py-1 text-xs font-medium text-green-700 dark:bg-green-900/20 dark:text-green-300">
-                            <CheckCircle2 size={10} /> {meeting.decisions.length} Decisions
+                            <CheckCircle2 size={10} /> {meeting.decisions.length} quyết định
                           </span>
                         )}
                         <span className="flex items-center gap-1 rounded-md bg-purple-50 px-2 py-1 text-xs font-medium text-purple-700 dark:bg-purple-900/20 dark:text-purple-300">
-                          <Bot size={10} /> AI Summary
+                          <Bot size={10} /> Tóm tắt AI
                         </span>
                       </div>
                     )}
@@ -270,9 +270,9 @@ const GroupMeetingsTab: React.FC<GroupMeetingsTabProps> = ({ meetings }) => {
       {totalPages > 1 && (
         <div className="flex items-center justify-between">
           <p className="text-sm text-gray-600 dark:text-slate-300">
-            Showing {(currentPage - 1) * pageSize + 1}-
-            {Math.min(currentPage * pageSize, filteredMeetings.length)} of{' '}
-            {filteredMeetings.length}
+            Hiển thị {(currentPage - 1) * pageSize + 1}-
+            {Math.min(currentPage * pageSize, filteredMeetings.length)} /{' '}
+            {filteredMeetings.length} cuộc họp
           </p>
           <div className="flex items-center gap-2">
             <button

@@ -15,7 +15,6 @@ interface UsePermissionReturn {
   isOrgAdmin: boolean;
   isGroupAdmin: boolean;
   isSystemAdmin: boolean;
-  isViewer: boolean;
   isMember: boolean;
 }
 
@@ -56,7 +55,6 @@ export const usePermission = (): UsePermissionReturn => {
     isOrgAdmin: roleContext?.isOrgAdmin || false,
     isGroupAdmin: roleContext?.isGroupAdmin || false,
     isSystemAdmin: roleContext?.isSystemAdmin || false,
-    isViewer: roleContext?.isViewer || false,
     isMember: roleContext?.isMember || false,
   };
 };

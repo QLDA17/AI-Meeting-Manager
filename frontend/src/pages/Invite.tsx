@@ -1,6 +1,6 @@
 import React from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Building2, Mail, Shield, User, Eye, ArrowRight } from 'lucide-react';
+import { Building2, Mail, Shield, User, ArrowRight } from 'lucide-react';
 import { Button, Logo } from '../components/ui';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
@@ -10,15 +10,15 @@ interface InvitationPreview {
   email: string;
   organization_id: string;
   organization_name?: string;
-  role: 'org-admin' | 'member' | 'viewer';
+  role: 'org-admin' | 'member' | 'group-admin';
   status: string;
   expires_at: string;
 }
 
 const roleMeta = {
   'org-admin': { label: 'Quản trị tổ chức', icon: <Shield size={16} className="text-amber-500" /> },
+  'group-admin': { label: 'Quản trị nhóm', icon: <Shield size={16} className="text-cyan-500" /> },
   member: { label: 'Thành viên', icon: <User size={16} className="text-blue-500" /> },
-  viewer: { label: 'Người xem', icon: <Eye size={16} className="text-slate-500" /> },
 };
 
 const Invite: React.FC = () => {

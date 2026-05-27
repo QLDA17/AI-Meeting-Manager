@@ -147,7 +147,7 @@ class Organization(OrganizationBase, TimestampMixin):
 # ==================== User Organization Schemas ====================
 
 class UserOrganizationBase(BaseSchema):
-    role: str = Field(default="member", pattern="^(org-admin|member|viewer)$")
+    role: str = Field(default="member", pattern="^(org-admin|member)$")
 
 
 class UserOrganizationCreate(UserOrganizationBase):
@@ -167,18 +167,22 @@ class UserOrganization(UserOrganizationBase, TimestampMixin):
 class GroupBase(BaseSchema):
     name: str = Field(..., max_length=255)
     description: Optional[str] = None
-    privacy_level: str = Field(default="internal", pattern="^(private|internal|public)$")
+    visibility: str = Field(default="organization", pattern="^(hidden|organization)$")
+    join_policy: str = Field(default="invite_only", pattern="^(invite_only|request_approval|open_join)$")
     settings: Optional[Dict[str, Any]] = None
 
 
 class GroupCreate(GroupBase):
     organization_id: str
+    group_admin_user_ids: List[str] = Field(default_factory=list)
+    initial_member_user_ids: List[str] = Field(default_factory=list)
 
 
 class GroupUpdate(BaseSchema):
     name: Optional[str] = Field(None, max_length=255)
     description: Optional[str] = None
-    privacy_level: Optional[str] = Field(None, pattern="^(private|internal|public)$")
+    visibility: Optional[str] = Field(None, pattern="^(hidden|organization)$")
+    join_policy: Optional[str] = Field(None, pattern="^(invite_only|request_approval|open_join)$")
     settings: Optional[Dict[str, Any]] = None
 
 
@@ -189,6 +193,7 @@ class Group(GroupBase, TimestampMixin):
     member_count: int = 0
     meeting_count: int = 0
     total_hours: float = 0
+    access_summary: Optional[str] = None
 
 
 class GroupMessageBase(BaseSchema):
@@ -218,7 +223,7 @@ class GroupMessage(GroupMessageBase, TimestampMixin):
 
 
 class GroupMembershipBase(BaseSchema):
-    role: str = Field(default="member", pattern="^(group-admin|member|viewer)$")
+    role: str = Field(default="member", pattern="^(group-admin|member)$")
 
 
 class GroupMembershipCreate(GroupMembershipBase):
@@ -226,7 +231,7 @@ class GroupMembershipCreate(GroupMembershipBase):
 
 
 class GroupMembershipUpdate(BaseSchema):
-    role: str = Field(..., pattern="^(group-admin|member|viewer)$")
+    role: str = Field(..., pattern="^(group-admin|member)$")
 
 
 class GroupMembership(GroupMembershipBase, TimestampMixin):
@@ -245,14 +250,14 @@ class InvitationCreate(BaseSchema):
     email: EmailStr
     organization_id: str
     group_id: Optional[str] = None
-    role: str = Field(default="member", pattern="^(org-admin|group-admin|member|viewer)$")
+    role: str = Field(default="member", pattern="^(org-admin|group-admin|member)$")
 
 
 class BulkInvitationCreate(BaseSchema):
     emails: List[str]
     organization_id: str
     group_id: Optional[str] = None
-    role: str = Field(default="member", pattern="^(org-admin|group-admin|member|viewer)$")
+    role: str = Field(default="member", pattern="^(org-admin|group-admin|member)$")
 
 
 class BulkInvitationResult(BaseSchema):
@@ -374,6 +379,11 @@ class Meeting(MeetingBase, TimestampMixin):
     organization_id: str
     group_id: Optional[str] = None
     created_by: str
+    planned_duration_minutes: Optional[int] = None
+    actual_duration_minutes: Optional[int] = None
+    live_duration_minutes: Optional[int] = None
+    is_overrun: bool = False
+    overrun_minutes: Optional[int] = None
     participants: List[MeetingParticipant] = Field(default_factory=list)
     attended_participants: List[MeetingParticipant] = Field(default_factory=list)
     attended_participants_count: int = 0
@@ -490,7 +500,7 @@ class TranscriptBase(BaseSchema):
     language: str = Field(default="vi", max_length=10)
     word_count: int = 0
     processing_status: str = Field(default="PENDING", pattern="^(PENDING|PROCESSING|COMPLETED|FAILED)$")
-    stt_provider: str = Field(default="whisper", max_length=50)
+    stt_provider: str = Field(default="deepgram", max_length=50)
     confidence_score: Optional[float] = None
     post_processed: bool = False
     nlp_metadata: Optional[Dict[str, Any]] = None

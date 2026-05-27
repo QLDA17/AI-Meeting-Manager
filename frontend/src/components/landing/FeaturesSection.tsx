@@ -14,7 +14,7 @@ import {
 const features = [
   {
     title: 'Ghi âm & Phiên âm',
-    description: 'Tự động chuyển đổi âm thanh cuộc họp thành văn bản với độ chính xác cao nhờ công nghệ PhoWhisper.',
+    description: 'Tự động chuyển đổi âm thanh cuộc họp thành văn bản với độ chính xác cao nhờ Deepgram và ViWhisper.',
     icon: <Mic2 className="w-6 h-6" />,
     color: 'bg-blue-50 text-blue-600'
   },

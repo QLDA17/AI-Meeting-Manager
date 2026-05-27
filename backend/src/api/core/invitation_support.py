@@ -62,8 +62,8 @@ def invitation_preview_payload(invitation: models.Invitation) -> Dict[str, Any]:
 def build_invitation_email_html(org_name: str, role: str, invite_url: str) -> str:
     role_labels = {
         "org-admin": "Quản trị tổ chức",
+        "group-admin": "Quản trị nhóm",
         "member": "Thành viên",
-        "viewer": "Người xem",
     }
     role_label = role_labels.get(role, role)
     return f"""

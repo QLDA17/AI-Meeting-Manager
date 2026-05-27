@@ -60,7 +60,8 @@ def test_group(db, test_organization, test_user):
     return create_group(db, {
         "organization_id": test_organization.id,
         "name": "Test Group",
-        "privacy_level": "internal",
+        "visibility": "organization",
+        "join_policy": "invite_only",
     }, created_by=test_user.id)
 
 

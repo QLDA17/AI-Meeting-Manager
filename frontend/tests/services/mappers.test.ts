@@ -43,6 +43,11 @@ describe('mappers', () => {
       scheduled_start: '2026-04-30T08:00:00Z',
       scheduled_end: '2026-04-30T09:00:00Z',
       duration: 60,
+      planned_duration_minutes: 60,
+      actual_duration_minutes: 60,
+      live_duration_minutes: null,
+      is_overrun: false,
+      overrun_minutes: null,
       status: 'completed',
       created_by: 'user-1',
       created_at: '2026-04-30T08:00:00Z',
@@ -66,5 +71,8 @@ describe('mappers', () => {
     expect(detail.summaryGenerationState?.en).toBe('PROCESSING');
     expect(detail.actionItems).toHaveLength(1);
     expect(detail.keyPointsText[0]).toBe('Point A');
+    expect(detail.plannedDurationMinutes).toBe(60);
+    expect(detail.actualDurationMinutes).toBe(60);
+    expect(detail.isOverrun).toBe(false);
   });
 });

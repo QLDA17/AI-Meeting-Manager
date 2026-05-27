@@ -40,7 +40,7 @@ def create_transcript(db: Session, transcript_data: dict) -> models.Transcript:
         language=transcript_data.get("language", "vi"),
         word_count=transcript_data.get("word_count", 0),
         processing_status=transcript_data.get("processing_status", "PENDING"),
-        stt_provider=transcript_data.get("stt_provider", "whisper"),
+        stt_provider=transcript_data.get("stt_provider", "deepgram"),
         confidence_score=transcript_data.get("confidence_score"),
         post_processed=transcript_data.get("post_processed", False),
         nlp_metadata=transcript_data.get("nlp_metadata"),

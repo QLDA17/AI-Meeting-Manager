@@ -5,9 +5,8 @@
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import {
-  Lock,
-  Globe,
   Building2,
+  EyeOff,
   Plus,
   Crown,
 } from 'lucide-react';
@@ -15,7 +14,7 @@ import { useOrgStore } from '../../stores';
 import { usePermission } from '../../hooks';
 import { useAuth } from '../../context/AuthContext';
 import api from '../../services/api';
-import type { Group, PrivacyLevel } from '../../types';
+import type { Group } from '../../types';
 
 interface GroupNavProps {
   onGroupSelect?: (groupId: string) => void;
@@ -35,16 +34,10 @@ const GroupNav: React.FC<GroupNavProps> = ({ onGroupSelect, onCreateGroup }) => 
     [user?.id],
   );
 
-  const privacyIcon = (level: PrivacyLevel) => {
-    switch (level) {
-      case 'private':
-        return <Lock size={12} className="text-gray-400" />;
-      case 'internal':
-        return <Building2 size={12} className="text-blue-400" />;
-      case 'public':
-        return <Globe size={12} className="text-green-400" />;
-    }
-  };
+  const accessIcon = (group: Group) =>
+    group.visibility === 'hidden'
+      ? <EyeOff size={12} className="text-gray-400" />
+      : <Building2 size={12} className="text-blue-400" />;
 
   const isActive = (groupId: string) => {
     return location.pathname.includes(`/groups/${groupId}`);
@@ -98,7 +91,7 @@ const GroupNav: React.FC<GroupNavProps> = ({ onGroupSelect, onCreateGroup }) => 
     return (
       <div className="px-3 py-4">
         <p className="text-xs text-gray-500 dark:text-slate-400">
-          Chưa có groups nào
+          Chưa có nhóm nào
         </p>
         {canCreateGroup && (
           <button
@@ -106,7 +99,7 @@ const GroupNav: React.FC<GroupNavProps> = ({ onGroupSelect, onCreateGroup }) => 
             className="mt-2 flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium text-primary-600 hover:bg-primary-50 dark:text-primary-300 dark:hover:bg-primary-900/20"
           >
             <Plus size={12} />
-            Tạo group đầu tiên
+            Tạo nhóm đầu tiên
           </button>
         )}
       </div>
@@ -136,7 +129,7 @@ const GroupNav: React.FC<GroupNavProps> = ({ onGroupSelect, onCreateGroup }) => 
             }`}
           >
             <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md bg-gray-100 dark:bg-slate-800">
-              {privacyIcon(group.privacyLevel)}
+              {accessIcon(group)}
             </div>
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-1">
@@ -148,12 +141,12 @@ const GroupNav: React.FC<GroupNavProps> = ({ onGroupSelect, onCreateGroup }) => 
                   <Crown
                     size={10}
                     className="flex-shrink-0 text-amber-500"
-                    aria-label="Group Admin"
+                    aria-label="Quản trị nhóm"
                   />
                 )}
               </div>
               <p className="truncate text-xs text-gray-500 dark:text-slate-400">
-                {group.memberCount} members • {group.meetingCount} meetings
+                {group.memberCount} thành viên • {group.meetingCount} cuộc họp
               </p>
             </div>
           </Link>
@@ -166,7 +159,7 @@ const GroupNav: React.FC<GroupNavProps> = ({ onGroupSelect, onCreateGroup }) => 
           className="w-full flex items-center justify-center gap-1.5 rounded-lg border-2 border-dashed border-gray-200 px-3 py-2 text-sm font-medium text-gray-500 transition hover:border-primary-300 hover:text-primary-600 dark:border-slate-700 dark:text-slate-400 dark:hover:border-primary-700 dark:hover:text-primary-300"
         >
           <Plus size={14} />
-          <span>New Group</span>
+          <span>Tạo nhóm</span>
         </button>
       )}
     </div>

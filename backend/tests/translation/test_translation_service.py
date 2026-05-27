@@ -10,7 +10,6 @@ def test_translation_preserves_markers():
         source_lang="vi",
         target_lang="en",
         transcript=source,
-        glossary={"deadline": "due_date", "sprint": "iteration"},
     )
     out = service.translate(req)
     assert TranslationService.validate_preservation(source, out)
@@ -27,7 +26,6 @@ def test_translation_marker_guard_fail_and_repair():
         source_lang="vi",
         target_lang="en",
         transcript=source,
-        glossary={},
     )
     
     # Repair should kick in and re-add markers
@@ -62,7 +60,7 @@ def test_translation_marker_guard_unrepairable_fail():
     service._repair_markers = MagicMock(return_value="Still broken.")
     
     source = "[00:00:01] [Speaker_1] Text."
-    req = TranslationRequest(source_lang="vi", target_lang="en", transcript=source, glossary={})
+    req = TranslationRequest(source_lang="vi", target_lang="en", transcript=source)
     
     with pytest.raises(MarkerPreservationError):
         service.translate(req)
@@ -75,26 +73,11 @@ def test_bleu_threshold():
     assert score >= 0.65
 
 
-def test_glossary_collision_longest_first():
-    service = TranslationService()
-    # Collision: "AI" and "AI Agent"
-    glossary = {"AI": "Trí tuệ nhân tạo", "AI Agent": "Tác nhân AI"}
-    source = "The AI Agent is using AI."
-    req = TranslationRequest(source_lang="en", target_lang="vi", transcript=source, glossary=glossary)
-    
-    # We should see "Tác nhân AI" (for AI Agent) and "Trí tuệ nhân tạo" (for AI)
-    # If it was shortest first, "AI Agent" might become "Trí tuệ nhân tạo Agent"
-    out = service._apply_glossary(source, glossary)
-    assert "Tác nhân AI" in out
-    assert "Trí tuệ nhân tạo" in out
-    assert "Trí tuệ nhân tạo Agent" not in out
-
-
 def test_mixed_language_markers():
     service = TranslationService()
     # Mixed marker content (non-standard but possible)
     source = "[12:34:56] [Người_nói_1] Chào mọi người."
-    req = TranslationRequest(source_lang="vi", target_lang="en", transcript=source, glossary={})
+    req = TranslationRequest(source_lang="vi", target_lang="en", transcript=source)
     
     # Current regex is SPEAKER_RE = re.compile(r"\[Speaker_[^\]]+\]|\[[A-Za-z0-9_]+\]")
     # Let's check if [Người_nói_1] matches. 

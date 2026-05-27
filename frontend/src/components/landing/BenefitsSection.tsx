@@ -14,7 +14,7 @@ const steps = [
   {
     num: '02',
     title: 'Xử lý AI',
-    desc: 'Công nghệ PhoWhisper phân tích âm thanh, chuyển đổi thành văn bản với độ chính xác vượt trội.',
+    desc: 'Deepgram và ViWhisper phân tích âm thanh, chuyển đổi thành văn bản với độ chính xác cao.',
     icon: <Cpu className="w-8 h-8" />,
     color: 'bg-primary-600'
   },

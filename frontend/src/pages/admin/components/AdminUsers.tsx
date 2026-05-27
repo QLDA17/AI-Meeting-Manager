@@ -25,6 +25,7 @@ import api from '../../../services/api';
 import { normalizeUser } from '../../../services/mappers';
 import { toast } from '../../../components/ui/Toast';
 import type { User } from '../../../types';
+import { subscribeUserUpdated } from '../../../utils/userSync';
 
 type FilterType = 'all' | 'active' | 'disabled' | 'admin';
 
@@ -57,6 +58,13 @@ const AdminUsers: React.FC = () => {
   React.useEffect(() => {
     loadUsers();
   }, [loadUsers]);
+
+  React.useEffect(() => {
+    return subscribeUserUpdated((updatedUser) => {
+      setUsers((current) => current.map((item) => (item.id === updatedUser.id ? { ...item, ...updatedUser } : item)));
+      setSelectedUser((current) => (current?.id === updatedUser.id ? { ...current, ...updatedUser } : current));
+    });
+  }, []);
 
   const handleToggleStatus = async (user: User) => {
     setUpdatingId(user.id);
@@ -275,7 +283,7 @@ const AdminUsers: React.FC = () => {
                           </span>
                         ) : (
                           <span className="inline-flex items-center gap-1.5 rounded-full bg-gray-100 px-2.5 py-1 text-[10px] font-bold uppercase tracking-widest text-gray-500 dark:bg-slate-800 dark:text-gray-400">
-                            <UserIcon size={12} /> Member
+                            <UserIcon size={12} /> User
                           </span>
                         )}
                       </td>
@@ -400,7 +408,7 @@ const AdminUsers: React.FC = () => {
                       : "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400"
                   )}>
                     {selectedUser.systemRole === 'system-admin' ? <Shield size={12} strokeWidth={2.5} /> : <UserIcon size={12} strokeWidth={2.5} />}
-                    {selectedUser.systemRole}
+                    {selectedUser.systemRole === 'system-admin' ? 'System Admin' : 'User'}
                   </span>
 
                   <span className={clsx(

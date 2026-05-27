@@ -24,10 +24,10 @@ const MeetingDetailPopup: React.FC<MeetingDetailPopupProps> = ({ meetingId, isOp
   const [isEditMeetingOpen, setIsEditMeetingOpen] = React.useState(false);
   const navigate = useNavigate();
   const { user } = useAuth();
-  const { isSystemAdmin, isOrgAdmin, isGroupAdmin, isViewer } = usePermission();
+  const { isSystemAdmin, isOrgAdmin, isGroupAdmin } = usePermission();
 
   const canManage = Boolean(
-    meeting && user && !isViewer &&
+    meeting && user &&
     (isSystemAdmin || isOrgAdmin || isGroupAdmin || meeting.createdBy === user.id)
   );
 

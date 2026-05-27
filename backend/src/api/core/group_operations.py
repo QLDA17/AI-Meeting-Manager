@@ -33,6 +33,16 @@ class GroupInviteByEmailRequest(BaseModel):
     role: str = "member"
 
 
+def _access_summary(visibility: str, join_policy: str) -> str:
+    visibility_label = "Ẩn khỏi tổ chức" if visibility == "hidden" else "Hiển thị trong tổ chức"
+    join_policy_label = {
+        "invite_only": "Chỉ theo lời mời",
+        "request_approval": "Yêu cầu phê duyệt",
+        "open_join": "Tự tham gia",
+    }.get(join_policy, join_policy)
+    return f"{visibility_label} · {join_policy_label}"
+
+
 def enrich_group_payload(group: models.Group) -> Dict[str, Any]:
     meetings = group.meetings or []
     total_minutes = sum((meeting.duration or 0) for meeting in meetings)
@@ -41,7 +51,9 @@ def enrich_group_payload(group: models.Group) -> Dict[str, Any]:
         "organization_id": group.organization_id,
         "name": group.name,
         "description": group.description,
-        "privacy_level": group.privacy_level,
+        "visibility": group.visibility,
+        "join_policy": group.join_policy,
+        "access_summary": _access_summary(group.visibility, group.join_policy),
         "settings": group.settings,
         "created_by": group.created_by,
         "created_at": group.created_at,
@@ -79,7 +91,7 @@ def list_groups_payload(org_id: str, db: Session, current_user: models.User) -> 
     groups = get_groups_by_org(db, org_id)
     visible_groups = []
     for group in groups:
-        if group.privacy_level != "private":
+        if group.visibility == "organization":
             visible_groups.append(group)
             continue
         if current_user.role == "system-admin":
@@ -106,7 +118,60 @@ def create_group_payload(
     current_user: models.User,
 ) -> schemas.Group:
     organization = auth.require_org_admin(db, current_user, group_data.organization_id)
-    group = create_group(db, group_data.model_dump(), created_by=current_user.id)
+    if group_data.visibility == "hidden" and group_data.join_policy != "invite_only":
+        raise HTTPException(
+            status_code=400,
+            detail="Nhóm ẩn chỉ hỗ trợ cách tham gia 'Chỉ theo lời mời'",
+        )
+
+    org_memberships = db.query(models.UserOrganization).filter(
+        models.UserOrganization.organization_id == group_data.organization_id,
+    ).all()
+    org_member_ids = {membership.user_id for membership in org_memberships}
+
+    selected_admin_ids = list(dict.fromkeys(group_data.group_admin_user_ids))
+    selected_member_ids = list(dict.fromkeys(group_data.initial_member_user_ids))
+    selected_user_ids = set(selected_admin_ids) | set(selected_member_ids)
+    invalid_user_ids = sorted(user_id for user_id in selected_user_ids if user_id not in org_member_ids)
+    if invalid_user_ids:
+        raise HTTPException(
+            status_code=400,
+            detail="Tất cả thành viên được chọn phải thuộc cùng tổ chức",
+        )
+
+    group = create_group(
+        db,
+        {
+            **group_data.model_dump(exclude={"group_admin_user_ids", "initial_member_user_ids"}),
+        },
+        created_by=current_user.id,
+    )
+
+    group_admin_ids = list(dict.fromkeys([current_user.id, *selected_admin_ids]))
+    member_ids = [user_id for user_id in selected_member_ids if user_id not in set(group_admin_ids) and user_id != current_user.id]
+
+    for user_id in group_admin_ids:
+        add_user_to_group(
+            db,
+            group.id,
+            user_id,
+            "group-admin",
+            invited_by=current_user.id,
+            commit=False,
+        )
+
+    for user_id in member_ids:
+        add_user_to_group(
+            db,
+            group.id,
+            user_id,
+            "member",
+            invited_by=current_user.id,
+            commit=False,
+        )
+
+    db.commit()
+    db.refresh(group)
     append_admin_audit_log(
         actor=current_user.username,
         action="CREATE_GROUP",
@@ -125,6 +190,13 @@ def update_group_payload(
     current_user: models.User,
 ) -> schemas.Group:
     existing_group = auth.require_group_admin(db, current_user, group_id)
+    next_visibility = updates.visibility or existing_group.visibility
+    next_join_policy = updates.join_policy or existing_group.join_policy
+    if next_visibility == "hidden" and next_join_policy != "invite_only":
+        raise HTTPException(
+            status_code=400,
+            detail="Nhóm ẩn chỉ hỗ trợ cách tham gia 'Chỉ theo lời mời'",
+        )
     group = update_group(db, group_id, updates.model_dump(exclude_unset=True))
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")

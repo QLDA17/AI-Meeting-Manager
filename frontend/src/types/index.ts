@@ -1,6 +1,6 @@
 import type { ActionItem } from './actionItem';
 
-export type SystemRole = 'system-admin' | 'org-admin' | 'group-admin' | 'member' | 'viewer';
+export type SystemRole = 'system-admin' | 'org-admin' | 'group-admin' | 'member';
 
 export type Permission =
   | 'create_organization'
@@ -57,12 +57,14 @@ export interface Organization {
 export interface OrgUser {
   userId: string;
   orgId: string;
-  role: 'org-admin' | 'member' | 'viewer';
+  role: 'org-admin' | 'member';
   joinedAt: string;
   orgName?: string;
   approvalStatus?: 'pending' | 'active' | 'rejected' | 'suspended';
 }
 
+export type GroupVisibility = 'hidden' | 'organization';
+export type GroupJoinPolicy = 'invite_only' | 'request_approval' | 'open_join';
 export type PrivacyLevel = 'private' | 'internal' | 'public';
 
 export interface Group {
@@ -71,7 +73,11 @@ export interface Group {
   organization_id: string;
   name: string;
   description?: string;
-  privacyLevel: PrivacyLevel;
+  visibility: GroupVisibility;
+  joinPolicy: GroupJoinPolicy;
+  join_policy?: GroupJoinPolicy;
+  accessSummary?: string;
+  privacyLevel?: PrivacyLevel;
   privacy_level?: PrivacyLevel;
   createdAt: string;
   updatedAt: string;
@@ -85,7 +91,7 @@ export interface Group {
 export interface GroupUser {
   userId: string;
   groupId: string;
-  role: 'group-admin' | 'member' | 'viewer';
+  role: 'group-admin' | 'member';
   joinedAt: string;
   groupName?: string;
 }
@@ -147,6 +153,11 @@ export interface Meeting {
   startTime: string;
   endTime: string;
   duration: number;
+  plannedDurationMinutes?: number;
+  actualDurationMinutes?: number;
+  liveDurationMinutes?: number;
+  isOverrun?: boolean;
+  overrunMinutes?: number;
   status: 'queued' | 'processing' | 'completed' | 'failed' | 'live' | 'upcoming' | 'canceled';
   code?: string;
   recordingUrl?: string;

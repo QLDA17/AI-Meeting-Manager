@@ -41,7 +41,7 @@ interface MeetingSection {
 const MeetingList: React.FC = () => {
   const navigate = useNavigate();
   const { user } = useAuth();
-  const { isViewer } = usePermission();
+  const { isMember } = usePermission();
   const { meetings } = useAppStore();
   const { currentOrg, currentOrgId, groups } = useOrgStore();
   const { toggleScheduleModal } = useCalendarStore();
@@ -157,7 +157,7 @@ const MeetingList: React.FC = () => {
             <button onClick={() => navigate('/upload')} className="inline-flex items-center gap-2 rounded-xl border border-gray-100 bg-white px-5 py-2.5 text-xs font-black text-gray-600 shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md">
               <Upload size={14} /> Tải âm thanh
             </button>
-            {!isViewer && (
+            {isMember && (
               <button onClick={() => toggleScheduleModal(true)} className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-5 py-2.5 text-xs font-black text-gray-700 shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md">
                 <Calendar size={14} /> Lịch họp
               </button>
@@ -238,7 +238,7 @@ const MeetingList: React.FC = () => {
                 title={orgMeetings.length === 0 ? 'Chưa có cuộc họp nào trong tổ chức này' : 'Không tìm thấy kết quả phù hợp'}
                 description={
                   orgMeetings.length === 0
-                    ? isViewer
+                    ? !isMember
                       ? 'Bạn đang ở chế độ chỉ xem. Hãy tham gia bằng mã phòng hoặc chờ quản trị viên tạo cuộc họp đầu tiên.'
                       : 'Bắt đầu bằng một cuộc họp live, tải ghi âm hoặc mời mọi người tham gia bằng mã phòng.'
                     : 'Thử thay đổi từ khóa, nhóm hoặc trạng thái để mở rộng danh sách kết quả.'
@@ -246,7 +246,7 @@ const MeetingList: React.FC = () => {
                 tone="empty"
                 action={
                   <div className="flex flex-wrap justify-center gap-3">
-                    {!isViewer && (
+                    {isMember && (
                       <>
                         <button
                           onClick={() => navigate('/meetings/create')}
@@ -298,7 +298,7 @@ const MeetingList: React.FC = () => {
                     {/* Cards grid */}
                     <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
                       {displayMeetings.map((meeting, idx) => (
-                        <MeetingCard key={meeting.id} meeting={meeting} index={idx} canManage={!isViewer} onEdit={handleEditMeeting} onDelete={handleDeleteMeeting} />
+                        <MeetingCard key={meeting.id} meeting={meeting} index={idx} canManage={isMember} onEdit={handleEditMeeting} onDelete={handleDeleteMeeting} />
                       ))}
                     </div>
 

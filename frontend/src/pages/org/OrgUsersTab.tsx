@@ -5,12 +5,10 @@ import {
   UserPlus,
   Shield,
   User,
-  Eye,
   MoreVertical,
   Ban,
   ShieldCheck,
   UserRound,
-  EyeIcon,
   CheckCircle2,
   Mail,
   Loader2,
@@ -25,22 +23,16 @@ interface OrgUsersTabProps {
 
 const roleConfig = {
   'org-admin': {
-    label: 'Org Admin',
-    icon: <Shield size={12} />,
+    label: 'Quản trị tổ chức',
+    icon: <Shield size={11} />,
     color: 'text-amber-700 dark:text-amber-300',
-    bgColor: 'bg-amber-50 dark:bg-amber-900/20',
+    bgColor: 'bg-amber-50/80 border border-amber-100/50 dark:bg-amber-950/20 dark:border-amber-900/30',
   },
   member: {
-    label: 'Member',
-    icon: <User size={12} />,
+    label: 'Thành viên',
+    icon: <User size={11} />,
     color: 'text-blue-700 dark:text-blue-300',
-    bgColor: 'bg-blue-50 dark:bg-blue-900/20',
-  },
-  viewer: {
-    label: 'Viewer',
-    icon: <Eye size={12} />,
-    color: 'text-gray-700 dark:text-gray-300',
-    bgColor: 'bg-gray-50 dark:bg-gray-800/50',
+    bgColor: 'bg-blue-50/80 border border-blue-100/50 dark:bg-blue-950/20 dark:border-blue-900/30',
   },
 } as const;
 
@@ -101,16 +93,13 @@ const OrgUsersTab: React.FC<OrgUsersTabProps> = ({ orgId }) => {
   const groupedUsers = useMemo(() => {
     const admins: UserType[] = [];
     const membersGroup: UserType[] = [];
-    const viewers: UserType[] = [];
-
     filteredUsers.forEach((user) => {
       const role = user.orgMemberships?.find((membership) => membership.orgId === orgId)?.role;
       if (role === 'org-admin') admins.push(user);
-      else if (role === 'viewer') viewers.push(user);
       else membersGroup.push(user);
     });
 
-    return { admins, members: membersGroup, viewers };
+    return { admins, members: membersGroup };
   }, [filteredUsers, orgId]);
 
   const UserCard: React.FC<{ user: UserType }> = ({ user }) => {
@@ -120,59 +109,63 @@ const OrgUsersTab: React.FC<OrgUsersTabProps> = ({ orgId }) => {
     const isActive = user.isActive ?? true;
 
     return (
-      <div className="flex items-center justify-between rounded-xl border border-gray-200 bg-white p-4 transition hover:border-gray-300 dark:border-slate-700 dark:bg-slate-800/50 dark:hover:border-slate-600">
+      <div className="flex items-center justify-between rounded-xl border border-gray-100 bg-white/70 p-4 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:border-gray-200/80 hover:shadow-md dark:border-slate-800/80 dark:bg-slate-900/30">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary-100 text-sm font-bold text-primary-700 dark:bg-primary-900/40 dark:text-primary-200">
-            {(user.displayName?.[0] || user.email[0]).toUpperCase()}
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-full bg-primary-100 text-sm font-bold text-primary-750 dark:bg-primary-950/40 dark:text-primary-300 border border-primary-200/20 shadow-sm">
+            {user.avatarUrl ? (
+              <img src={user.avatarUrl} alt={user.displayName || user.email} className="h-full w-full object-cover" />
+            ) : (
+              (user.displayName?.[0] || user.email[0]).toUpperCase()
+            )}
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <p className="text-sm font-semibold text-gray-900 dark:text-slate-100">
+              <p className="text-sm font-bold text-gray-900 dark:text-slate-100">
                 {user.displayName || user.email}
               </p>
               {config.icon}
             </div>
-            <p className="text-xs text-gray-500 dark:text-slate-400">{user.email}</p>
-            <p className="mt-0.5 text-xs text-gray-400 dark:text-slate-500">
-              Joined {new Date(user.createdAt).toLocaleDateString('vi-VN')}
+            <p className="text-xs font-semibold text-gray-400 dark:text-slate-500">{user.email}</p>
+            <p className="mt-0.5 text-[10px] font-semibold text-gray-400 dark:text-slate-500">
+              Tham gia {new Date(user.createdAt).toLocaleDateString('vi-VN')}
             </p>
           </div>
         </div>
 
-        <div className="relative flex items-center gap-2">
-          <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold ${config.bgColor} ${config.color}`}>
+        <div className="relative flex items-center gap-2.5">
+          <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.8 text-xs font-bold ${config.bgColor} ${config.color}`}>
             {config.icon}
             {config.label}
           </span>
-          <span className={`inline-flex items-center gap-1 text-xs ${isActive ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
-            {isActive ? <CheckCircle2 size={10} /> : <Ban size={10} />}
-            {isActive ? 'Active' : 'Inactive'}
+          <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.8 text-[11px] font-bold ${isActive ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/20 dark:text-emerald-400 border border-emerald-100/50 dark:border-emerald-900/20' : 'bg-rose-50 text-rose-700 dark:bg-rose-950/20 dark:text-rose-400 border border-rose-100/50 dark:border-rose-900/20'}`}>
+            <span className={`h-1.5 w-1.5 rounded-full ${isActive ? 'bg-emerald-500' : 'bg-rose-500'}`} />
+            {isActive ? 'Hoạt động' : 'Tạm dừng'}
           </span>
           <button
             onClick={() => setOpenMenuUserId((prev) => (prev === user.id ? null : user.id))}
-            className="rounded-lg p-1.5 text-gray-400 transition hover:bg-gray-100 hover:text-gray-600 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-slate-200"
+            className="rounded-lg p-1.5 text-gray-400 transition hover:bg-gray-100 hover:text-gray-600 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-200"
           >
             <MoreVertical size={14} />
           </button>
           {openMenuUserId === user.id && (
-            <div className="absolute right-0 top-8 z-20 w-40 rounded-lg border border-gray-200 bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-slate-900">
+            <div className="absolute right-0 top-8 z-30 w-44 rounded-xl border border-gray-150 bg-white/95 p-1.5 shadow-xl backdrop-blur-md dark:border-slate-800 dark:bg-slate-950/95">
               <button
                 onClick={() => {
                   navigator.clipboard.writeText(user.email);
                   setOpenMenuUserId(null);
                 }}
-                className="w-full rounded px-2 py-1.5 text-left text-xs hover:bg-gray-100 dark:hover:bg-slate-800"
+                className="w-full rounded-lg px-3 py-2 text-left text-xs font-semibold text-gray-700 hover:bg-gray-50 hover:text-gray-900 dark:text-slate-300 dark:hover:bg-slate-900"
               >
-                Copy email
+                Sao chép email
               </button>
               <button
                 onClick={() => {
                   window.location.href = `mailto:${user.email}`;
                   setOpenMenuUserId(null);
                 }}
-                className="w-full rounded px-2 py-1.5 text-left text-xs hover:bg-gray-100 dark:hover:bg-slate-800"
+                className="w-full rounded-lg px-3 py-2 text-left text-xs font-semibold text-gray-700 hover:bg-gray-50 hover:text-gray-900 dark:text-slate-300 dark:hover:bg-slate-900"
               >
-                Send email
+                Gửi email
               </button>
             </div>
           )}
@@ -203,96 +196,82 @@ const OrgUsersTab: React.FC<OrgUsersTabProps> = ({ orgId }) => {
 
       <div className="flex flex-col gap-3 sm:flex-row">
         <div className="relative flex-1">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16} />
+          <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400" size={15} />
           <input
             type="text"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            placeholder="Tìm người dùng..."
-            className="w-full rounded-lg border border-gray-200 bg-white py-2.5 pl-10 pr-4 text-sm outline-none transition focus:border-primary-400 focus:ring-2 focus:ring-primary-100 dark:border-slate-700 dark:bg-slate-800 dark:focus:ring-primary-900/30"
+            placeholder="Tìm người dùng theo tên hoặc email..."
+            className="w-full rounded-xl border border-gray-200 bg-white py-3 pl-11 pr-4 text-sm outline-none transition-all duration-200 focus:border-primary-400 focus:ring-4 focus:ring-primary-100/50 dark:border-slate-700 dark:bg-slate-850 dark:focus:ring-primary-900/30"
           />
         </div>
         <select
           value={roleFilter}
           onChange={(e) => setRoleFilter(e.target.value)}
-          className="rounded-lg border border-gray-200 bg-white px-4 py-2.5 text-sm outline-none transition focus:border-primary-400 dark:border-slate-700 dark:bg-slate-800"
+          className="rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm font-semibold outline-none transition-all duration-200 focus:border-primary-400 dark:border-slate-700 dark:bg-slate-850"
         >
-          <option value="all">All Roles</option>
+          <option value="all">Tất cả vai trò</option>
           <option value="org-admin">Quản trị tổ chức</option>
-          <option value="member">Members</option>
-          <option value="viewer">Người xem</option>
+          <option value="member">Thành viên</option>
         </select>
         <select
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value)}
-          className="rounded-lg border border-gray-200 bg-white px-4 py-2.5 text-sm outline-none transition focus:border-primary-400 dark:border-slate-700 dark:bg-slate-800"
+          className="rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm font-semibold outline-none transition-all duration-200 focus:border-primary-400 dark:border-slate-700 dark:bg-slate-850"
         >
-          <option value="all">All Status</option>
-          <option value="active">Active</option>
-          <option value="inactive">Inactive</option>
+          <option value="all">Tất cả trạng thái</option>
+          <option value="active">Đang hoạt động</option>
+          <option value="inactive">Ngừng hoạt động</option>
         </select>
       </div>
 
       <div className="space-y-4">
         {groupedUsers.admins.length > 0 && (
           <div>
-            <h4 className="mb-2 flex items-center gap-2 text-sm font-semibold text-amber-600 dark:text-amber-400">
-              <Shield size={14} />
-              ADMINS ({groupedUsers.admins.length})
+            <h4 className="mb-2 flex items-center gap-1.5 text-xs font-black uppercase tracking-widest text-amber-600 dark:text-amber-450">
+              <Shield size={12} />
+              QUẢN TRỊ ({groupedUsers.admins.length})
             </h4>
-            <div className="space-y-2">
+            <div className="space-y-2.5">
               {groupedUsers.admins.map((user) => <UserCard key={user.id} user={user} />)}
             </div>
           </div>
         )}
 
         {groupedUsers.members.length > 0 && (
-          <div>
-            <h4 className="mb-2 flex items-center gap-2 text-sm font-semibold text-blue-600 dark:text-blue-400">
-              <User size={14} />
-              MEMBERS ({groupedUsers.members.length})
+          <div className="pt-2">
+            <h4 className="mb-2 flex items-center gap-1.5 text-xs font-black uppercase tracking-widest text-blue-650 dark:text-blue-400">
+              <User size={12} />
+              THÀNH VIÊN ({groupedUsers.members.length})
             </h4>
-            <div className="space-y-2">
+            <div className="space-y-2.5">
               {groupedUsers.members.map((user) => <UserCard key={user.id} user={user} />)}
             </div>
           </div>
         )}
 
-        {groupedUsers.viewers.length > 0 && (
-          <div>
-            <h4 className="mb-2 flex items-center gap-2 text-sm font-semibold text-gray-600 dark:text-gray-400">
-              <Eye size={14} />
-              VIEWERS ({groupedUsers.viewers.length})
-            </h4>
-            <div className="space-y-2">
-              {groupedUsers.viewers.map((user) => <UserCard key={user.id} user={user} />)}
-            </div>
-          </div>
-        )}
-
         {filteredUsers.length === 0 && (
-          <div className="rounded-xl border border-dashed border-gray-300 p-8 text-center dark:border-slate-700">
-            <User size={32} className="mx-auto mb-3 text-gray-400 dark:text-slate-500" />
-            <p className="text-sm font-semibold text-gray-700 dark:text-slate-200">No users found</p>
-            <p className="mt-1 text-xs text-gray-500 dark:text-slate-400">Try adjusting your filters or invite new users</p>
+          <div className="rounded-xl border border-dashed border-gray-200 p-10 text-center dark:border-slate-800">
+            <User size={28} className="mx-auto mb-3 text-gray-400 dark:text-slate-500" />
+            <p className="text-sm font-semibold text-gray-800 dark:text-slate-200">Không tìm thấy người dùng phù hợp</p>
+            <p className="mt-1 text-xs text-gray-405 dark:text-slate-400">Thử đổi bộ lọc hoặc mời thêm người dùng mới</p>
           </div>
         )}
       </div>
 
-      <div className="rounded-xl bg-gray-50 p-4 dark:bg-slate-800/50">
-        <h4 className="mb-2 text-sm font-semibold text-gray-700 dark:text-slate-200">Role Guide</h4>
-        <div className="space-y-2 text-xs text-gray-600 dark:text-slate-300">
-          <p className="flex items-center gap-2">
-            <ShieldCheck size={12} className="text-amber-600" />
-            <strong>Org Admin:</strong> Toàn quyền quản lý - có thể quản lý users, groups, cài đặt tổ chức
+      <div className="rounded-xl border border-blue-100 bg-blue-50/40 p-4 dark:border-blue-900/20 dark:bg-blue-950/10">
+        <h4 className="mb-2 text-sm font-bold text-blue-900 dark:text-blue-300 flex items-center gap-1.5">
+          <ShieldCheck size={16} className="text-blue-600 dark:text-blue-400" />
+          Giải thích vai trò và quyền hạn
+        </h4>
+        <div className="space-y-2.5 text-xs text-blue-800/90 dark:text-blue-300/80">
+          <p className="flex items-start gap-2 leading-relaxed">
+            <span className="mt-0.5 rounded bg-amber-105 px-1 py-0.2 text-[9px] font-black text-amber-800 dark:bg-amber-950 dark:text-amber-400">Admin</span>
+            <span><strong>Quản trị tổ chức:</strong> Sở hữu toàn quyền kiểm soát tổ chức, quản lý thành viên, cấu hình nhóm, cài đặt bảo mật và theo dõi logs hệ thống.</span>
           </p>
-          <p className="flex items-center gap-2">
-            <UserRound size={12} className="text-blue-600" />
-            <strong>Member:</strong> Can create groups, upload meetings, participate
-          </p>
-          <p className="flex items-center gap-2">
-            <EyeIcon size={12} className="text-gray-500" />
-            <strong>Viewer:</strong> Read-only - can view meetings and summaries
+          <p className="flex items-start gap-2 leading-relaxed">
+            <span className="mt-0.5 rounded bg-blue-105 px-1 py-0.2 text-[9px] font-black text-blue-850 dark:bg-blue-950 dark:text-blue-400">Member</span>
+            <span><strong>Thành viên:</strong> Có quyền tạo cuộc họp mới, tham gia các nhóm được cấp phép, chia sẻ và làm việc trên các tài nguyên chung trong tổ chức.</span>
           </p>
         </div>
       </div>
@@ -336,7 +315,7 @@ const InviteModal: React.FC<{ orgId: string; onClose: () => void; onInvited: () 
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchableUser[]>([]);
   const [tags, setTags] = useState<string[]>([]);
-  const [role, setRole] = useState<'member' | 'viewer' | 'org-admin'>('member');
+  const [role, setRole] = useState<'member' | 'org-admin'>('member');
   const [loading, setLoading] = useState(false);
   const [searching, setSearching] = useState(false);
   const [success, setSuccess] = useState(false);
@@ -463,11 +442,11 @@ const InviteModal: React.FC<{ orgId: string; onClose: () => void; onInvited: () 
       <motion.div
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}
-        className="w-full max-w-lg rounded-[2rem] bg-white p-8 shadow-2xl dark:bg-slate-900"
+        className="w-full max-w-lg rounded-2xl bg-white p-8 shadow-2xl dark:bg-slate-900 border border-gray-100 dark:border-slate-800"
       >
         <div className="mb-6 flex items-center justify-between">
           <h3 className="text-xl font-bold text-gray-900 dark:text-white">Mời thành viên</h3>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">&times;</button>
+          <button onClick={onClose} className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-slate-800">&times;</button>
         </div>
 
         {!success ? (
@@ -569,10 +548,9 @@ const InviteModal: React.FC<{ orgId: string; onClose: () => void; onInvited: () 
               <select
                 className="h-12 w-full rounded-xl border-gray-100 bg-gray-50 px-4 text-sm dark:border-slate-800 dark:bg-slate-800 dark:text-white"
                 value={role}
-                onChange={(e) => setRole(e.target.value as 'member' | 'viewer' | 'org-admin')}
+                onChange={(e) => setRole(e.target.value as 'member' | 'org-admin')}
               >
                 <option value="member">Member (Có quyền tạo họp)</option>
-                <option value="viewer">Viewer (Chỉ xem)</option>
                 <option value="org-admin">Admin (Quản trị Org)</option>
               </select>
             </div>

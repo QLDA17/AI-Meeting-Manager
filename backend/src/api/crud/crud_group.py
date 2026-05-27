@@ -10,21 +10,12 @@ def create_group(db: Session, group_data: dict, created_by: str) -> models.Group
         organization_id=group_data["organization_id"],
         name=group_data["name"],
         description=group_data.get("description"),
-        privacy_level=group_data.get("privacy_level", "private"),
+        visibility=group_data.get("visibility", "organization"),
+        join_policy=group_data.get("join_policy", "invite_only"),
         settings=group_data.get("settings"),
         created_by=created_by,
     )
     db.add(db_group)
-    db.flush()
-
-    db_membership = models.GroupMembership(
-        id=str(uuid.uuid4()),
-        group_id=db_group.id,
-        user_id=created_by,
-        role="group-admin",
-        invited_by=created_by,
-    )
-    db.add(db_membership)
     db.commit()
     db.refresh(db_group)
     return db_group

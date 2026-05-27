@@ -93,7 +93,7 @@ def test_register_with_group_invite(client, db_session):
     org, admin = make_org_with_admin(db_session)
     group = create_group(
         db_session,
-        {"organization_id": org.id, "name": "Product", "privacy_level": "private"},
+        {"organization_id": org.id, "name": "Product", "visibility": "hidden", "join_policy": "invite_only"},
         created_by=admin.id,
     )
     make_invitation(

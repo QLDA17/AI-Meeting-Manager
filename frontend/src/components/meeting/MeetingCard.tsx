@@ -107,26 +107,29 @@ const safeDate = (value: string) => {
   return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
 };
 
-const getEffectiveDurationMinutes = (meeting: Meeting) => {
-  if (meeting.status === 'live' && meeting.actual_start) {
-    const liveStart = new Date(meeting.actual_start);
-    if (!Number.isNaN(liveStart.getTime())) {
-      return Math.max(0, Math.floor((Date.now() - liveStart.getTime()) / 60000));
+const getDurationDisplay = (meeting: Meeting) => {
+  if (meeting.status === 'live') {
+    if (typeof meeting.liveDurationMinutes === 'number') {
+      return `${Math.max(0, meeting.liveDurationMinutes)} phút`;
     }
-  }
-  if (meeting.duration) {
-    return Math.max(0, meeting.duration);
-  }
-  const startStr = meeting.actual_start || meeting.startTime;
-  const endStr = meeting.actual_end || meeting.endTime;
-  if (startStr && endStr) {
-    const start = new Date(startStr);
-    const end = new Date(endStr);
-    if (!Number.isNaN(start.getTime()) && !Number.isNaN(end.getTime())) {
-      return Math.max(0, Math.round((end.getTime() - start.getTime()) / 60000));
+    if (meeting.actual_start) {
+      const liveStart = new Date(meeting.actual_start);
+      if (!Number.isNaN(liveStart.getTime())) {
+        return `${Math.max(0, Math.floor((Date.now() - liveStart.getTime()) / 60000))} phút`;
+      }
     }
+    return '--';
   }
-  return 0;
+  if (typeof meeting.actualDurationMinutes === 'number') {
+    return `${Math.max(0, meeting.actualDurationMinutes)} phút`;
+  }
+  if (meeting.duration > 0) {
+    return `${Math.max(0, meeting.duration)} phút`;
+  }
+  if (typeof meeting.plannedDurationMinutes === 'number') {
+    return `Dự kiến ${Math.max(0, meeting.plannedDurationMinutes)} phút`;
+  }
+  return '--';
 };
 
 const getInitials = (user: User) => {
@@ -170,7 +173,7 @@ const MeetingCard: React.FC<MeetingCardProps> = ({
 }) => {
   const status = statusConfig[meeting.status] || statusConfig.upcoming;
   const start = safeDate(meeting.startTime);
-  const durationMinutes = getEffectiveDurationMinutes(meeting);
+  const durationLabel = getDurationDisplay(meeting);
   const hasTranscript = Boolean(meeting.transcriptUrl || meeting.audioUrl || meeting.status === 'completed');
   const hasAiNotes = Boolean(meeting.summary || meeting.keyPoints?.length || meeting.decisions?.length);
   const insightCount = (meeting.keyPoints?.length || 0) + (meeting.decisions?.length || 0);
@@ -293,7 +296,7 @@ const MeetingCard: React.FC<MeetingCardProps> = ({
             {/* Duration */}
             <div className="flex items-center gap-1 text-[11px] font-semibold text-gray-600">
               <Clock size={12} className="text-gray-400" />
-              <span>{durationMinutes > 0 ? `${durationMinutes} phút` : '--'}</span>
+              <span>{durationLabel}</span>
             </div>
           </div>
 

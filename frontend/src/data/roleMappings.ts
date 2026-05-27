@@ -7,7 +7,7 @@
 export interface OrgUserRole {
   userId: string;
   orgId: string;
-  role: 'org-admin' | 'member' | 'viewer';
+  role: 'org-admin' | 'member';
   joinedAt: Date;
 }
 
@@ -15,7 +15,7 @@ export interface OrgUserRole {
 export interface GroupUserRole {
   userId: string;
   groupId: string;
-  role: 'group-admin' | 'member' | 'viewer';
+  role: 'group-admin' | 'member';
   joinedAt: Date;
 }
 
@@ -38,8 +38,8 @@ export const orgUserRoles: OrgUserRole[] = [
   // user-004 (Hoàng Hữu D) - Member của ABC Company
   { userId: 'user-004', orgId: 'org-001', role: 'member', joinedAt: new Date('2025-01-04') },
 
-  // user-009 (Viewer) - Viewer của ABC Company
-  { userId: 'user-009', orgId: 'org-001', role: 'viewer', joinedAt: new Date('2025-01-07') },
+  // user-009 - Member của ABC Company
+  { userId: 'user-009', orgId: 'org-001', role: 'member', joinedAt: new Date('2025-01-07') },
 
   // XYZ Corp users
   { userId: 'user-007', orgId: 'org-002', role: 'org-admin', joinedAt: new Date('2025-02-01') },
@@ -77,8 +77,8 @@ export const groupUserRoles: GroupUserRole[] = [
   // user-006 (Vũ Tuấn F) - member của group-003
   { userId: 'user-006', groupId: 'group-003', role: 'member', joinedAt: new Date('2025-01-12') },
 
-  // user-009 (Viewer) - viewer của group-003
-  { userId: 'user-009', groupId: 'group-003', role: 'viewer', joinedAt: new Date('2025-01-15') },
+  // user-009 - member của group-003
+  { userId: 'user-009', groupId: 'group-003', role: 'member', joinedAt: new Date('2025-01-15') },
 
   // XYZ Corp groups
   { userId: 'user-007', groupId: 'group-004', role: 'group-admin', joinedAt: new Date('2025-02-03') },

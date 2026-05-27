@@ -25,7 +25,6 @@ type UploadTab = 'file' | 'live-test';
 const STT_PROVIDER_OPTIONS = [
   { value: 'deepgram', label: 'Deepgram (Recommended)' },
   { value: 'viwhisper', label: 'ViWhisper' },
-  { value: 'phowhisper', label: 'PhoWhisper' },
 ];
 
 const LANGUAGE_OPTIONS = [

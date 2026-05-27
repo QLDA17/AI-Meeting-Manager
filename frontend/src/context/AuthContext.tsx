@@ -5,6 +5,7 @@ import api from '../services/api';
 import { useOrgStore } from '../stores';
 import { normalizeOrganization, normalizeUser } from '../services/mappers';
 import { hasPermissionInRole } from '../data/roles';
+import { emitUserUpdated } from '../utils/userSync';
 
 export type Role = SystemRole | 'admin' | 'manager' | 'staff';
 
@@ -80,6 +81,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const syncCachedUser = useCallback((nextUser: User) => {
+    useOrgStore.setState((state) => ({
+      members: state.members.map((member) => (member.id === nextUser.id ? { ...member, ...nextUser } : member)),
+    }));
+    emitUserUpdated(nextUser);
+  }, []);
+
   const clearSessionState = useCallback(() => {
     setUser(null);
     setSession(null);
@@ -110,6 +118,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     setUser(nextUser);
     setSession(nextSession);
+    syncCachedUser(nextUser);
 
     if (nextOrgs.length) {
       setOrgs(nextOrgs);
@@ -121,7 +130,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     return nextUser;
-  }, [clearOrgContext, setCurrentOrg, setOrgs]);
+  }, [clearOrgContext, setCurrentOrg, setOrgs, syncCachedUser]);
 
   useEffect(() => {
     let isCancelled = false;

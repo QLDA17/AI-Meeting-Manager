@@ -20,7 +20,7 @@ const Breadcrumbs: React.FC = () => {
 
   const breadcrumbs = React.useMemo(() => {
     const items: BreadcrumbItem[] = [
-      { label: 'Home', path: '/' },
+      { label: 'Trang chủ', path: '/' },
     ];
 
     // Add org
@@ -42,24 +42,24 @@ const Breadcrumbs: React.FC = () => {
     // Add meeting if in meeting detail
     const meetingMatch = location.pathname.match(/\/meetings\/([^/]+)/);
     if (meetingMatch) {
-      items.push({
-        label: 'Meeting Detail',
+        items.push({
+        label: 'Chi tiết cuộc họp',
         isCurrent: true,
       });
     }
 
     // Add create group page
     if (location.pathname === '/groups/create') {
-      items.push({
-        label: 'Create Group',
+        items.push({
+        label: 'Tạo nhóm',
         isCurrent: true,
       });
     }
 
     // Add org admin pages
     if (location.pathname.includes('/org/admin')) {
-      items.push({
-        label: 'Admin Console',
+        items.push({
+        label: 'Bảng quản trị',
         isCurrent: true,
       });
     }

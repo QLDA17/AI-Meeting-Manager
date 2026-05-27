@@ -47,14 +47,14 @@ class MeetingProcessingJob:
             self.progress = 20
             logger.info(f"Starting FAST direct AI pipeline for meeting: {self.title}")
             
-            from src.providers.google_stt import GoogleSTTProvider
+            from src.stt.service import STTService
             from src.providers.google_llm import GoogleLLMAdapter
             import json
             import re
             import asyncio
             
             loop = asyncio.get_event_loop()
-            stt = GoogleSTTProvider()
+            stt = STTService().provider
             
             # Use non-blocking executor for STT to avoid freezing FastAPI
             try:
@@ -96,7 +96,7 @@ class MeetingProcessingJob:
                 "language": "vi",
                 "word_count": len(transcript_text.split()),
                 "processing_status": "COMPLETED",
-                "stt_provider": "google",
+                "stt_provider": os.getenv("STT_PROVIDER", "deepgram").lower(),
             }
             db_transcript = create_transcript(db, transcript_data)
             
@@ -205,8 +205,8 @@ class MeetingProcessingJob:
                 create_cost_tracking(db, {
                     "meeting_id": self.meeting_id,
                     "service": "stt",
-                    "api_endpoint": "google_stt",
-                    "model_name": "chirp-2",
+                    "api_endpoint": os.getenv("STT_PROVIDER", "deepgram").lower(),
+                    "model_name": os.getenv("DEEPGRAM_MODEL", "nova-3"),
                     "input_tokens": len(transcript_text.split()),
                     "output_tokens": 0,
                     "cost_usd": 0.006,  # Estimated cost

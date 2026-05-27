@@ -168,6 +168,32 @@ def test_get_meetings(client, auth_context):
     assert len(data) >= 2
 
 
+def test_list_meetings_exposes_planned_duration_without_overwriting_actual_duration(client, auth_context):
+    create_response = client.post(
+        "/api/meetings",
+        headers=auth_context["headers"],
+        json=meeting_payload(
+            auth_context,
+            title="Scheduled Duration Split",
+            scheduled_start="2099-05-27T09:00:00Z",
+            scheduled_end="2099-05-27T10:00:00Z",
+            duration=0,
+        ),
+    )
+    assert create_response.status_code == 200
+    meeting_id = create_response.json()["id"]
+
+    response = client.get("/api/meetings", headers=auth_context["headers"])
+
+    assert response.status_code == 200
+    row = next(item for item in response.json() if item["id"] == meeting_id)
+    assert row["duration"] == 0
+    assert row["planned_duration_minutes"] == 60
+    assert row["actual_duration_minutes"] is None
+    assert row["live_duration_minutes"] is None
+    assert row["is_overrun"] is False
+
+
 def test_get_meeting_by_id(client, auth_context):
     create_response = client.post(
         "/api/meetings",
@@ -182,6 +208,32 @@ def test_get_meeting_by_id(client, auth_context):
     data = response.json()
     assert data["id"] == meeting_id
     assert data["title"] == "Test Meeting"
+
+
+def test_get_meeting_detail_exposes_duration_modes(client, auth_context):
+    create_response = client.post(
+        "/api/meetings",
+        headers=auth_context["headers"],
+        json=meeting_payload(
+            auth_context,
+            title="Detail Duration Split",
+            status="live",
+            scheduled_start="2099-05-27T09:00:00Z",
+            scheduled_end="2099-05-27T10:00:00Z",
+            actual_start="2099-05-27T09:05:00Z",
+        ),
+    )
+    meeting_id = create_response.json()["id"]
+
+    response = client.get(f"/api/meetings/{meeting_id}", headers=auth_context["headers"])
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["duration"] == 0
+    assert data["planned_duration_minutes"] == 60
+    assert data["actual_duration_minutes"] is None
+    assert data["live_duration_minutes"] is not None
+    assert data["is_overrun"] is False
 
 
 def test_get_meeting_not_found(client, auth_context):
@@ -354,7 +406,6 @@ def test_upload_audio_creates_meeting_audio_and_job(client, auth_context, monkey
             "language": "auto",
             "stt_provider": "deepgram",
             "enable_diarization": "true",
-            "enable_glossary": "true",
             "enable_summary": "true",
             "enable_noise_cleanup": "true",
         },

@@ -169,32 +169,6 @@ export const roleDefinitions: Record<SystemRole, RoleDefinition> = {
             'view_analytics',
         ] as Permission[],
     },
-
-    'viewer': {
-        role: 'viewer',
-        displayName: 'Viewer',
-        description: 'Read-only access to meetings and resources',
-        color: '#6B7280', // Gray
-        icon: 'Eye',
-        permissions: [
-            // Organization (Read-only)
-            'read_organization',
-
-            // Group (Read-only)
-            'read_group',
-
-            // Meeting (Read-only)
-            'read_meeting',
-            'download_recording',
-            'export_transcript',
-
-            // Action Items (Read-only)
-            'read_action_item',
-
-            // Analytics
-            'view_analytics',
-        ] as Permission[],
-    },
 };
 
 /**
@@ -229,7 +203,6 @@ export const roleHierarchy: Record<SystemRole, number> = {
     'org-admin': 4,
     'group-admin': 3,
     'member': 2,
-    'viewer': 1,
 };
 
 /**

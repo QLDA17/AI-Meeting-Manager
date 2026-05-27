@@ -28,7 +28,7 @@ interface SidebarProps {
 const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onClose }) => {
   const navigate = useNavigate();
   const { user, logout } = useAuth();
-  const { isSystemAdmin, isOrgAdmin, isGroupAdmin, isViewer } = usePermission();
+  const { isSystemAdmin, isOrgAdmin, isGroupAdmin } = usePermission();
   const { currentOrg } = useOrgStore();
   const [isCreateGroupOpen, setIsCreateGroupOpen] = React.useState(false);
 
@@ -139,7 +139,7 @@ const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onClose }) => {
                         className="flex items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-100 hover:text-primary-600 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-primary-400"
                       >
                         <Settings size={18} />
-                        Admin Console
+                        Bảng quản trị
                       </Link>
                     )}
                   </nav>
@@ -163,17 +163,15 @@ const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onClose }) => {
                     {currentOrg?.name || 'Chưa chọn tổ chức'}
                   </p>
                   {/* Role badge */}
-                  {(isSystemAdmin || isOrgAdmin || isGroupAdmin || isViewer) && (
+                  {(isSystemAdmin || isOrgAdmin || isGroupAdmin) && (
                     <span className={`mt-1 inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white ${
                       isSystemAdmin ? 'bg-red-600' :
                       isOrgAdmin ? 'bg-amber-600' :
-                      isGroupAdmin ? 'bg-cyan-600' :
-                      isViewer ? 'bg-gray-400' : 'bg-blue-500'
+                      isGroupAdmin ? 'bg-cyan-600' : 'bg-blue-500'
                     }`}>
                       {isSystemAdmin ? 'Quản trị Hệ thống' :
                        isOrgAdmin ? 'Quản trị tổ chức' :
-                       isGroupAdmin ? 'Quản trị nhóm' :
-                       isViewer ? 'Người xem' : 'Thành viên'}
+                       isGroupAdmin ? 'Quản trị nhóm' : 'Thành viên'}
                     </span>
                   )}
                 </div>

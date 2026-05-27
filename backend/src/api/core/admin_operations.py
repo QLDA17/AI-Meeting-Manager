@@ -176,7 +176,6 @@ def get_admin_ai_services_payload(current_user: models.User) -> Dict[str, Any]:
 
     stt_providers = [
         {"name": "Deepgram", "id": "deepgram", "model": os.getenv("DEEPGRAM_MODEL", "nova-3")},
-        {"name": "PhoWhisper", "id": "phowhisper", "model": "vinai/PhoWhisper-base"},
         {"name": "ViWhisper", "id": "viwhisper", "model": "NhutP/ViWhisper-small"},
     ]
     for provider in stt_providers:

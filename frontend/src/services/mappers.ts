@@ -46,7 +46,7 @@ const normalizeOrgMemberships = (memberships: any[] | undefined): OrgUser[] =>
     ? memberships.map((membership) => ({
         userId: membership.userId ?? membership.user_id ?? '',
         orgId: membership.orgId ?? membership.organization_id ?? '',
-        role: membership.role ?? 'member',
+        role: membership.role === 'org-admin' ? 'org-admin' : 'member',
         joinedAt: asIsoString(membership.joinedAt ?? membership.joined_at),
         orgName: membership.orgName ?? membership.organization_name ?? membership.org_name,
         approvalStatus: membership.approvalStatus ?? membership.approval_status ?? 'active',
@@ -58,11 +58,17 @@ const normalizeGroupMemberships = (memberships: any[] | undefined): GroupUser[] 
     ? memberships.map((membership) => ({
         userId: membership.userId ?? membership.user_id ?? '',
         groupId: membership.groupId ?? membership.group_id ?? '',
-        role: membership.role ?? 'member',
+        role: membership.role === 'group-admin' ? 'group-admin' : 'member',
         joinedAt: asIsoString(membership.joinedAt ?? membership.joined_at),
         groupName: membership.groupName ?? membership.group_name,
       }))
     : [];
+
+const deriveLegacyPrivacy = (visibility: string, joinPolicy: string): 'private' | 'internal' | 'public' => {
+  if (visibility === 'hidden') return 'private';
+  if (joinPolicy === 'invite_only') return 'internal';
+  return 'public';
+};
 
 export const normalizeUser = (user: any): User => {
   const firstName = user.firstName ?? user.first_name ?? '';
@@ -126,8 +132,18 @@ export const normalizeGroup = (group: any): Group => ({
   organization_id: group.organization_id ?? group.orgId ?? '',
   name: group.name,
   description: group.description ?? undefined,
-  privacyLevel: group.privacyLevel ?? group.privacy_level ?? 'internal',
-  privacy_level: group.privacy_level ?? group.privacyLevel ?? 'internal',
+  visibility: group.visibility ?? 'organization',
+  joinPolicy: group.joinPolicy ?? group.join_policy ?? 'invite_only',
+  join_policy: group.join_policy ?? group.joinPolicy ?? 'invite_only',
+  accessSummary: group.accessSummary ?? group.access_summary ?? undefined,
+  privacyLevel: deriveLegacyPrivacy(
+    group.visibility ?? 'organization',
+    group.joinPolicy ?? group.join_policy ?? 'invite_only',
+  ),
+  privacy_level: deriveLegacyPrivacy(
+    group.visibility ?? 'organization',
+    group.joinPolicy ?? group.join_policy ?? 'invite_only',
+  ),
   createdAt: asIsoString(group.createdAt ?? group.created_at),
   updatedAt: asIsoString(group.updatedAt ?? group.updated_at),
   createdBy: group.createdBy ?? group.created_by ?? '',
@@ -237,6 +253,21 @@ export const normalizeMeeting = (meeting: any): Meeting => ({
   startTime: ensureUtc(meeting.actual_start ?? meeting.actualStart) || ensureUtc(meeting.startTime) || ensureUtc(meeting.scheduled_start) || asIsoString(meeting.created_at),
   endTime: ensureUtc(meeting.actual_end ?? meeting.actualEnd) || ensureUtc(meeting.endTime) || ensureUtc(meeting.scheduled_end) || asIsoString(meeting.created_at),
   duration: asNumber(meeting.duration),
+  plannedDurationMinutes: meeting.plannedDurationMinutes != null || meeting.planned_duration_minutes != null
+    ? asNumber(meeting.plannedDurationMinutes ?? meeting.planned_duration_minutes)
+    : undefined,
+  actualDurationMinutes: meeting.actualDurationMinutes != null || meeting.actual_duration_minutes != null
+    ? asNumber(meeting.actualDurationMinutes ?? meeting.actual_duration_minutes)
+    : undefined,
+  liveDurationMinutes: meeting.liveDurationMinutes != null || meeting.live_duration_minutes != null
+    ? asNumber(meeting.liveDurationMinutes ?? meeting.live_duration_minutes)
+    : undefined,
+  isOverrun: meeting.isOverrun != null || meeting.is_overrun != null
+    ? asBoolean(meeting.isOverrun ?? meeting.is_overrun)
+    : undefined,
+  overrunMinutes: meeting.overrunMinutes != null || meeting.overrun_minutes != null
+    ? asNumber(meeting.overrunMinutes ?? meeting.overrun_minutes)
+    : undefined,
   status: meeting.status ?? 'upcoming',
   code: meeting.code ?? undefined,
   recordingUrl: meeting.recordingUrl ?? meeting.recording_url ?? undefined,

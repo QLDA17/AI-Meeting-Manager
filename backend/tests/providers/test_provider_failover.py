@@ -25,7 +25,7 @@ def test_translation_service_fallback_on_error():
     service = TranslationService(adapter=mock_adapter)
     req = TranslationRequest(
         source_lang="en", target_lang="vi", 
-        transcript="[00:00:01] Hello", glossary={}
+        transcript="[00:00:01] Hello"
     )
     
     result = service.translate(req)

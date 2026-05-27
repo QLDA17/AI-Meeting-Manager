@@ -1,17 +1,10 @@
 import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { BrowserRouter } from 'react-router-dom';
 import OrgAdminConsole from '../../../src/pages/org/OrgAdminConsole';
-import api from '../../../src/services/api';
 
-vi.mock('../../../src/services/api', () => ({
-  default: {
-    get: vi.fn(),
-  },
-}));
-
-// Mock dependencies
+// Mock router-dom
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual('react-router-dom');
   return {
@@ -21,6 +14,7 @@ vi.mock('react-router-dom', async () => {
   };
 });
 
+// Mock permission hook
 vi.mock('../../../src/hooks', () => ({
   usePermission: () => ({
     isOrgAdmin: true,
@@ -28,33 +22,53 @@ vi.mock('../../../src/hooks', () => ({
   }),
 }));
 
+// Mock auth context
 vi.mock('../../../src/context/AuthContext', () => ({
   useAuth: () => ({
     user: { id: 'user-admin', displayName: 'Admin User' },
   }),
 }));
 
+// Setup default mock values for org store
+const mockLoadOrgDetails = vi.fn();
+const mockGroups = [
+  {
+    id: 'group-me',
+    name: 'ME',
+    memberCount: 1,
+    meetingCount: 2,
+    totalHours: 0.1,
+    visibility: 'organization',
+    joinPolicy: 'invite_only',
+    description: 'My group ME',
+  },
+  {
+    id: 'group-onthi',
+    name: 'Ôn thi ck 1',
+    memberCount: 2,
+    meetingCount: 20,
+    totalHours: 7.4,
+    visibility: 'organization',
+    joinPolicy: 'invite_only',
+    description: '',
+  }
+];
+
 vi.mock('../../../src/stores', () => ({
   useOrgStore: () => ({
     currentOrg: {
       id: 'org-1',
       name: 'Test Org',
-      memberCount: 10,
-      groupCount: 5,
-      meetingCount: 20,
-      totalHours: 50
+      memberCount: 3,
+      groupCount: 2,
+      meetingCount: 22,
+      totalHours: 7.5
     },
-    groups: [],
-    members: [],
-    loadOrgDetails: vi.fn(),
-  }),
-}));
-
-vi.mock('../../../src/data', () => ({
-  getOrgById: () => ({
-    id: 'org-1',
-    name: 'Test Org',
-    description: 'Org for testing',
+    groups: mockGroups,
+    members: [
+      { id: 'm1', email: 'user1@test.com', displayName: 'User One', role: 'member' }
+    ],
+    loadOrgDetails: mockLoadOrgDetails,
   }),
 }));
 
@@ -66,51 +80,34 @@ const renderComponent = () => {
   );
 };
 
-describe('OrgAdminConsole Component', () => {
-  it('renders the audit log tab and loads logs', async () => {
-    vi.mocked(api.get).mockResolvedValueOnce({
-      data: [
-        {
-          id: 'log-1',
-          time: '2026-05-25T10:00:00Z',
-          user: 'orgaudit',
-          role: 'org-admin',
-          action: 'UPDATE_ORGANIZATION',
-          target: 'Test Org',
-          org: 'Test Org',
-          ip: '127.0.0.1',
-        },
-      ],
-    });
-
-    renderComponent();
-    fireEvent.click(screen.getByText('Nhật ký'));
-
-    expect(await screen.findByText('Nhật ký tổ chức')).toBeInTheDocument();
-    expect(await screen.findByText(/UPDATE_ORGANIZATION/i)).toBeInTheDocument();
-    expect(vi.mocked(api.get)).toHaveBeenCalledWith('/api/organizations/org-1/audit-logs');
+describe('OrgAdminConsole Overview Tab Statistics Dashboard', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
   });
 
-  it('renders the console with organization name', () => {
+  it('renders the Org Admin Console header correctly', () => {
     renderComponent();
     expect(screen.getByText(/Quản trị tổ chức/i)).toBeInTheDocument();
     expect(screen.getByText(/Test Org/i)).toBeInTheDocument();
   });
 
-  it('renders quick stats correctly', () => {
+  it('renders quick stats at the top of the console', () => {
     renderComponent();
-    expect(screen.getByText(/10\s+người dùng/i)).toBeInTheDocument(); // memberCount
-    expect(screen.getByText(/5\s+nhóm/i)).toBeInTheDocument();  // groupCount
+    expect(screen.getByText(/Tổng người dùng/i)).toBeInTheDocument();
+    expect(screen.getByText(/Tổng nhóm/i)).toBeInTheDocument();
+    expect(screen.getByText(/Tổng cuộc họp/i)).toBeInTheDocument();
   });
 
-  it('switches to Settings tab and renders content', async () => {
+  it('renders the statistics analytics inside the overview tab', () => {
     renderComponent();
+    // Averages and title
+    expect(screen.getByText(/Bản đồ Phân tích & Thống kê Hoạt động/i)).toBeInTheDocument();
+    expect(screen.getByText(/Chỉ số hiệu suất cộng tác/i)).toBeInTheDocument();
+    expect(screen.getByText(/Thành viên trung bình/i)).toBeInTheDocument();
     
-    const settingsTab = screen.getByText('Cài đặt');
-    fireEvent.click(settingsTab);
-    
-    expect(await screen.findByText('Cấu hình tổ chức')).toBeInTheDocument();
-    expect(screen.getByLabelText('Tên tổ chức')).toHaveValue('Test Org');
+    // Group active leaderboard elements
+    expect(screen.getByText(/Xếp hạng hoạt động của nhóm/i)).toBeInTheDocument();
+    expect(screen.getByText('ME')).toBeInTheDocument();
+    expect(screen.getByText('Ôn thi ck 1')).toBeInTheDocument();
   });
-
 });

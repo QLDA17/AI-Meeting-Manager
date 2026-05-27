@@ -128,6 +128,39 @@ const formatTimelineDate = (value?: string) => {
   return format(parsed, 'HH:mm · dd/MM/yyyy');
 };
 
+const formatMinutesLabel = (minutes?: number | null) => {
+  if (minutes == null || !Number.isFinite(minutes)) return '--';
+  return `${Math.max(0, minutes)} phút`;
+};
+
+const formatPlannedWindow = (meeting: MeetingDetailType) => {
+  const startValue = meeting.scheduled_start || meeting.startTime;
+  const endValue = meeting.scheduled_end;
+  if (!startValue) return 'Chưa có lịch dự kiến';
+  const start = new Date(startValue);
+  if (Number.isNaN(start.getTime())) return 'Chưa có lịch dự kiến';
+  if (endValue) {
+    const end = new Date(endValue);
+    if (!Number.isNaN(end.getTime())) {
+      return `${format(start, 'HH:mm')} - ${format(end, 'HH:mm')} · ${format(start, 'dd/MM/yyyy')}`;
+    }
+  }
+  return `${format(start, 'HH:mm')} · ${format(start, 'dd/MM/yyyy')}`;
+};
+
+const getActualDurationLabel = (meeting: MeetingDetailType) => {
+  if (meeting.status === 'live') {
+    return formatMinutesLabel(meeting.liveDurationMinutes);
+  }
+  if (meeting.actualDurationMinutes != null) {
+    return formatMinutesLabel(meeting.actualDurationMinutes);
+  }
+  if (meeting.duration > 0) {
+    return formatMinutesLabel(meeting.duration);
+  }
+  return '--';
+};
+
 const getApiErrorDetail = (error: unknown, fallback: string) => {
   const axiosError = error as AxiosError<{ detail?: string }>;
   return axiosError.response?.data?.detail || fallback;
@@ -642,7 +675,6 @@ const MeetingDetail: React.FC = () => {
   const canManageMeeting = Boolean(
     meeting &&
       user &&
-      user.systemRole !== 'viewer' &&
       (
         user.systemRole === 'system-admin' ||
         user.orgMemberships?.some((membership) => membership.orgId === meeting.organization_id && membership.role === 'org-admin') ||
@@ -1060,12 +1092,18 @@ const MeetingDetail: React.FC = () => {
             <div className="mt-3 flex flex-wrap items-center gap-4 text-sm font-medium text-gray-500 dark:text-slate-400">
               <div className="flex items-center gap-1.5 rounded-full bg-gray-100 px-3 py-1 dark:bg-slate-800">
                 <Calendar size={14} />
-                {format(new Date(meeting.startTime), 'dd/MM/yyyy')}
+                {formatPlannedWindow(meeting)}
               </div>
               <div className="flex items-center gap-1.5 rounded-full bg-gray-100 px-3 py-1 dark:bg-slate-800">
                 <Clock size={14} />
-                {meeting.duration} phut
+                Thực tế {getActualDurationLabel(meeting)}
               </div>
+              {meeting.isOverrun && (
+                <div className="flex items-center gap-1.5 rounded-full bg-amber-50 px-3 py-1 text-amber-700 dark:bg-amber-950/30 dark:text-amber-300">
+                  <AlertCircle size={14} />
+                  Đang vượt dự kiến {formatMinutesLabel(meeting.overrunMinutes)}
+                </div>
+              )}
               <div className="flex items-center gap-1.5 rounded-full bg-gray-100 px-3 py-1 dark:bg-slate-800">
                 <Users size={14} />
                 {meeting.attendees.length} nguoi tham gia

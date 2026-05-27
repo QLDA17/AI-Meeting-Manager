@@ -9,9 +9,8 @@ import {
   BarChart3,
   Settings,
   Crown,
-  Lock,
-  Globe,
   Building2,
+  EyeOff,
   Plus,
   MoreVertical,
   MessageSquare,
@@ -86,23 +85,9 @@ const GroupDetail: React.FC = () => {
     );
   }
 
-  const privacyLabel = (level: string) => {
-    switch (level) {
-      case 'private': return 'Riêng tư';
-      case 'internal': return 'Nội bộ';
-      case 'public': return 'Công khai';
-      default: return level;
-    }
-  };
-
-  const privacyIcon = (level: string) => {
-    switch (level) {
-      case 'private': return <Lock size={14} className="text-rose-500" />;
-      case 'internal': return <Building2 size={14} className="text-primary-500" />;
-      case 'public': return <Globe size={14} className="text-emerald-500" />;
-      default: return null;
-    }
-  };
+  const accessIcon = groupData.visibility === 'hidden'
+    ? <EyeOff size={14} className="text-rose-500" />
+    : <Building2 size={14} className="text-primary-500" />;
 
   const hasSettingsAccess = isGroupAdmin || isOrgAdmin;
   const visibleMembers = members.slice(0, 3);
@@ -117,8 +102,6 @@ const GroupDetail: React.FC = () => {
     switch (role) {
       case 'group-admin':
         return 'Quản trị nhóm';
-      case 'viewer':
-        return 'Người xem';
       default:
         return 'Thành viên';
     }
@@ -145,7 +128,7 @@ const GroupDetail: React.FC = () => {
 
         <div className="relative z-10">
           <nav className="mb-6 flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-gray-400">
-            <Link to="/" className="hover:text-primary-600 transition-colors">Workspace</Link>
+            <Link to="/" className="hover:text-primary-600 transition-colors">Không gian làm việc</Link>
             <ChevronRight size={12} />
             <span className="text-gray-900 dark:text-slate-100">Chi tiết Nhóm</span>
           </nav>
@@ -157,13 +140,13 @@ const GroupDetail: React.FC = () => {
                   {groupData.name}
                 </h1>
                 <Badge variant="secondary" className="flex items-center gap-1.5 px-3 py-1 text-xs">
-                  {privacyIcon(groupData.privacyLevel)}
-                  {privacyLabel(groupData.privacyLevel)}
+                  {accessIcon}
+                  {groupData.accessSummary || 'Hiển thị trong tổ chức · Chỉ theo lời mời'}
                 </Badge>
                 {hasSettingsAccess && (
                   <Badge variant="primary" className="gap-1.5 px-3 py-1 text-xs">
                     <ShieldCheck size={12} />
-                    Quản trị viên
+                    {isOrgAdmin ? 'Bạn có quyền quản trị tổ chức' : 'Bạn là quản trị nhóm'}
                   </Badge>
                 )}
               </div>

@@ -3,9 +3,8 @@
  * Quản lý thành viên trong group với vai trò (roles)
  */
 import React, { useEffect, useState } from 'react';
-import { Search, Plus, Eye, MoreVertical, Users, Filter, ShieldCheck, Shield, Loader2 } from 'lucide-react';
-import type { User as UserType, SystemRole } from '../../types';
-import { getRoleDisplayInfo } from '../../data';
+import { Search, Plus, MoreVertical, Users, Filter, ShieldCheck, Shield, Loader2 } from 'lucide-react';
+import type { User as UserType } from '../../types';
 import { Button, Badge } from '../ui';
 import { toast } from '../ui/Toast';
 import { usePermission } from '../../hooks';
@@ -19,7 +18,7 @@ interface GroupMembersTabProps {
   onInviteMember?: (email: string) => void;
 }
 
-type RoleFilter = 'all' | 'group-admin' | 'member' | 'viewer';
+type RoleFilter = 'all' | 'group-admin' | 'member';
 type AssignableGroupRole = 'member' | 'group-admin';
 
 interface SearchableUser {
@@ -110,11 +109,7 @@ const GroupMembersTab: React.FC<GroupMembersTabProps> = ({
     const regularMembers = filtered.filter((m) =>
       m.groupMemberships?.some((gm) => gm.groupId === groupId && gm.role === 'member')
     );
-    const viewers = filtered.filter((m) =>
-      m.groupMemberships?.some((gm) => gm.groupId === groupId && gm.role === 'viewer')
-    );
-
-    return { admins, regularMembers, viewers, totalCount: filtered.length };
+    return { admins, regularMembers, totalCount: filtered.length };
   }, [members, groupId, searchTerm, roleFilter]);
 
   const getMemberRole = (member: UserType): string => {
@@ -164,15 +159,15 @@ const GroupMembersTab: React.FC<GroupMembersTabProps> = ({
     switch (role) {
       case 'group-admin': return <ShieldCheck size={14} className="text-amber-500" />;
       case 'member': return <Shield size={14} className="text-primary-500" />;
-      case 'viewer': return <Eye size={14} className="text-gray-400" />;
       default: return null;
     }
   };
 
+  const roleLabel = (role: string) => role === 'group-admin' ? 'Quản trị nhóm' : 'Thành viên';
+
   const MemberCard: React.FC<{ member: UserType }> = ({ member }) => {
     const role = getMemberRole(member);
     const isCurrentUser = member.id === currentUserId;
-    const roleInfo = getRoleDisplayInfo(role as SystemRole);
 
     return (
       <div className="group flex items-center justify-between rounded-2xl border border-gray-100 bg-white p-4 transition-all hover:border-primary-200 hover:shadow-md dark:border-slate-800 dark:bg-slate-900/50 dark:hover:border-primary-900/50">
@@ -202,7 +197,7 @@ const GroupMembersTab: React.FC<GroupMembersTabProps> = ({
             variant={role === 'group-admin' ? 'primary' : 'secondary'} 
             className="text-[10px] font-bold uppercase tracking-wider"
           >
-            {roleInfo.displayName}
+            {roleLabel(role)}
           </Badge>
 
           {!isCurrentUser && (
@@ -239,9 +234,8 @@ const GroupMembersTab: React.FC<GroupMembersTabProps> = ({
               className="h-12 appearance-none rounded-2xl border border-gray-100 bg-white pl-9 pr-8 text-sm font-bold text-gray-600 outline-none transition focus:border-primary-400 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300"
             >
               <option value="all">Tất cả vai trò</option>
-              <option value="group-admin">Quản trị viên</option>
+              <option value="group-admin">Quản trị nhóm</option>
               <option value="member">Thành viên</option>
-              <option value="viewer">Người xem</option>
             </select>
           </div>
           {canInvite && (
@@ -264,7 +258,7 @@ const GroupMembersTab: React.FC<GroupMembersTabProps> = ({
             {/* Admins */}
             {groupedMembers.admins.length > 0 && (
               <div className="space-y-3">
-                <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-amber-500">Quản trị viên ({groupedMembers.admins.length})</h4>
+                <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-amber-500">Quản trị nhóm ({groupedMembers.admins.length})</h4>
                 <div className="grid grid-cols-1 gap-3">
                   {groupedMembers.admins.map((member) => (
                     <MemberCard key={member.id} member={member} />
@@ -285,17 +279,6 @@ const GroupMembersTab: React.FC<GroupMembersTabProps> = ({
               </div>
             )}
 
-            {/* Viewers */}
-            {groupedMembers.viewers.length > 0 && (
-              <div className="space-y-3">
-                <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-400">Người xem ({groupedMembers.viewers.length})</h4>
-                <div className="grid grid-cols-1 gap-3">
-                  {groupedMembers.viewers.map((member) => (
-                    <MemberCard key={member.id} member={member} />
-                  ))}
-                </div>
-              </div>
-            )}
           </>
         ) : (
           <div className="py-20 text-center">
@@ -319,11 +302,11 @@ const GroupMembersTab: React.FC<GroupMembersTabProps> = ({
         <h4 className="mb-4 flex items-center gap-2 text-xs font-black uppercase tracking-widest text-gray-400">
           <Users size={14} /> Giải thích vai trò
         </h4>
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           <div className="flex gap-3">
             <ShieldCheck size={18} className="shrink-0 text-amber-500" />
             <div>
-              <p className="text-xs font-bold text-gray-900 dark:text-white">Quản trị viên</p>
+              <p className="text-xs font-bold text-gray-900 dark:text-white">Quản trị nhóm</p>
               <p className="text-[10px] text-gray-500">Toàn quyền quản lý thành viên, cuộc họp và cài đặt nhóm.</p>
             </div>
           </div>
@@ -332,13 +315,6 @@ const GroupMembersTab: React.FC<GroupMembersTabProps> = ({
             <div>
               <p className="text-xs font-bold text-gray-900 dark:text-white">Thành viên</p>
               <p className="text-[10px] text-gray-500">Có thể tạo cuộc họp mới, xem và thảo luận trong nhóm.</p>
-            </div>
-          </div>
-          <div className="flex gap-3">
-            <Eye size={18} className="shrink-0 text-gray-400" />
-            <div>
-              <p className="text-xs font-bold text-gray-900 dark:text-white">Người xem</p>
-              <p className="text-[10px] text-gray-500">Chỉ có quyền xem các biên bản họp, không thể tạo nội dung.</p>
             </div>
           </div>
         </div>
@@ -445,8 +421,8 @@ const GroupMembersTab: React.FC<GroupMembersTabProps> = ({
                     onChange={(e) => setInviteRole(e.target.value as AssignableGroupRole)}
                     className="h-11 w-full rounded-xl border border-gray-200 bg-white px-3 text-sm font-medium outline-none dark:border-slate-800 dark:bg-slate-800"
                   >
-                    <option value="member">Thành viên (Member)</option>
-                    {isOrgAdmin && <option value="group-admin">Quản trị nhóm (Group Admin)</option>}
+                    <option value="member">Thành viên</option>
+                    {isOrgAdmin && <option value="group-admin">Quản trị nhóm</option>}
                   </select>
                 </div>
               </div>

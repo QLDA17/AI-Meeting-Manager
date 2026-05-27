@@ -107,13 +107,12 @@ const RoleGuard: React.FC<{ children: React.ReactNode; roles: string[] }> = ({
   children,
   roles,
 }) => {
-  const { isSystemAdmin, isOrgAdmin, isGroupAdmin, isViewer, isMember } = usePermission();
+  const { isSystemAdmin, isOrgAdmin, isGroupAdmin, isMember } = usePermission();
 
   const hasAccess = [
     roles.includes('system-admin') && isSystemAdmin,
     roles.includes('org-admin') && isOrgAdmin,
     roles.includes('group-admin') && isGroupAdmin,
-    roles.includes('viewer') && isViewer,
     roles.includes('member') && isMember,
   ].some(Boolean);
 

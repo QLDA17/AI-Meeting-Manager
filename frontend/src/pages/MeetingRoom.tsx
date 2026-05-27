@@ -225,7 +225,7 @@ const MeetingRoomInner: React.FC = () => {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const { transcript: wsTranscripts, lastEvent: wsEvent, status: wsStatus, connect, sendJson, disconnect, isConnected, onReconnect } = useWebSocket();
 
-  // Audio Recorder - PhoWhisper STT
+  // Audio Recorder - live STT
   const meetingId = meeting?.id || null;
   const {
     isRecording: isAudioRecording,

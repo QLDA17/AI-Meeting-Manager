@@ -132,8 +132,12 @@ const Header: React.FC = () => {
               className="flex items-center gap-2 rounded-xl border border-gray-200 px-3 py-1.5 transition hover:bg-gray-50 dark:border-slate-700 dark:hover:bg-slate-800"
               aria-label="User menu"
             >
-              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary-100 text-sm font-bold text-primary-700 dark:bg-primary-900/40 dark:text-primary-200">
-                {(user?.displayName?.[0] || user?.email?.[0] || 'U').toUpperCase()}
+              <div className="flex h-8 w-8 items-center justify-center overflow-hidden rounded-lg bg-primary-100 text-sm font-bold text-primary-700 dark:bg-primary-900/40 dark:text-primary-200">
+                {user?.avatarUrl ? (
+                  <img src={user.avatarUrl} alt={user.displayName || user.email || 'Avatar'} className="h-full w-full object-cover" />
+                ) : (
+                  (user?.displayName?.[0] || user?.email?.[0] || 'U').toUpperCase()
+                )}
               </div>
               <div className="text-left">
                 <p className="text-sm font-semibold leading-4 text-gray-800 dark:text-slate-100">

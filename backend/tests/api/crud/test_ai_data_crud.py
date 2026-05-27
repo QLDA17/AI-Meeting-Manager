@@ -87,7 +87,7 @@ def test_create_transcript(db, test_meeting, test_audio_file):
         "language": "vi",
         "word_count": 6,
         "processing_status": "COMPLETED",
-        "stt_provider": "whisper",
+        "stt_provider": "deepgram",
     }
     transcript = create_transcript(db, transcript_data)
     

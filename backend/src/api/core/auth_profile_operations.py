@@ -121,10 +121,10 @@ def register_payload(req: schemas.RegisterRequest, db: Session) -> Dict[str, Any
             next_step = "pending_approval"
 
         if invitation:
-            org_role = invitation.role if invitation.role in {"org-admin", "member", "viewer"} else "member"
+            org_role = invitation.role if invitation.role in {"org-admin", "member"} else "member"
             crud.add_user_to_organization(db, user.id, invitation.organization_id, org_role, commit=False)
             if invitation.group_id:
-                group_role = invitation.role if invitation.role in {"group-admin", "member", "viewer"} else "member"
+                group_role = invitation.role if invitation.role in {"group-admin", "member"} else "member"
                 crud.add_user_to_group(
                     db,
                     invitation.group_id,

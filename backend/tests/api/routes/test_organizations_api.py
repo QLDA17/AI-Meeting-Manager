@@ -104,6 +104,62 @@ def make_invitation(
     return invitation
 
 
+def test_org_admin_can_create_group_with_admins_and_members(client: TestClient, db_session: Session):
+    admin = make_user(db_session, "groupcreator", "groupcreator@example.com")
+    extra_admin = make_user(db_session, "groupadmin2", "groupadmin2@example.com")
+    member = make_user(db_session, "groupmember1", "groupmember1@example.com")
+    org = make_active_org(db_session, admin, name="Create Group Org")
+    add_user_to_organization(db_session, extra_admin.id, org.id, "member")
+    add_user_to_organization(db_session, member.id, org.id, "member")
+
+    response = client.post(
+        "/api/groups",
+        headers=auth_headers(client, admin.username),
+        json={
+            "organization_id": org.id,
+            "name": "Leadership",
+            "description": "Executive planning",
+            "visibility": "organization",
+            "join_policy": "request_approval",
+            "group_admin_user_ids": [extra_admin.id, extra_admin.id],
+            "initial_member_user_ids": [member.id, extra_admin.id, admin.id],
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["visibility"] == "organization"
+    assert data["join_policy"] == "request_approval"
+    assert data["access_summary"] == "Hiển thị trong tổ chức · Yêu cầu phê duyệt"
+
+    memberships = db_session.query(models.GroupMembership).filter_by(group_id=data["id"]).all()
+    roles_by_user = {membership.user_id: membership.role for membership in memberships}
+    assert roles_by_user == {
+        admin.id: "group-admin",
+        extra_admin.id: "group-admin",
+        member.id: "member",
+    }
+
+
+def test_create_group_rejects_hidden_without_invite_only(client: TestClient, db_session: Session):
+    admin = make_user(db_session, "restrictedadmin", "restrictedadmin@example.com")
+    org = make_active_org(db_session, admin, name="Restricted Org")
+
+    response = client.post(
+        "/api/groups",
+        headers=auth_headers(client, admin.username),
+        json={
+            "organization_id": org.id,
+            "name": "Stealth",
+            "visibility": "hidden",
+            "join_policy": "open_join",
+        },
+    )
+
+    assert response.status_code == 400
+    assert "Nhóm ẩn" in response.json()["detail"]
+
+
 def test_member_and_system_admin_create_organizations(client: TestClient, db_session: Session):
     member = make_user(db_session, "member", "member@example.com")
     sysadmin = make_user(db_session, "sysadmin", "sysadmin@example.com", role="system-admin")
@@ -202,7 +258,7 @@ def test_search_and_registered_user_invitation_flow(client: TestClient, db_sessi
     add_user_to_organization(db_session, existing_member.id, org.id, "member")
     group = create_group(
         db_session,
-        {"organization_id": org.id, "name": "Product", "privacy_level": "internal"},
+        {"organization_id": org.id, "name": "Product", "visibility": "organization", "join_policy": "invite_only"},
         created_by=admin_user.id,
     )
 
@@ -292,7 +348,7 @@ def test_preview_pending_and_accept_invitation_flows(client: TestClient, db_sess
     org = make_active_org(db_session, admin_user, name="Accept Org")
     group = create_group(
         db_session,
-        {"organization_id": org.id, "name": "Ops", "privacy_level": "private"},
+        {"organization_id": org.id, "name": "Ops", "visibility": "hidden", "join_policy": "invite_only"},
         created_by=admin_user.id,
     )
     invitation = make_invitation(

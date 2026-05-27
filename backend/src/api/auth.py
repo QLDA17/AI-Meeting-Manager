@@ -117,7 +117,7 @@ def require_group_member(db: Session, user: models.User, group_id: str) -> model
     group_role = get_user_group_role(db, user, group_id)
     if not org_role and not group_role:
         raise HTTPException(status_code=403, detail="Bạn không có quyền truy cập nhóm này")
-    if group.privacy_level == "private" and user.role != "system-admin":
+    if group.visibility == "hidden" and user.role != "system-admin":
         if org_role != "org-admin" and not group_role:
             raise HTTPException(status_code=403, detail="Bạn không có quyền truy cập nhóm này")
     return group

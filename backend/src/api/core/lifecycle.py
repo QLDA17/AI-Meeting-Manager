@@ -60,6 +60,11 @@ def _ensure_meeting_runtime_columns() -> None:
     _ensure_column("users", "bio", "bio TEXT")
 
 
+def _ensure_group_runtime_columns() -> None:
+    _ensure_column("groups", "visibility", "visibility VARCHAR(20) DEFAULT 'organization'")
+    _ensure_column("groups", "join_policy", "join_policy VARCHAR(20) DEFAULT 'invite_only'")
+
+
 def _ensure_action_item_assignee_backfill() -> None:
     try:
         models.ActionItemAssignee.__table__.create(bind=engine, checkfirst=True)
@@ -98,6 +103,92 @@ def _ensure_action_item_assignee_backfill() -> None:
         logger.warning("Failed to ensure action item assignee backfill: %s", exc)
 
 
+def _normalize_legacy_stt_providers() -> None:
+    provider_mapping = {
+        "phowhisper": "viwhisper",
+        "whisper": "viwhisper",
+        "google": "deepgram",
+    }
+    try:
+        session = SessionLocal()
+        try:
+            transcript_rows = session.query(models.Transcript).all()
+            draft_rows = session.query(models.MeetingTranscriptDraft).all()
+            changed = False
+
+            for row in transcript_rows:
+                normalized = provider_mapping.get((row.stt_provider or "").strip().lower())
+                if normalized and row.stt_provider != normalized:
+                    row.stt_provider = normalized
+                    changed = True
+
+            for row in draft_rows:
+                normalized = provider_mapping.get((row.provider or "").strip().lower())
+                if normalized and row.provider != normalized:
+                    row.provider = normalized
+                    changed = True
+
+            if changed:
+                session.commit()
+        finally:
+            session.close()
+    except Exception as exc:
+        logger.warning("Failed to normalize legacy STT providers: %s", exc)
+
+
+def _normalize_legacy_group_access_and_roles() -> None:
+    visibility_mapping = {
+        "private": ("hidden", "invite_only"),
+        "internal": ("organization", "invite_only"),
+        "public": ("organization", "request_approval"),
+    }
+    try:
+        session = SessionLocal()
+        try:
+            changed = False
+
+            for membership in session.query(models.UserOrganization).all():
+                if membership.role == "viewer":
+                    membership.role = "member"
+                    changed = True
+
+            for membership in session.query(models.GroupMembership).all():
+                if membership.role == "viewer":
+                    membership.role = "member"
+                    changed = True
+
+            for invitation in session.query(models.Invitation).all():
+                if invitation.role == "viewer":
+                    invitation.role = "member"
+                    changed = True
+
+            groups = session.query(models.Group).all()
+            for group in groups:
+                legacy_privacy = getattr(group, "privacy_level", None)
+                derived_visibility, derived_join_policy = visibility_mapping.get(
+                    (legacy_privacy or "").strip().lower(),
+                    ("organization", "invite_only"),
+                )
+
+                if not getattr(group, "visibility", None):
+                    group.visibility = derived_visibility
+                    changed = True
+                if not getattr(group, "join_policy", None):
+                    group.join_policy = derived_join_policy
+                    changed = True
+
+                if group.visibility == "hidden" and group.join_policy != "invite_only":
+                    group.join_policy = "invite_only"
+                    changed = True
+
+            if changed:
+                session.commit()
+        finally:
+            session.close()
+    except Exception as exc:
+        logger.warning("Failed to normalize legacy group access and roles: %s", exc)
+
+
 async def startup_event(*, start_scheduler: bool = True) -> asyncio.Task | None:
     """Initialize application on startup"""
     logger.info("Starting MultiMinutes AI API...")
@@ -116,7 +207,10 @@ async def startup_event(*, start_scheduler: bool = True) -> asyncio.Task | None:
         models.MeetingSpeakerMapping.__table__.create(bind=engine, checkfirst=True)
         models.ActionItemAssignee.__table__.create(bind=engine, checkfirst=True)
         _ensure_meeting_runtime_columns()
+        _ensure_group_runtime_columns()
         _ensure_action_item_assignee_backfill()
+        _normalize_legacy_stt_providers()
+        _normalize_legacy_group_access_and_roles()
         session = SessionLocal()
         try:
             seed_admin_runtime_defaults(session)

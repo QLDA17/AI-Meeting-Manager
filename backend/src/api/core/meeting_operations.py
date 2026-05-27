@@ -204,6 +204,58 @@ def compute_meeting_duration_minutes(meeting: models.Meeting, now: Optional[date
     return max(0, int((effective_end - start).total_seconds() / 60))
 
 
+def compute_planned_duration_minutes(meeting: models.Meeting) -> Optional[int]:
+    start = coerce_utc_datetime(meeting.scheduled_start)
+    end = coerce_utc_datetime(meeting.scheduled_end)
+    if start is None or end is None:
+        return None
+    return max(0, int((end - start).total_seconds() / 60))
+
+
+def compute_actual_duration_minutes(meeting: models.Meeting) -> Optional[int]:
+    start = coerce_utc_datetime(meeting.actual_start)
+    end = coerce_utc_datetime(meeting.actual_end)
+    if start is not None and end is not None:
+        return max(0, int((end - start).total_seconds() / 60))
+    if meeting.status in {"completed", "processing", "failed", "canceled"}:
+        return int(meeting.duration or 0)
+    return None
+
+
+def compute_live_duration_minutes(meeting: models.Meeting, now: Optional[datetime] = None) -> Optional[int]:
+    if meeting.status != "live":
+        return None
+    start = coerce_utc_datetime(meeting.actual_start)
+    current = coerce_utc_datetime(now) or datetime.now(timezone.utc)
+    if start is None:
+        return None
+    return max(0, int((current - start).total_seconds() / 60))
+
+
+def compute_overrun_minutes(meeting: models.Meeting, now: Optional[datetime] = None) -> Optional[int]:
+    if meeting.status != "live":
+        return None
+    scheduled_end = coerce_utc_datetime(meeting.scheduled_end)
+    current = coerce_utc_datetime(now) or datetime.now(timezone.utc)
+    if scheduled_end is None or current <= scheduled_end:
+        return None
+    return max(0, int((current - scheduled_end).total_seconds() / 60))
+
+
+def duration_metrics_payload(meeting: models.Meeting, now: Optional[datetime] = None) -> Dict[str, Any]:
+    planned_duration_minutes = compute_planned_duration_minutes(meeting)
+    actual_duration_minutes = compute_actual_duration_minutes(meeting)
+    live_duration_minutes = compute_live_duration_minutes(meeting, now)
+    overrun_minutes = compute_overrun_minutes(meeting, now)
+    return {
+        "planned_duration_minutes": planned_duration_minutes,
+        "actual_duration_minutes": actual_duration_minutes,
+        "live_duration_minutes": live_duration_minutes,
+        "is_overrun": overrun_minutes is not None and overrun_minutes > 0,
+        "overrun_minutes": overrun_minutes,
+    }
+
+
 def get_attended_participants(meeting: models.Meeting) -> List[models.MeetingParticipant]:
     participants = list(meeting.participants or [])
     attended = [participant for participant in participants if participant.attended]
@@ -987,6 +1039,7 @@ def build_meeting_detail_payload(
     decisions_text = summarize_json_items(latest_summary.decisions if latest_summary else None)
     timeline_highlights_text = summarize_json_items(latest_summary.timeline_highlights if latest_summary else None)
     attended_participants = get_attended_participants(meeting)
+    duration_metrics = duration_metrics_payload(meeting)
     activity = build_meeting_activity_payload(
         meeting,
         transcript_status=transcript_status,
@@ -1007,7 +1060,7 @@ def build_meeting_detail_payload(
         "scheduled_end": meeting.scheduled_end,
         "actual_start": meeting.actual_start,
         "actual_end": meeting.actual_end,
-        "duration": compute_meeting_duration_minutes(meeting),
+        "duration": int(meeting.duration or 0),
         "location": meeting.location,
         "meeting_type": meeting.meeting_type,
         "status": meeting.status,
@@ -1070,6 +1123,7 @@ def build_meeting_detail_payload(
         "summary_provider": latest_summary_any.ai_provider if latest_summary_any else None,
         "summary_model_name": latest_summary_any.model_name if latest_summary_any else None,
         "access_mode": access_mode,
+        **duration_metrics,
     }
 
 

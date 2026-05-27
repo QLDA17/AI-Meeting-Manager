@@ -118,7 +118,8 @@ export const useGroupStore = create<GroupState>((set, get) => ({
       // Map frontend naming back to backend naming if necessary
       const payload = {
         ...data,
-        privacy_level: data.privacyLevel || undefined
+        visibility: data.visibility || undefined,
+        join_policy: data.joinPolicy || data.join_policy || undefined,
       };
       const response = await api.patch(`/api/groups/${groupId}`, payload);
       const normalizedGroup = normalizeGroup(response.data);

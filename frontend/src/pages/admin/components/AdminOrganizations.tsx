@@ -23,6 +23,7 @@ import api from '../../../services/api';
 import { normalizeOrganization, normalizeUser, normalizeGroup } from '../../../services/mappers';
 import { toast } from '../../../components/ui/Toast';
 import type { Organization, User, Group } from '../../../types';
+import { subscribeUserUpdated } from '../../../utils/userSync';
 
 type TabType = 'overview' | 'members' | 'groups';
 
@@ -61,6 +62,12 @@ const AdminOrganizations: React.FC = () => {
   React.useEffect(() => {
     loadOrganizations();
   }, [loadOrganizations]);
+
+  React.useEffect(() => {
+    return subscribeUserUpdated((updatedUser) => {
+      setOrgMembers((current) => current.map((member) => (member.id === updatedUser.id ? { ...member, ...updatedUser } : member)));
+    });
+  }, []);
 
   // Fetch detailed data when org changes
   React.useEffect(() => {
@@ -501,12 +508,6 @@ const AdminOrganizations: React.FC = () => {
                               <dd className="font-bold text-gray-900 dark:text-slate-100">{selectedOrg.domain || '---'}</dd>
                             </div>
                             <div className="flex justify-between">
-                              <dt className="font-medium text-gray-500">Mô tả</dt>
-                              <dd className="max-w-[200px] truncate font-medium text-gray-900 dark:text-slate-100" title={selectedOrg.description}>
-                                {selectedOrg.description || 'Không có mô tả'}
-                              </dd>
-                            </div>
-                            <div className="flex justify-between">
                               <dt className="font-medium text-gray-500">Ngày tạo</dt>
                               <dd className="font-medium text-gray-900 dark:text-slate-100">
                                 {new Date(selectedOrg.createdAt).toLocaleDateString('vi-VN')}
@@ -520,6 +521,12 @@ const AdminOrganizations: React.FC = () => {
                                 </dd>
                               </div>
                             )}
+                            <div className="border-t border-gray-200/50 dark:border-slate-700/50 pt-3.5 mt-3.5">
+                              <dt className="font-medium text-gray-500 mb-1.5">Mô tả</dt>
+                              <dd className="text-gray-900 dark:text-slate-100 font-medium text-xs leading-relaxed break-words whitespace-pre-wrap">
+                                {selectedOrg.description || 'Không có mô tả'}
+                              </dd>
+                            </div>
                           </dl>
                         </div>
 

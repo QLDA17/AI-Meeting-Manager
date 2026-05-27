@@ -3,8 +3,8 @@ import { useAuth } from '../context/AuthContext';
 import { useOrgStore } from '../stores';
 import type { SystemRole } from '../types';
 
-type OrgRole = 'org-admin' | 'member' | 'viewer' | null;
-type GroupRole = 'group-admin' | 'member' | 'viewer' | null;
+type OrgRole = 'org-admin' | 'member' | null;
+type GroupRole = 'group-admin' | 'member' | null;
 
 type ContextRole = SystemRole | null;
 
@@ -29,21 +29,18 @@ export const useCurrentRole = () => {
     const isSystemAdmin = user.systemRole === 'system-admin';
     const isOrgAdmin = orgRole === 'org-admin';
     const isGroupAdmin = groupRole === 'group-admin';
-    const isViewer = orgRole === 'viewer' || groupRole === 'viewer';
     const isMember = orgRole === 'member' || groupRole === 'member';
 
     let currentRole: ContextRole = 'member';
     if (isSystemAdmin) currentRole = 'system-admin';
     else if (isOrgAdmin) currentRole = 'org-admin';
     else if (isGroupAdmin) currentRole = 'group-admin';
-    else if (isViewer) currentRole = 'viewer';
     else if (!orgRole && !groupRole) currentRole = user.systemRole || 'member';
 
     let displayName = 'Member';
     if (currentRole === 'system-admin') displayName = 'System Administrator';
     else if (currentRole === 'org-admin') displayName = 'Org Admin';
     else if (currentRole === 'group-admin') displayName = 'Group Admin';
-    else if (currentRole === 'viewer') displayName = 'Viewer';
 
     return {
       systemRole: user.systemRole || 'member',
@@ -53,7 +50,6 @@ export const useCurrentRole = () => {
       isSystemAdmin,
       isOrgAdmin,
       isGroupAdmin,
-      isViewer,
       isMember,
       displayName,
     };

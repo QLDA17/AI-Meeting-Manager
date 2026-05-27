@@ -13,6 +13,7 @@ from src.api.core.meeting_operations import (
     build_meeting_detail_payload,
     build_room_snapshot,
     compute_meeting_duration_minutes,
+    duration_metrics_payload,
     ensure_speaker_mapping,
     format_meeting_message_payload,
     format_meeting_participant_payload,
@@ -121,7 +122,12 @@ def list_meetings(
         m.action_items_count = len(m.action_items) if m.action_items else 0
         m.attended_participants = get_attended_participants(m)
         m.attended_participants_count = len(m.attended_participants)
-        m.duration = compute_meeting_duration_minutes(m)
+        duration_metrics = duration_metrics_payload(m)
+        m.planned_duration_minutes = duration_metrics["planned_duration_minutes"]
+        m.actual_duration_minutes = duration_metrics["actual_duration_minutes"]
+        m.live_duration_minutes = duration_metrics["live_duration_minutes"]
+        m.is_overrun = duration_metrics["is_overrun"]
+        m.overrun_minutes = duration_metrics["overrun_minutes"]
         if m.summaries:
             _, latest_any, latest_completed = select_summary_for_language(m.summaries, user_lang)
             preview = latest_completed or latest_any
@@ -573,6 +579,12 @@ def create_meeting_endpoint(
                 }
             )
 
+    duration_metrics = duration_metrics_payload(meeting)
+    meeting.planned_duration_minutes = duration_metrics["planned_duration_minutes"]
+    meeting.actual_duration_minutes = duration_metrics["actual_duration_minutes"]
+    meeting.live_duration_minutes = duration_metrics["live_duration_minutes"]
+    meeting.is_overrun = duration_metrics["is_overrun"]
+    meeting.overrun_minutes = duration_metrics["overrun_minutes"]
     return meeting
 
 
@@ -604,6 +616,12 @@ async def start_meeting_endpoint(
         updated = update_meeting(db, meeting_id, updates)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    duration_metrics = duration_metrics_payload(updated)
+    updated.planned_duration_minutes = duration_metrics["planned_duration_minutes"]
+    updated.actual_duration_minutes = duration_metrics["actual_duration_minutes"]
+    updated.live_duration_minutes = duration_metrics["live_duration_minutes"]
+    updated.is_overrun = duration_metrics["is_overrun"]
+    updated.overrun_minutes = duration_metrics["overrun_minutes"]
     await meeting_room_manager.broadcast(
         meeting_id,
         {"type": "meeting.status", "meeting_id": meeting_id, "status": updated.status, "timestamp": datetime.now(timezone.utc).isoformat()},
@@ -681,6 +699,12 @@ async def end_meeting_endpoint(
         updated = update_meeting(db, meeting_id, updates)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    duration_metrics = duration_metrics_payload(updated, now)
+    updated.planned_duration_minutes = duration_metrics["planned_duration_minutes"]
+    updated.actual_duration_minutes = duration_metrics["actual_duration_minutes"]
+    updated.live_duration_minutes = duration_metrics["live_duration_minutes"]
+    updated.is_overrun = duration_metrics["is_overrun"]
+    updated.overrun_minutes = duration_metrics["overrun_minutes"]
     await meeting_room_manager.broadcast(
         meeting_id,
         {"type": "meeting.status", "meeting_id": meeting_id, "status": updated.status, "timestamp": datetime.now(timezone.utc).isoformat()},

@@ -96,6 +96,8 @@ interface UserEntry {
   first_name?: string;
   last_name?: string;
   is_active: boolean;
+  avatarUrl?: string;
+  avatar_url?: string;
 }
 
 interface AIServiceStatus {
@@ -254,23 +256,30 @@ const RecentUsersList: React.FC = () => {
         <button className="rounded-xl bg-gray-50 px-4 py-2 text-xs font-bold text-gray-600 transition-all hover:bg-gray-100 dark:bg-slate-800 dark:text-gray-300 dark:hover:bg-slate-700">Quản lý User</button>
       </div>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {users.map((user) => (
-          <div key={user.id} className="flex items-center gap-4 rounded-2xl border border-gray-100 bg-gray-50/50 p-4 transition-all hover:border-gray-300 hover:bg-white hover:shadow-sm dark:border-slate-800 dark:bg-slate-900/50 dark:hover:border-slate-700 dark:hover:bg-slate-800">
-            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-500 to-purple-500 font-bold text-white shadow-md">
-              {user.first_name?.[0] || user.username?.[0]?.toUpperCase() || 'U'}{user.last_name?.[0] || ''}
-            </div>
-            <div className="flex-1 min-w-0">
-              <p className="truncate text-sm font-bold text-gray-900 dark:text-white">{user.first_name || ''} {user.last_name || user.username}</p>
-              <div className="mt-1 flex items-center gap-1.5">
-                <span className={clsx("h-2 w-2 rounded-full", user.is_active ? "bg-green-500" : "bg-red-500")} />
-                <p className="text-[10px] font-bold uppercase tracking-widest text-gray-500">{user.is_active ? 'Online' : 'Offline'}</p>
+        {users.map((user) => {
+          const avatar = user.avatarUrl || user.avatar_url;
+          return (
+            <div key={user.id} className="flex items-center gap-4 rounded-2xl border border-gray-100 bg-gray-50/50 p-4 transition-all hover:border-gray-300 hover:bg-white hover:shadow-sm dark:border-slate-800 dark:bg-slate-900/50 dark:hover:border-slate-700 dark:hover:bg-slate-800">
+              <div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-2xl bg-primary-100 text-sm font-bold text-primary-750 dark:bg-primary-950/40 dark:text-primary-300 border border-primary-200/25 shadow-sm">
+                {avatar ? (
+                  <img src={avatar} alt="Avatar" className="h-full w-full object-cover" />
+                ) : (
+                  `${user.first_name?.[0] || user.username?.[0]?.toUpperCase() || 'U'}${user.last_name?.[0] || ''}`
+                )}
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="truncate text-sm font-bold text-gray-900 dark:text-white">{user.first_name || ''} {user.last_name || user.username}</p>
+                <div className="mt-1 flex items-center gap-1.5">
+                  <span className={clsx("h-2 w-2 rounded-full", user.is_active ? "bg-green-500" : "bg-red-500")} />
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-gray-500">{user.is_active ? 'Online' : 'Offline'}</p>
+                </div>
+              </div>
+              <div className="text-[10px] font-black text-gray-400">
+                 {format(new Date(), 'HH:mm')}
               </div>
             </div>
-            <div className="text-[10px] font-black text-gray-400">
-               {format(new Date(), 'HH:mm')}
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

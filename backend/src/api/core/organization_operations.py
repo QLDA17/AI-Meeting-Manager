@@ -547,11 +547,11 @@ def _accept_invitation_record(
     ).first()
 
     if not existing_membership:
-        org_role = invitation.role if invitation.role in {"org-admin", "member", "viewer"} else "member"
+        org_role = invitation.role if invitation.role in {"org-admin", "member"} else "member"
         add_user_to_organization(db, current_user.id, invitation.organization_id, org_role)
 
     if invitation.group_id:
-        group_role = invitation.role if invitation.role in {"group-admin", "member", "viewer"} else "member"
+        group_role = invitation.role if invitation.role in {"group-admin", "member"} else "member"
         add_user_to_group(
             db,
             invitation.group_id,
