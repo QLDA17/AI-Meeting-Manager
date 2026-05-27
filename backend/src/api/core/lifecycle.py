@@ -58,6 +58,7 @@ def _ensure_meeting_runtime_columns() -> None:
     _ensure_column("meeting_summaries", "source_summary_id", "source_summary_id VARCHAR(36)")
     _ensure_column("meeting_summaries", "summary_kind", "summary_kind VARCHAR(20)")
     _ensure_column("users", "bio", "bio TEXT")
+    _ensure_column("meetings", "settings", "settings JSON")
 
 
 def _ensure_group_runtime_columns() -> None:

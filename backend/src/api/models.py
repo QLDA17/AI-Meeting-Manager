@@ -259,6 +259,7 @@ class Meeting(Base):
     recording_url: Mapped[str] = mapped_column(String(500), nullable=True)
     transcript_url: Mapped[str] = mapped_column(String(500), nullable=True)
     audio_url: Mapped[str] = mapped_column(String(500), nullable=True)
+    settings: Mapped[dict] = mapped_column(JSON, nullable=True)
     is_pinned: Mapped[bool] = mapped_column(Boolean, default=False)
     reminder_sent: Mapped[bool] = mapped_column(Boolean, default=False)
     created_by: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)

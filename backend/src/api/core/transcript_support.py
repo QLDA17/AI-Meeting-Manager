@@ -16,11 +16,18 @@ from sqlalchemy.orm import Session, sessionmaker
 from src.api import models, schemas
 from src.api.database import SessionLocal
 from src.api.core.meetings_support import estimate_segment_end, normalize_speaker_label
+from src.api.core.meeting_stt import (
+    get_meeting_settings,
+    merge_meeting_settings,
+    normalize_stt_provider,
+    normalize_transcription_mode,
+)
 
 logger = logging.getLogger(__name__)
 SUPPORTED_SUMMARY_LANGUAGES = ("vi", "en", "zh", "ja", "ko")
 _translation_locks: Dict[str, asyncio.Lock] = {}
 _latest_translation_batches: Dict[str, str] = {}
+MIN_DEFERRED_CHUNK_BYTES = 4096
 
 
 def _empty_summary_payload() -> schemas.MeetingAnalysisOutput:
@@ -34,6 +41,14 @@ def _empty_summary_payload() -> schemas.MeetingAnalysisOutput:
         timeline_highlights=[],
         speaker_summaries=[],
     )
+
+
+def _deferred_chunk_sort_key(path: str) -> int:
+    name = os.path.basename(path)
+    try:
+        return int(name.split("_", 1)[1].split(".", 1)[0])
+    except Exception:
+        return 10**9
 
 
 def next_transcript_chunk_index(db: Session, meeting_id: str, user_id: str) -> int:
@@ -751,6 +766,101 @@ async def _process_translation_queue(
             session.close()
 
 
+def _transcribe_deferred_chunks(
+    meeting_id: str,
+    stt_provider_name: str = "viwhisper",
+    language: str = "auto",
+) -> Dict[str, Any]:
+    """Transcribe all stored audio chunks for a deferred-mode meeting.
+
+    Reads chunk files from the audio upload directory, transcribes each using
+    the configured STT provider, and returns merged text + segments.
+    """
+    from src.api.core.stt_support import get_stt_provider, ensure_audio_upload_dir
+
+    audio_dir = os.path.join(ensure_audio_upload_dir(), meeting_id)
+    if not os.path.isdir(audio_dir):
+        return {"transcript": "", "segments": [], "language": language}
+
+    # Find and sort chunk files
+    chunk_files = sorted(glob.glob(os.path.join(audio_dir, "chunk_*.wav")), key=_deferred_chunk_sort_key)
+    if not chunk_files:
+        # Also try other formats
+        for ext in ("*.webm", "*.mp3", "*.mp4"):
+            chunk_files.extend(glob.glob(os.path.join(audio_dir, f"chunk_{ext}")))
+        chunk_files.sort(key=_deferred_chunk_sort_key)
+
+    if not chunk_files:
+        logger.info(f"No deferred chunks found for meeting {meeting_id}")
+        return {"transcript": "", "segments": [], "language": language}
+
+    logger.info(f"Processing {len(chunk_files)} deferred chunks for meeting {meeting_id} using {stt_provider_name}")
+    provider = get_stt_provider(stt_provider_name)
+
+    all_text_parts: List[str] = []
+    all_segments: List[Dict[str, Any]] = []
+    time_offset_ms = 0
+    detected_language = language
+
+    processed_count = 0
+    skipped_count = 0
+    for chunk_path in chunk_files:
+        try:
+            if os.path.getsize(chunk_path) < MIN_DEFERRED_CHUNK_BYTES:
+                skipped_count += 1
+                logger.info("Skipping tiny deferred chunk %s", os.path.basename(chunk_path))
+                continue
+            result = provider.transcribe(chunk_path)
+            if not result or not result.get("text", "").strip():
+                skipped_count += 1
+                continue
+
+            chunk_text = result["text"].strip()
+            all_text_parts.append(chunk_text)
+            processed_count += 1
+
+            for seg in result.get("segments", []):
+                seg_start = float(seg.get("start", seg.get("start_time", 0)) or 0)
+                seg_end = float(seg.get("end", seg.get("end_time", 0)) or 0)
+                all_segments.append({
+                    "speaker": seg.get("speaker", "Speaker_01"),
+                    "speaker_label": seg.get("speaker_label", normalize_speaker_label(seg.get("speaker", "Speaker_01"))),
+                    "speaker_display_name": seg.get("speaker_display_name", seg.get("speaker", "Speaker_01")),
+                    "start": seg_start + time_offset_ms / 1000,
+                    "end": seg_end + time_offset_ms / 1000,
+                    "text": seg.get("text", ""),
+                    "language": seg.get("language") or result.get("language") or language,
+                    "confidence": seg.get("confidence") or seg.get("confidence_score"),
+                })
+
+            # Estimate offset for next chunk
+            if result.get("segments"):
+                last_seg = result["segments"][-1]
+                time_offset_ms += int(float(last_seg.get("end", last_seg.get("end_time", 0)) or 0) * 1000)
+            else:
+                # Estimate from text length if no segments
+                time_offset_ms += len(chunk_text) * 80  # rough estimate
+
+            if result.get("language") and result["language"] != "auto":
+                detected_language = result["language"]
+
+            logger.info(f"Deferred chunk transcribed: {os.path.basename(chunk_path)}, text_len={len(chunk_text)}")
+        except Exception as exc:
+            logger.error(f"Failed to transcribe deferred chunk {chunk_path}: {exc}")
+            continue
+
+    full_text = "\n".join(all_text_parts)
+    logger.info(f"Deferred transcription complete for meeting {meeting_id}: {len(all_segments)} segments, {len(full_text)} chars")
+    return {
+        "transcript": full_text,
+        "segments": all_segments,
+        "language": detected_language,
+        "stored_chunk_count": len(chunk_files),
+        "processed_chunk_count": processed_count,
+        "skipped_chunk_count": skipped_count,
+    }
+
+
 async def finalize_meeting_transcript(
     meeting_id: str,
     db: Session,
@@ -785,6 +895,55 @@ async def finalize_meeting_transcript(
 
     require_meeting_room_access(db, current_user, meeting)
     original_meeting_status = meeting.status
+    meeting_settings = get_meeting_settings(meeting)
+    stt_provider_from_settings = normalize_stt_provider(
+        body.get("stt_provider") or meeting_settings.get("sttProvider") or os.getenv("STT_PROVIDER", "deepgram")
+    )
+    transcription_mode = normalize_transcription_mode(
+        stt_provider_from_settings,
+        body.get("transcription_mode") or meeting_settings.get("transcriptionMode") or "realtime",
+    )
+    updated_settings = merge_meeting_settings(
+        getattr(meeting, "settings", None),
+        settings_updates={
+            "sttProvider": stt_provider_from_settings,
+            "transcriptionMode": transcription_mode,
+            "language": req_language or meeting_settings.get("language") or getattr(current_user, "language", None) or "vi",
+        },
+        runtime_updates={
+            "provider": stt_provider_from_settings,
+            "mode": transcription_mode,
+            "status": "finalizing",
+            "finalization_status": "processing",
+            "last_error": None,
+        },
+    )
+    meeting = update_meeting(db, meeting_id, {"settings": updated_settings})
+    deferred_metrics = {
+        "stored_chunk_count": int((meeting.settings or {}).get("transcription_runtime", {}).get("stored_chunk_count") or 0),
+        "processed_chunk_count": 0,
+    }
+
+    # Deferred mode: transcribe stored audio chunks if no transcript provided
+    if transcription_mode == "deferred" and not full_text.strip():
+        logger.info(f"Meeting {meeting_id} is in deferred mode, transcribing stored chunks...")
+        try:
+            deferred_result = _transcribe_deferred_chunks(
+                meeting_id=meeting_id,
+                stt_provider_name=stt_provider_from_settings,
+                language=req_language or "auto",
+            )
+            deferred_metrics = {
+                "stored_chunk_count": deferred_result.get("stored_chunk_count", deferred_metrics["stored_chunk_count"]),
+                "processed_chunk_count": deferred_result.get("processed_chunk_count", 0),
+            }
+            if deferred_result.get("transcript", "").strip():
+                full_text = deferred_result["transcript"]
+                segments = deferred_result.get("segments", [])
+                logger.info(f"Deferred transcription produced {len(full_text)} chars, {len(segments)} segments")
+        except Exception as exc:
+            logger.error(f"Deferred transcription failed for meeting {meeting_id}: {exc}")
+            errors.append(f"Deferred transcription failed: {str(exc)}")
 
     draft_payload = build_transcript_from_drafts(db, meeting_id)
     has_transcript_draft = bool(
@@ -803,6 +962,16 @@ async def finalize_meeting_transcript(
     )
 
     if not isinstance(full_text, str) or not full_text.strip():
+        runtime_settings = merge_meeting_settings(
+            getattr(meeting, "settings", None),
+            runtime_updates={
+                "status": "completed",
+                "finalization_status": "completed",
+                "processed_chunk_count": deferred_metrics.get("processed_chunk_count", 0),
+                "stored_chunk_count": deferred_metrics.get("stored_chunk_count", 0),
+            },
+        )
+        update_meeting(db, meeting_id, {"settings": runtime_settings, "status": "completed"})
         return {
             "meeting_id": meeting_id,
             "transcript_status": "EMPTY",
@@ -826,7 +995,7 @@ async def finalize_meeting_transcript(
             "summary_error_message": None,
         }
 
-    provider_name = os.getenv("STT_PROVIDER", "deepgram")
+    provider_name = stt_provider_from_settings or os.getenv("STT_PROVIDER", "deepgram")
     transcript_artifacts = build_transcript_artifacts(
         text=full_text,
         segments=segments if isinstance(segments, list) else [],
@@ -1002,7 +1171,16 @@ async def finalize_meeting_transcript(
 
     if not generate_summary:
         try:
-            update_meeting(db, meeting_id, {"status": "completed"})
+            runtime_settings = merge_meeting_settings(
+                getattr(meeting, "settings", None),
+                runtime_updates={
+                    "status": "completed",
+                    "finalization_status": "completed",
+                    "processed_chunk_count": deferred_metrics.get("processed_chunk_count", 0),
+                    "stored_chunk_count": deferred_metrics.get("stored_chunk_count", 0),
+                },
+            )
+            update_meeting(db, meeting_id, {"status": "completed", "settings": runtime_settings})
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         db.commit()
@@ -1063,7 +1241,17 @@ async def finalize_meeting_transcript(
     if regenerate and original_meeting_status == "completed" and summary_status != "COMPLETED":
         final_meeting_status = "completed"
     try:
-        update_meeting(db, meeting_id, {"status": final_meeting_status})
+        runtime_settings = merge_meeting_settings(
+            getattr(meeting, "settings", None),
+            runtime_updates={
+                "status": "completed",
+                "finalization_status": "completed",
+                "processed_chunk_count": deferred_metrics.get("processed_chunk_count", 0),
+                "stored_chunk_count": deferred_metrics.get("stored_chunk_count", 0),
+                "last_error": summary_error_message if summary_status != "COMPLETED" else None,
+            },
+        )
+        update_meeting(db, meeting_id, {"status": final_meeting_status, "settings": runtime_settings})
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     db.commit()

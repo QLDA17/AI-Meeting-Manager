@@ -10,6 +10,7 @@ import { useGroupMembers } from '../../hooks/useGroupMembers';
 import GroupSelector from './GroupSelector';
 import ParticipantSelector from './ParticipantSelector';
 import AIConfigSection from './AIConfigSection';
+import type { SttProvider, TranscriptionMode } from '../../constants/sttCapabilities';
 
 const ScheduleMeetingModal: React.FC = () => {
   const { isScheduleModalOpen, toggleScheduleModal, selectedDate } = useCalendarStore();
@@ -23,6 +24,8 @@ const ScheduleMeetingModal: React.FC = () => {
   const [time, setTime] = React.useState('14:00');
   const [endTime, setEndTime] = React.useState('');
   const [language, setLanguage] = React.useState('vi');
+  const [sttProvider, setSttProvider] = React.useState<SttProvider>('deepgram');
+  const [transcriptionMode, setTranscriptionMode] = React.useState<TranscriptionMode>('realtime');
   const [isSubmitting, setIsSubmitting] = React.useState(false);
   const [enableRecord, setEnableRecord] = React.useState(true);
   const [enableSummary, setEnableSummary] = React.useState(true);
@@ -61,7 +64,7 @@ const ScheduleMeetingModal: React.FC = () => {
         scheduled_end: toMeetingApiDateTime(end),
         status: 'upcoming',
         description: `Cuộc họp lên lịch trong nhóm ${groups.find(g => g.id === selectedGroupId)?.name || selectedGroupId}`,
-        settings: { enableRecord, enableSummary, language },
+        settings: { enableRecord, enableSummary, language, sttProvider, transcriptionMode },
         participant_ids: selectedParticipants,
       });
 
@@ -80,6 +83,7 @@ const ScheduleMeetingModal: React.FC = () => {
     setTitle(''); setSelectedParticipants([]);
     setSelectedGroupId(''); setDate(toLocalDateStr(new Date()));
     setTime('14:00'); setEndTime(''); setLanguage('vi');
+    setSttProvider('deepgram'); setTranscriptionMode('realtime');
     setEnableRecord(true); setEnableSummary(true);
   };
 
@@ -106,6 +110,8 @@ const ScheduleMeetingModal: React.FC = () => {
             language={language} onLanguageChange={setLanguage}
             enableRecord={enableRecord} onToggleRecord={() => setEnableRecord(!enableRecord)}
             enableSummary={enableSummary} onToggleSummary={() => setEnableSummary(!enableSummary)}
+            sttProvider={sttProvider} onSttProviderChange={setSttProvider}
+            transcriptionMode={transcriptionMode} onTranscriptionModeChange={setTranscriptionMode}
           />
         </div>
 

@@ -9,6 +9,7 @@ import string
 import uuid
 from .. import models
 from ..core.app_state import AUDIO_UPLOAD_DIR, LEGACY_AUDIO_UPLOAD_DIR, resolve_audio_storage_path
+from ..core.meeting_stt import normalize_meeting_settings
 
 logger = logging.getLogger(__name__)
 
@@ -171,6 +172,7 @@ def create_meeting(db: Session, meeting_data: dict, created_by: str) -> models.M
         recording_url=meeting_data.get("recording_url"),
         transcript_url=meeting_data.get("transcript_url"),
         audio_url=meeting_data.get("audio_url"),
+        settings=normalize_meeting_settings(meeting_data.get("settings")),
         is_pinned=meeting_data.get("is_pinned", False),
         created_by=created_by,
     )
@@ -209,6 +211,9 @@ def update_meeting(db: Session, meeting_id: str, updates: dict) -> models.Meetin
         allowed = VALID_STATUS_TRANSITIONS.get(db_meeting.status, [])
         if new_status not in allowed:
             raise ValueError(f"Cannot transition from '{db_meeting.status}' to '{new_status}'")
+
+    if "settings" in updates:
+        updates["settings"] = normalize_meeting_settings(updates.get("settings"))
 
     for key, value in updates.items():
         if hasattr(db_meeting, key):

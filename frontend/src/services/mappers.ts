@@ -294,6 +294,8 @@ export const normalizeMeeting = (meeting: any): Meeting => ({
   organizationName: meeting.organizationName ?? meeting.organization_name ?? meeting.organization?.name ?? undefined,
   actionItemsCount: meeting.actionItemsCount ?? meeting.action_items_count ?? 0,
   accessMode: meeting.accessMode ?? meeting.access_mode ?? undefined,
+  settings: meeting.settings ?? undefined,
+  transcriptionRuntime: meeting.transcription_runtime ?? meeting.transcriptionRuntime ?? undefined,
 });
 
 export const normalizeMeetingDetail = (meeting: any): MeetingDetail => ({
@@ -479,6 +481,8 @@ export const normalizeMeetingDetail = (meeting: any): MeetingDetail => ({
   summaryErrorText: meeting.summary_error_text ?? undefined,
   summaryProvider: meeting.summary_provider ?? undefined,
   summaryModelName: meeting.summary_model_name ?? undefined,
+  settings: meeting.settings ?? undefined,
+  transcriptionRuntime: meeting.transcription_runtime ?? meeting.transcriptionRuntime ?? undefined,
 });
 
 export const normalizeMeetingMessage = (message: any): MeetingMessage => ({

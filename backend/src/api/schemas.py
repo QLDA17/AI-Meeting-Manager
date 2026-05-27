@@ -343,6 +343,7 @@ class MeetingBase(BaseSchema):
     transcript_url: Optional[str] = None
     audio_url: Optional[str] = None
     audio_status: Optional[str] = Field(default="NONE", pattern="^(NONE|PROCESSING|READY|FAILED)$")
+    settings: Optional[Dict[str, Any]] = None
     is_pinned: bool = False
 
 
@@ -369,6 +370,7 @@ class MeetingUpdate(BaseSchema):
     recording_url: Optional[str] = None
     transcript_url: Optional[str] = None
     audio_url: Optional[str] = None
+    settings: Optional[Dict[str, Any]] = None
     group_id: Optional[str] = None
     participant_ids: Optional[List[str]] = None
     is_pinned: Optional[bool] = None
@@ -393,6 +395,7 @@ class Meeting(MeetingBase, TimestampMixin):
     key_points_list: Optional[List[str]] = None
     decisions_list: Optional[List[str]] = None
     action_items_count: int = 0
+    transcription_runtime: Optional[Dict[str, Any]] = None
 
 
 # ==================== Meeting Participant Schemas ====================

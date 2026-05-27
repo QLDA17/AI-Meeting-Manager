@@ -21,6 +21,7 @@ import { useAuth } from "../context/AuthContext";
 import { useAppStore, useOrgStore } from "../stores";
 import { useGroupMembers } from "../hooks/useGroupMembers";
 import api from "../services/api";
+import { STT_PROVIDERS, type SttProvider, type TranscriptionMode } from "../constants/sttCapabilities";
 
 type Tab = "room" | "members";
 
@@ -41,6 +42,8 @@ const CreateMeeting: React.FC = () => {
   const [title, setTitle] = useState("");
   const [selectedGroupId, setSelectedGroupId] = useState("");
   const [language, setLanguage] = useState("vi");
+  const [sttProvider, setSttProvider] = useState<SttProvider>("deepgram");
+  const [transcriptionMode, setTranscriptionMode] = useState<TranscriptionMode>("realtime");
   const [enableCamera, setEnableCamera] = useState(true);
   const [enableMic, setEnableMic] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -157,6 +160,8 @@ const CreateMeeting: React.FC = () => {
           enableRecord: true,
           enableSummary: true,
           language,
+          sttProvider,
+          transcriptionMode,
           enableCamera,
           enableMic,
         },
@@ -175,6 +180,8 @@ const CreateMeeting: React.FC = () => {
           enableMic,
           enableRecord: true,
           enableSummary: true,
+          sttProvider,
+          transcriptionMode,
           participants: selectedParticipants,
         },
       });
@@ -413,6 +420,50 @@ const CreateMeeting: React.FC = () => {
                       <option value="ko">한국어</option>
                       <option value="zh">中文</option>
                     </select>
+                  </div>
+
+                  {/* STT Provider */}
+                  <div>
+                    <label className="mb-1.5 block text-xs font-semibold text-gray-500 dark:text-slate-400">
+                      Công nghệ phiên âm
+                    </label>
+                    <select
+                      value={sttProvider}
+                      onChange={(e) => {
+                        const p = e.target.value as SttProvider;
+                        setSttProvider(p);
+                        // Auto-set mode to first supported
+                        const modes = STT_PROVIDERS[p].modes;
+                        if (!modes.includes(transcriptionMode)) setTranscriptionMode(modes[0]);
+                      }}
+                      className="h-11 w-full rounded-xl border border-gray-200 bg-gray-50 px-3.5 text-sm font-medium text-gray-700 focus:border-primary-400 focus:outline-none focus:ring-2 focus:ring-primary-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-300"
+                    >
+                      <option value="deepgram">Deepgram — Nova-3, realtime</option>
+                      <option value="viwhisper">ViWhisper — Tiếng Việt, chính xác cao</option>
+                    </select>
+                  </div>
+
+                  {/* Transcription Mode */}
+                  <div>
+                    <label className="mb-1.5 block text-xs font-semibold text-gray-500 dark:text-slate-400">
+                      Chế độ phiên âm
+                    </label>
+                    <div className="grid grid-cols-2 gap-2">
+                      {(["realtime", "deferred"] as TranscriptionMode[]).map((mode) => (
+                        <button
+                          key={mode}
+                          type="button"
+                          onClick={() => setTranscriptionMode(mode)}
+                          className={`rounded-xl border px-3 py-2.5 text-xs font-bold transition-all ${
+                            transcriptionMode === mode
+                              ? "border-primary-400 bg-primary-50 text-primary-700 dark:border-primary-500 dark:bg-primary-900/20 dark:text-primary-300"
+                              : "border-gray-200 bg-white text-gray-600 hover:border-gray-300 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-400"
+                          }`}
+                        >
+                          {mode === "realtime" ? "Phiên âm trực tiếp" : "Phiên âm sau họp"}
+                        </button>
+                      ))}
+                    </div>
                   </div>
 
                   {/* Always-on badge */}

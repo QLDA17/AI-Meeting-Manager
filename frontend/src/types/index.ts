@@ -177,6 +177,16 @@ export interface Meeting {
   organizationName?: string;
   actionItemsCount?: number;
   accessMode?: 'org_member' | 'meeting_guest' | 'none';
+  settings?: Record<string, unknown>;
+  transcriptionRuntime?: {
+    provider: string;
+    mode: string;
+    status: 'idle' | 'recording' | 'finalizing' | 'completed' | 'failed';
+    stored_chunk_count: number;
+    processed_chunk_count: number;
+    last_error?: string | null;
+    finalization_status?: 'pending' | 'processing' | 'completed' | 'failed';
+  };
 }
 
 export interface MeetingTranscript {

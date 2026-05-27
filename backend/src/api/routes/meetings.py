@@ -1,10 +1,11 @@
 import logging
+import asyncio
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, Request
 from sqlalchemy import func, or_, select
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, sessionmaker
 
 from src.api import auth, models, schemas
 from src.api.core.meetings_support import normalize_speaker_label
@@ -40,6 +41,7 @@ from src.api.core.admin_runtime import append_admin_audit_log
 from src.api.core.notifications_support import get_org_admin_recipient_ids, push_runtime_notification
 from src.api.database import get_db, SessionLocal
 from src.api.core.transcript_support import finalize_meeting_transcript
+from src.api.core.meeting_stt import get_meeting_settings, get_transcription_runtime, merge_meeting_settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["meetings"])
@@ -51,6 +53,76 @@ def _coerce_utc_aware(value: Optional[datetime]) -> Optional[datetime]:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+
+def _hydrate_meeting_runtime_fields(meeting: Optional[models.Meeting]) -> Optional[models.Meeting]:
+    if meeting is None:
+        return None
+    meeting.settings = get_meeting_settings(meeting)
+    meeting.transcription_runtime = get_transcription_runtime(meeting)
+    return meeting
+
+
+def _update_meeting_runtime(
+    db: Session,
+    meeting: models.Meeting,
+    *,
+    settings_updates: Optional[Dict[str, Any]] = None,
+    runtime_updates: Optional[Dict[str, Any]] = None,
+) -> models.Meeting:
+    next_settings = merge_meeting_settings(
+        getattr(meeting, "settings", None),
+        settings_updates=settings_updates,
+        runtime_updates=runtime_updates,
+    )
+    updated = update_meeting(db, meeting.id, {"settings": next_settings})
+    return _hydrate_meeting_runtime_fields(updated)
+
+
+async def _finalize_meeting_in_background(meeting_id: str, current_user_id: str, db_bind) -> None:
+    background_session_factory = sessionmaker(bind=db_bind, expire_on_commit=False, autoflush=False, autocommit=False)
+    session = background_session_factory()
+    try:
+        meeting = get_meeting_by_id(session, meeting_id)
+        current_user = session.query(models.User).filter(models.User.id == current_user_id).first()
+        if not meeting or not current_user:
+            return
+        settings = get_meeting_settings(meeting)
+        await finalize_meeting_transcript(
+            meeting_id,
+            session,
+            current_user,
+            {
+                "language": settings.get("language") or getattr(current_user, "language", None) or "vi",
+                "transcription_mode": settings.get("transcriptionMode"),
+                "stt_provider": settings.get("sttProvider"),
+                "generate_action_items": True,
+            },
+        )
+    except Exception as exc:
+        logger.exception("Background finalize failed for meeting %s", meeting_id)
+        failed_meeting = session.query(models.Meeting).filter(models.Meeting.id == meeting_id).first()
+        if failed_meeting:
+            failed_settings = merge_meeting_settings(
+                getattr(failed_meeting, "settings", None),
+                runtime_updates={
+                    "status": "failed",
+                    "finalization_status": "failed",
+                    "last_error": str(exc),
+                },
+            )
+            update_meeting(session, meeting_id, {"settings": failed_settings, "status": "completed"})
+            await meeting_room_manager.broadcast(
+                meeting_id,
+                {
+                    "type": "transcription.runtime",
+                    "meeting_id": meeting_id,
+                    "transcription_runtime": failed_settings.get("transcription_runtime"),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+    finally:
+        session.close()
 
 @router.get("/api/meetings", response_model=List[schemas.Meeting])
 def list_meetings(
@@ -117,6 +189,7 @@ def list_meetings(
     # Enrich with computed fields for list view
     user_lang = getattr(current_user, "language", None) or "vi"
     for m in meetings:
+        _hydrate_meeting_runtime_fields(m)
         m.group_name = m.group.name if m.group else None
         m.organization_name = m.organization.name if m.organization else None
         m.action_items_count = len(m.action_items) if m.action_items else 0
@@ -488,7 +561,7 @@ def create_meeting_endpoint(
 
     # Block meetings in the past (skip for instant live meetings)
     if not is_instant and scheduled_start:
-        if scheduled_start < datetime.now(timezone.utc).replace(tzinfo=None):
+        if scheduled_start.date() < datetime.now(timezone.utc).date():
             raise HTTPException(status_code=400, detail="Không thể tạo cuộc họp trong quá khứ")
 
     # scheduled_end must be after scheduled_start (skip for instant)
@@ -585,7 +658,7 @@ def create_meeting_endpoint(
     meeting.live_duration_minutes = duration_metrics["live_duration_minutes"]
     meeting.is_overrun = duration_metrics["is_overrun"]
     meeting.overrun_minutes = duration_metrics["overrun_minutes"]
-    return meeting
+    return _hydrate_meeting_runtime_fields(meeting)
 
 
 @router.post("/api/meetings/{meeting_id}/start", response_model=schemas.Meeting)
@@ -626,13 +699,14 @@ async def start_meeting_endpoint(
         meeting_id,
         {"type": "meeting.status", "meeting_id": meeting_id, "status": updated.status, "timestamp": datetime.now(timezone.utc).isoformat()},
     )
-    return updated
+    return _hydrate_meeting_runtime_fields(updated)
 
 
 @router.post("/api/meetings/{meeting_id}/end", response_model=schemas.Meeting)
 async def end_meeting_endpoint(
     meeting_id: str,
     request: Request,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user = Depends(auth.get_current_user)
 ):
@@ -650,27 +724,21 @@ async def end_meeting_endpoint(
     if target_status not in {"processing", "completed", "failed"}:
         raise HTTPException(status_code=400, detail="Invalid meeting end status")
 
+    meeting_settings = get_meeting_settings(meeting)
+    runtime = get_transcription_runtime(meeting)
+
     if meeting.status in {"completed", "failed", "canceled"}:
-        return meeting
+        return _hydrate_meeting_runtime_fields(meeting)
 
     if target_status == "completed":
-        try:
-            await finalize_meeting_transcript(meeting_id, db, current_user, {})
-            db.expire_all()
-            refreshed = get_meeting_by_id(db, meeting_id)
-            if refreshed:
-                meeting = refreshed
-            if meeting.status in {"completed", "failed", "canceled"}:
-                await meeting_room_manager.broadcast(
-                    meeting_id,
-                    {"type": "meeting.status", "meeting_id": meeting_id, "status": meeting.status, "timestamp": datetime.now(timezone.utc).isoformat()},
-                )
-                return meeting
-        except HTTPException as exc:
-            if exc.status_code not in {400, 404}:
-                raise
-        except Exception:
-            logger.exception("Auto-finalize before meeting completion failed for meeting %s", meeting_id)
+        if runtime.get("finalization_status") == "completed":
+            if meeting.status != "completed":
+                meeting = update_meeting(db, meeting_id, {"status": "completed"})
+            return _hydrate_meeting_runtime_fields(meeting)
+        if runtime.get("finalization_status") == "processing":
+            if meeting.status != "processing":
+                meeting = update_meeting(db, meeting_id, {"status": "processing"})
+            return _hydrate_meeting_runtime_fields(meeting)
 
     now = datetime.now(timezone.utc)
     if meeting.status == "upcoming":
@@ -688,17 +756,44 @@ async def end_meeting_endpoint(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
 
-    start = _coerce_utc_aware(meeting.actual_start) or _coerce_utc_aware(meeting.scheduled_start) or _coerce_utc_aware(meeting.created_at) or now
     duration = compute_meeting_duration_minutes(meeting, now)
     updates = {
         "actual_end": now,
         "duration": duration,
         "status": target_status,
     }
+    if target_status == "completed":
+        updates["status"] = "processing"
     try:
         updated = update_meeting(db, meeting_id, updates)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    updated = _hydrate_meeting_runtime_fields(updated)
+    if target_status == "completed":
+        updated = _update_meeting_runtime(
+            db,
+            updated,
+            settings_updates={
+                "sttProvider": meeting_settings.get("sttProvider"),
+                "transcriptionMode": meeting_settings.get("transcriptionMode"),
+                "language": meeting_settings.get("language") or getattr(current_user, "language", None) or "vi",
+            },
+            runtime_updates={
+                "status": "finalizing",
+                "finalization_status": "processing",
+                "last_error": None,
+            },
+        )
+        background_tasks.add_task(_finalize_meeting_in_background, meeting_id, current_user.id, db.get_bind())
+        await meeting_room_manager.broadcast(
+            meeting_id,
+            {
+                "type": "transcription.runtime",
+                "meeting_id": meeting_id,
+                "transcription_runtime": updated.transcription_runtime,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+        )
     duration_metrics = duration_metrics_payload(updated, now)
     updated.planned_duration_minutes = duration_metrics["planned_duration_minutes"]
     updated.actual_duration_minutes = duration_metrics["actual_duration_minutes"]
@@ -709,7 +804,7 @@ async def end_meeting_endpoint(
         meeting_id,
         {"type": "meeting.status", "meeting_id": meeting_id, "status": updated.status, "timestamp": datetime.now(timezone.utc).isoformat()},
     )
-    return updated
+    return _hydrate_meeting_runtime_fields(updated)
 
 
 @router.put("/api/meetings/{meeting_id}", response_model=schemas.Meeting)
@@ -738,7 +833,7 @@ def update_meeting_endpoint(
         end = updates.get("scheduled_end", existing.scheduled_end)
         if start and end and end <= start:
             raise HTTPException(status_code=400, detail="Thời gian kết thúc phải sau thời gian bắt đầu")
-        if start and start < datetime.now(timezone.utc).replace(tzinfo=None):
+        if start and start.date() < datetime.now(timezone.utc).date():
             raise HTTPException(status_code=400, detail="Không thể chuyển cuộc họp về thời gian trong quá khứ")
 
     if updates.get("group_id"):

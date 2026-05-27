@@ -15,12 +15,10 @@ import {
   MonitorUp,
   MessageSquare,
   Users,
-  Check,
   UserPlus,
   Send,
   X,
   FileText,
-  ListChecks,
   Target,
   Sparkles,
   LayoutGrid,
@@ -38,6 +36,7 @@ import { clsx } from "clsx";
 import api from "../services/api";
 import { normalizeMeetingDetail, normalizeMeetingMessage } from "../services/mappers";
 import type { MeetingDetail, MeetingMessage } from "../types";
+import { normalizeSttProvider, normalizeTranscriptionMode } from "../constants/sttCapabilities";
 import {
   aiNotesFromMeeting,
   dedupeActionItems,
@@ -185,6 +184,8 @@ const MeetingRoomInner: React.FC = () => {
     enableCamera?: boolean;
     enableMic?: boolean;
     enableRecord?: boolean;
+    sttProvider?: string;
+    transcriptionMode?: string;
   };
   const [remoteMeeting, setRemoteMeeting] = useState<MeetingDetail | null>(null);
   const [isMeetingLoading, setIsMeetingLoading] = useState(true);
@@ -194,12 +195,6 @@ const MeetingRoomInner: React.FC = () => {
     if (!code) return null;
     return remoteMeeting || (meetings as any[]).find(m => m.code === code || m.id === code) || null;
   }, [code, meetings, remoteMeeting]);
-  const preferredNotesLanguage =
-    user?.language ||
-    remoteMeeting?.preferredSummaryLanguage ||
-    remoteMeeting?.meetingDefaultSummaryLanguage ||
-    'vi';
-
   const isOrganizer = meeting?.createdBy === user?.id;
   const isMeetingGuest = meeting?.accessMode === "meeting_guest";
 
@@ -227,6 +222,15 @@ const MeetingRoomInner: React.FC = () => {
 
   // Audio Recorder - live STT
   const meetingId = meeting?.id || null;
+  const resolvedSettings = (remoteMeeting?.settings || (meeting as any)?.settings || {}) as Record<string, any>;
+  const sttProvider = normalizeSttProvider(resolvedSettings.sttProvider || roomState.sttProvider || "deepgram");
+  const transcriptionMode = normalizeTranscriptionMode(
+    sttProvider,
+    resolvedSettings.transcriptionMode || roomState.transcriptionMode || "realtime",
+  );
+  const isDeferredMode = transcriptionMode === "deferred";
+  const roomConfigReady = Boolean(remoteMeeting || roomState.sttProvider || roomState.transcriptionMode);
+
   const {
     isRecording: isAudioRecording,
     liveTranscripts,
@@ -236,10 +240,12 @@ const MeetingRoomInner: React.FC = () => {
     sttStatus,
     startRecording,
     stopRecording,
-    finalize,
     hydrateDraft,
+    storedChunkCount,
+    pendingChunkCount,
+    retryingChunkCount,
     error: recorderError,
-  } = useAudioRecorder(localStream, meetingId);
+  } = useAudioRecorder(localStream, meetingId, transcriptionMode, sttProvider);
 
   const selfParticipant = useMemo<Participant>(() => ({
     id: selfParticipantId,
@@ -365,6 +371,18 @@ const MeetingRoomInner: React.FC = () => {
   }, [remoteMeeting]);
 
   useEffect(() => {
+    if (!meetingId || remoteMeeting?.transcriptionRuntime?.finalization_status !== "processing") {
+      return;
+    }
+    const interval = window.setInterval(() => {
+      api.get(`/api/meetings/${meetingId}`)
+        .then((response) => setRemoteMeeting(normalizeMeetingDetail(response.data)))
+        .catch(() => {});
+    }, 5000);
+    return () => window.clearInterval(interval);
+  }, [meetingId, remoteMeeting?.transcriptionRuntime?.finalization_status]);
+
+  useEffect(() => {
     if (!meetingId) return;
     connect(meetingId);
     api.get(`/api/meetings/${meetingId}/messages`)
@@ -400,6 +418,15 @@ const MeetingRoomInner: React.FC = () => {
     if (wsEvent.type === "room.snapshot") {
       if (wsEvent.snapshot_warning) {
         console.warn("Meeting room snapshot warning", wsEvent.snapshot_warning);
+      }
+      if (wsEvent.meeting) {
+        setRemoteMeeting((current) => current ? {
+          ...current,
+          status: wsEvent.meeting.status ?? current.status,
+          accessMode: wsEvent.meeting.access_mode ?? current.accessMode,
+          settings: wsEvent.meeting.settings ?? current.settings,
+          transcriptionRuntime: wsEvent.meeting.transcription_runtime ?? current.transcriptionRuntime,
+        } : current);
       }
       if (Array.isArray(wsEvent.messages)) {
         setChatMessages(wsEvent.messages.map(normalizeMeetingMessage));
@@ -463,8 +490,14 @@ const MeetingRoomInner: React.FC = () => {
       setAiNotesStatus("FAILED");
       setRemoteMeeting((current) => current ? { ...current, summaryStatus: "FAILED" } : current);
       showToast.error("AI Notes tạo thất bại");
+    } else if (wsEvent.type === "transcription.runtime" && wsEvent.transcription_runtime) {
+      setRemoteMeeting((current) => current ? {
+        ...current,
+        transcriptionRuntime: wsEvent.transcription_runtime,
+      } : current);
     } else if (wsEvent.type === "meeting.status" && wsEvent.status) {
       showToast.info(`Trạng thái cuộc họp: ${wsEvent.status}`);
+      setRemoteMeeting((current) => current ? { ...current, status: wsEvent.status } : current);
     } else if (wsEvent.type === "transcript.interim" && wsEvent.text) {
       const key = wsEvent.user_id || wsEvent.speaker || "remote";
       if (wsEvent.user_id === user?.id) return;
@@ -610,14 +643,14 @@ const MeetingRoomInner: React.FC = () => {
 
   // Auto-start audio recording when stream is ready
   useEffect(() => {
-    if (isRecording && localStream && !isAudioRecording && meetingId) {
+    if (isRecording && localStream && !isAudioRecording && meetingId && roomConfigReady) {
       const timer = setTimeout(() => {
         startRecording();
-        showToast.info("Đã bắt đầu ghi âm và phiên âm AI");
+        showToast.info(isDeferredMode ? "Đã bắt đầu ghi âm theo từng đoạn" : "Đã bắt đầu ghi âm và phiên âm AI");
       }, 1000);
       return () => clearTimeout(timer);
     }
-  }, [isRecording, localStream, meetingId]);
+  }, [isRecording, localStream, meetingId, roomConfigReady, isDeferredMode, isAudioRecording, startRecording]);
 
   // Strict Camera Toggle Effect
   useEffect(() => {
@@ -686,34 +719,6 @@ const MeetingRoomInner: React.FC = () => {
 
   const [isFinalizing, setIsFinalizing] = useState(false);
 
-  const applyFinalizeResult = useCallback((result: any) => {
-    setRemoteMeeting((current) => current ? {
-      ...current,
-      transcriptStatus: result?.transcript_status ?? current.transcriptStatus,
-      hasTranscriptDraft: result?.has_transcript_draft ?? current.hasTranscriptDraft,
-      summaryStatus: result?.summary_status ?? current.summaryStatus,
-    } : current);
-    if (result?.summary) {
-      setAiNotes(result.summary);
-    }
-    if (result?.summary_status) {
-      setAiNotesStatus(result.summary_status);
-    }
-    if (result?.transcript_status === "EMPTY") {
-      showToast.info("Chưa phát hiện giọng nói rõ để lưu transcript.");
-      return;
-    }
-    if (result?.summary_status === "COMPLETED") {
-      showToast.success("Đã lưu transcript và tạo AI Notes thành công.");
-      return;
-    }
-    if (result?.summary_status === "FAILED") {
-      showToast.error("Đã lưu transcript, chưa tạo được bản tổng hợp.");
-      return;
-    }
-    showToast.info("Đã lưu transcript.");
-  }, []);
-
   const leaveMeeting = async () => {
     // Participant: chỉ rời phòng, không kết thúc cuộc họp
     if (!isOrganizer) {
@@ -729,32 +734,17 @@ const MeetingRoomInner: React.FC = () => {
     // Organizer: kết thúc cuộc họp + finalize
     if (meetingId) {
       setIsFinalizing(true);
-      showToast.info("Đang lưu bản nháp transcript và tạo AI Notes...");
+      showToast.info("Đang kết thúc cuộc họp và xử lý transcript...");
       try {
-        await api.post(`/api/meetings/${meetingId}/start`).catch(() => {});
-        await api.post(`/api/meetings/${meetingId}/end`, { status: "processing" });
         if (isRecording) {
-          try {
-            const result = await finalize(meetingId, preferredNotesLanguage);
-            applyFinalizeResult(result);
-          } catch (err: any) {
-            if (err?.response?.status === 400) {
-              showToast.info("Cuộc họp đã kết thúc. Nếu có transcript draft, bạn vẫn có thể xem lại sau.");
-            } else {
-              console.error("Finalize error:", err);
-              showToast.error("Bản nháp transcript vẫn được giữ lại, nhưng chưa finalize được.");
-            }
-          }
-        } else {
-          showToast.success("Cuộc họp đã kết thúc.");
+          await stopRecording();
         }
-        // Always set meeting to completed, even if finalize failed
-        await api.post(`/api/meetings/${meetingId}/end`, { status: "completed" }).catch(() => {});
+        const response = await api.post(`/api/meetings/${meetingId}/end`, { status: "completed" });
+        setRemoteMeeting((current) => current ? normalizeMeetingDetail({ ...current, ...response.data }) : current);
+        showToast.success("Cuộc họp đã kết thúc. Transcript và AI Notes sẽ tự xử lý.");
         navigate(`/meetings/${meetingId}`);
-      } catch {
-        // Last resort: try to end the meeting anyway
-        await api.post(`/api/meetings/${meetingId}/end`, { status: "completed" }).catch(() => {});
-        showToast.error("Đã kết thúc cuộc họp. Nếu transcript chưa finalize, bản nháp vẫn còn.");
+      } catch (err: any) {
+        showToast.error(err?.response?.data?.detail || "Không thể kết thúc cuộc họp");
         navigate("/meetings");
       } finally {
         setIsFinalizing(false);
@@ -821,6 +811,7 @@ const MeetingRoomInner: React.FC = () => {
         : meeting?.hasTranscriptDraft
           ? "Đang lưu bản nháp transcript"
           : "Chưa có transcript";
+  const transcriptionRuntime = remoteMeeting?.transcriptionRuntime;
   const summaryPersistenceLabel =
     aiNotesStatus === "COMPLETED"
       ? "AI Notes đã sẵn sàng"
@@ -1281,9 +1272,13 @@ const MeetingRoomInner: React.FC = () => {
                       <div className="flex items-center gap-3 p-4 rounded-2xl bg-slate-900/50 border border-slate-800">
                          <div className={`w-3 h-3 rounded-full ${isAudioRecording ? 'bg-red-500 animate-pulse' : 'bg-slate-600'}`} />
                          <span className="text-xs font-bold text-slate-300">
-                            {isAudioRecording ? 'Đang ghi âm & phiên âm AI...' : isFinalizing ? 'Đang lưu và tóm tắt...' : 'Chưa ghi âm'}
+                            {isAudioRecording
+                              ? (isDeferredMode ? 'Đang ghi âm (phiên âm sau họp)...' : 'Đang ghi âm & phiên âm AI...')
+                              : isFinalizing
+                                ? (isDeferredMode ? 'Đang xử lý phiên âm...' : 'Đang lưu và tóm tắt...')
+                                : 'Chưa ghi âm'}
                          </span>
-                         {displayTranscripts.length > 0 && (
+                         {!isDeferredMode && displayTranscripts.length > 0 && (
                             <span className="ml-auto text-[10px] font-bold text-indigo-400">{displayTranscripts.length} đoạn</span>
                          )}
                       </div>
@@ -1338,56 +1333,98 @@ const MeetingRoomInner: React.FC = () => {
                         </div>
                       )}
 
-                      {/* Live Transcript Sections */}
-                      <div className="space-y-4">
-                         <div className="flex items-center gap-2 text-indigo-400">
+                      {/* Live Transcript Sections — hidden in deferred mode */}
+                      {isDeferredMode ? (
+                        <div className="space-y-4">
+                          <div className="flex items-center gap-2 text-amber-400">
                             <FileText size={16} />
-                            <span className="text-xs font-bold uppercase tracking-widest">Phiên âm trực tiếp</span>
-                         </div>
-                         <div className="space-y-3 max-h-[60vh] overflow-y-auto custom-scrollbar">
-                            {displayTranscripts.length === 0 ? (
-                               <div className="p-5 rounded-[1.5rem] bg-indigo-500/5 border border-indigo-500/10 text-slate-500 text-sm text-center">
-                                  {isAudioRecording ? "Đang lắng nghe... Hãy nói chuyện để xem phiên âm real-time." : "Chờ bắt đầu ghi âm..."}
-                               </div>
+                            <span className="text-xs font-bold uppercase tracking-widest">Phiên âm sau họp</span>
+                          </div>
+                          <div className="p-5 rounded-[1.5rem] bg-amber-500/5 border border-amber-500/10 text-slate-400 text-sm text-center">
+                            {isAudioRecording ? (
+                              <div className="space-y-2">
+                                <div className="flex items-center justify-center gap-2">
+                                  <span className="h-2 w-2 rounded-full bg-amber-500 animate-pulse" />
+                                  <span className="font-semibold text-amber-300">Đang ghi âm...</span>
+                                </div>
+                                <p className="text-xs text-slate-500">Audio đang được chia thành từng đoạn và lưu trên máy chủ. Transcript sẽ được xử lý sau khi kết thúc cuộc họp.</p>
+                              </div>
                             ) : (
-                               displayTranscripts.map((t) => (
-                                  <div key={t.id} className="p-4 rounded-2xl bg-indigo-500/5 border border-indigo-500/10">
-                                     <div className="flex items-center gap-2 mb-2">
-                                        <span className="text-[10px] font-bold text-indigo-400">
-                                           {new Date(t.timestamp).toLocaleTimeString("vi-VN")}
-                                        </span>
-                                        <span className="text-[10px] font-bold text-slate-600">
-                                           {t.segments.length > 0 ? `${t.segments.length} câu` : ""}
-                                        </span>
-                                     </div>
-                                     {t.segments.length > 0 ? (
-                                       <div className="space-y-2">
-                                         {t.segments.map((segment: any, index: number) => (
-                                           <div key={`${t.id}-${index}`}>
-                                             <div className="mb-1 flex items-center gap-2">
-                                               <span className="text-[10px] font-black uppercase tracking-widest text-emerald-400">
-                                                 {segment.speaker_display_name || segment.speaker || segment.speaker_label || "Speaker_01"}
-                                               </span>
-                                               {segment.language && (
-                                                 <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[9px] font-bold uppercase text-slate-500">
-                                                   {segment.language}
-                                                 </span>
-                                               )}
-                                             </div>
-                                             <p className="text-sm text-slate-300 leading-relaxed">{segment.text}</p>
-                                           </div>
-                                         ))}
-                                       </div>
-                                     ) : (
-                                       <p className="text-sm text-slate-300 leading-relaxed">{t.text}</p>
-                                     )}
-                                  </div>
-                               ))
+                              "Chờ bắt đầu ghi âm..."
                             )}
-                         </div>
-                      </div>
+                          </div>
+                          <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4 text-xs text-slate-400">
+                            <div className="mb-3 flex items-center gap-2 text-slate-200">
+                              <span className={`h-2 w-2 rounded-full ${isAudioRecording ? "bg-emerald-500 animate-pulse" : "bg-slate-500"}`} />
+                              <span className="font-black uppercase tracking-widest">Tình trạng ghi âm</span>
+                            </div>
+                            <div className="space-y-2">
+                              <p>Provider: <span className="font-bold text-slate-200">{sttProvider}</span></p>
+                              <p>Mode: <span className="font-bold text-slate-200">{transcriptionMode}</span></p>
+                              <p>Chunk đã lưu: <span className="font-bold text-slate-200">{transcriptionRuntime?.stored_chunk_count ?? storedChunkCount}</span></p>
+                              <p>Chunk đang chờ: <span className="font-bold text-slate-200">{pendingChunkCount}</span></p>
+                              <p>Chunk retry: <span className="font-bold text-slate-200">{retryingChunkCount}</span></p>
+                              <p>Mic: <span className="font-bold text-slate-200">{micOn ? "Hoạt động bình thường" : "Đang tắt"}</span></p>
+                              {transcriptionRuntime?.status === "finalizing" && (
+                                <p className="text-amber-300">Đang xử lý transcript và AI Notes sau khi kết thúc cuộc họp.</p>
+                              )}
+                              {transcriptionRuntime?.last_error && (
+                                <p className="text-rose-300">{String(transcriptionRuntime.last_error)}</p>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      ) : (
+                        <>
+                          <div className="space-y-4">
+                             <div className="flex items-center gap-2 text-indigo-400">
+                                <FileText size={16} />
+                                <span className="text-xs font-bold uppercase tracking-widest">Phiên âm trực tiếp</span>
+                             </div>
+                             <div className="space-y-3 max-h-[60vh] overflow-y-auto custom-scrollbar">
+                                {displayTranscripts.length === 0 ? (
+                                   <div className="p-5 rounded-[1.5rem] bg-indigo-500/5 border border-indigo-500/10 text-slate-500 text-sm text-center">
+                                      {isAudioRecording ? "Đang lắng nghe... Hãy nói chuyện để xem phiên âm trực tiếp." : "Chờ bắt đầu ghi âm..."}
+                                   </div>
+                                ) : (
+                                   displayTranscripts.map((t) => (
+                                      <div key={t.id} className="p-4 rounded-2xl bg-indigo-500/5 border border-indigo-500/10">
+                                         <div className="flex items-center gap-2 mb-2">
+                                            <span className="text-[10px] font-bold text-indigo-400">
+                                               {new Date(t.timestamp).toLocaleTimeString("vi-VN")}
+                                            </span>
+                                            <span className="text-[10px] font-bold text-slate-600">
+                                               {t.segments.length > 0 ? `${t.segments.length} câu` : ""}
+                                            </span>
+                                         </div>
+                                         {t.segments.length > 0 ? (
+                                           <div className="space-y-2">
+                                             {t.segments.map((segment: any, index: number) => (
+                                               <div key={`${t.id}-${index}`}>
+                                                 <div className="mb-1 flex items-center gap-2">
+                                                   <span className="text-[10px] font-black uppercase tracking-widest text-emerald-400">
+                                                     {segment.speaker_display_name || segment.speaker || segment.speaker_label || "Speaker_01"}
+                                                   </span>
+                                                   {segment.language && (
+                                                     <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[9px] font-bold uppercase text-slate-500">
+                                                       {segment.language}
+                                                     </span>
+                                                   )}
+                                                 </div>
+                                                 <p className="text-sm text-slate-300 leading-relaxed">{segment.text}</p>
+                                               </div>
+                                             ))}
+                                           </div>
+                                         ) : (
+                                           <p className="text-sm text-slate-300 leading-relaxed">{t.text}</p>
+                                         )}
+                                      </div>
+                                   ))
+                                )}
+                             </div>
+                          </div>
 
-                      {/* Full Transcript Preview */}
+                          {/* Full Transcript Preview */}
                       {fullTranscript && (
                          <div className="space-y-4">
                            <div className="flex items-center gap-2 text-emerald-400">
@@ -1402,27 +1439,7 @@ const MeetingRoomInner: React.FC = () => {
                             </div>
                          </div>
                       )}
-
-                      {/* Generate AI Notes Button */}
-                      {fullTranscript && meetingId && (
-                         <button
-                           onClick={async () => {
-                             setIsFinalizing(true);
-                             try {
-                               const result = await finalize(meetingId, preferredNotesLanguage);
-                               applyFinalizeResult(result);
-                             } catch {
-                               showToast.error("Bản nháp transcript vẫn được giữ lại, nhưng chưa tạo được AI Notes.");
-                             } finally {
-                               setIsFinalizing(false);
-                             }
-                           }}
-                           disabled={isFinalizing}
-                           className="w-full flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-indigo-600 to-purple-600 px-5 py-3.5 text-sm font-black text-white transition hover:from-indigo-500 hover:to-purple-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                         >
-                           <Sparkles size={18} className={isFinalizing ? "animate-spin" : ""} />
-                           {isFinalizing ? "Đang lưu transcript..." : "Lưu transcript & tạo AI Notes"}
-                         </button>
+                        </>
                       )}
                    </>
                  ) : (

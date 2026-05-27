@@ -1,4 +1,5 @@
 import asyncio
+import glob
 import json
 import logging
 import os
@@ -38,6 +39,12 @@ from src.api.core.nlp_support import (
 )
 from src.api.core.transcript_support import build_transcript_from_drafts, serialize_transcript_draft_chunks
 from src.api.core.tasks_support import _extract_json_object, _normalize_analysis_payload
+from src.api.core.meeting_stt import (
+    get_meeting_settings,
+    merge_meeting_settings,
+    normalize_stt_provider,
+    normalize_transcription_mode,
+)
 from src.api.core.user_payloads import get_meeting_by_id, require_meeting_room_access
 from src.api.crud import add_meeting_participant, create_audio_file, create_meeting, update_meeting
 from src.api.database import SessionLocal, get_db
@@ -1118,10 +1125,12 @@ async def transcribe_chunk(
     chunk_index: Optional[int] = Form(None),
     start_ms: int = Form(0),
     language: str = Form("auto"),
+    transcription_mode: str = Form("realtime"),
+    provider_name: Optional[str] = Form(None),
     db: Session = Depends(get_db),
     current_user=Depends(auth.get_current_user),
 ):
-    """Receive an audio chunk and return STT transcription (Deepgram Nova 3)."""
+    """Receive an audio chunk. In realtime mode: transcribe and return. In deferred mode: store raw audio only."""
     import tempfile
     import subprocess
 
@@ -1152,21 +1161,41 @@ async def transcribe_chunk(
             # Default to webm for unknown formats
             suffix = ".webm"
 
-        # Save chunk to temp file
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-            try:
-                content = await audio.read()
-                if not content:
-                    raise ValueError("Empty audio file")
-                tmp.write(content)
-                tmp_path = tmp.name
-            except Exception as e:
-                raise HTTPException(status_code=400, detail=f"Failed to read audio: {str(e)}")
+        # Read audio content
+        content = await audio.read()
+        if not content:
+            raise HTTPException(status_code=400, detail="Empty audio file")
 
-        audio_path = tmp_path
-        stt_provider_name = os.getenv("STT_PROVIDER", "deepgram").lower()
+        meeting_settings = get_meeting_settings(meeting)
+        stt_provider_name = normalize_stt_provider(provider_name or meeting_settings.get("sttProvider") or os.getenv("STT_PROVIDER", "deepgram"))
+        transcription_mode = normalize_transcription_mode(
+            stt_provider_name,
+            transcription_mode or meeting_settings.get("transcriptionMode") or "realtime",
+        )
 
-        # Save chunk to permanent storage for later concatenation
+        if len(content) < 4096:
+            runtime_settings = merge_meeting_settings(
+                getattr(meeting, "settings", None),
+                settings_updates={
+                    "sttProvider": stt_provider_name,
+                    "transcriptionMode": transcription_mode,
+                },
+                runtime_updates={
+                    "provider": stt_provider_name,
+                    "mode": transcription_mode,
+                    "status": "recording",
+                    "last_error": None,
+                },
+            )
+            update_meeting(db, meeting.id, {"settings": runtime_settings})
+            return {
+                "status": "ignored",
+                "chunk_index": chunk_index,
+                "meeting_id": meeting_id,
+                "provider": stt_provider_name,
+            }
+
+        # Save chunk to permanent storage
         if chunk_index is not None:
             try:
                 perm_dir = os.path.join(ensure_audio_upload_dir(), meeting_id)
@@ -1179,6 +1208,52 @@ async def transcribe_chunk(
             except Exception as perm_err:
                 logger.warning(f"Failed to save chunk permanently (non-fatal): {perm_err}")
 
+        # Deferred mode: store only, skip transcription
+        if transcription_mode == "deferred":
+            stored_count = max(
+                0,
+                len(glob.glob(os.path.join(ensure_audio_upload_dir(), meeting_id, "chunk_*"))),
+            )
+            runtime_settings = merge_meeting_settings(
+                getattr(meeting, "settings", None),
+                settings_updates={
+                    "sttProvider": stt_provider_name,
+                    "transcriptionMode": transcription_mode,
+                },
+                runtime_updates={
+                    "provider": stt_provider_name,
+                    "mode": transcription_mode,
+                    "status": "recording",
+                    "stored_chunk_count": stored_count,
+                    "last_error": None,
+                },
+            )
+            update_meeting(db, meeting.id, {"settings": runtime_settings})
+            await meeting_room_manager.broadcast(
+                meeting_id,
+                {
+                    "type": "transcription.runtime",
+                    "meeting_id": meeting_id,
+                    "transcription_runtime": runtime_settings.get("transcription_runtime"),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+            logger.info(f"Deferred mode: stored chunk {chunk_index} for meeting {meeting_id}")
+            return {
+                "status": "stored",
+                "chunk_index": chunk_index,
+                "meeting_id": meeting_id,
+                "provider": stt_provider_name,
+                "transcription_runtime": runtime_settings.get("transcription_runtime"),
+            }
+
+        # Realtime mode: transcribe immediately
+        # Save chunk to temp file for transcription
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp.write(content)
+            tmp_path = tmp.name
+
+        audio_path = tmp_path
         # Always convert to WAV (PCM 16kHz mono) for reliable STT processing
         if suffix != ".wav":
             wav_path = tmp_path.rsplit(".", 1)[0] + ".wav"
@@ -1194,8 +1269,8 @@ async def transcribe_chunk(
                 logger.warning(f"ffmpeg conversion failed, using original: {e}")
 
         try:
-            # Transcribe using configured provider (Deepgram Nova 3)
-            provider = get_stt_provider()
+            # Transcribe using per-meeting or configured provider
+            provider = get_stt_provider(stt_provider_name)
             result = provider.transcribe(audio_path)
             
             # Validate result

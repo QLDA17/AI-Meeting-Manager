@@ -39,11 +39,14 @@ interface UseAudioRecorderReturn {
   fullTranscript: string;
   allSegments: TranscriptSegment[];
   interimTranscript: string;
-  sttStatus: "idle" | "connecting" | "streaming" | "fallback" | "error" | "closed";
+  sttStatus: "idle" | "connecting" | "streaming" | "fallback" | "recording" | "error" | "closed";
   startRecording: () => void;
   stopRecording: () => Promise<void>;
   finalize: (meetingId: string, language?: string) => Promise<any>;
   hydrateDraft: (meetingId: string) => Promise<void>;
+  storedChunkCount: number;
+  pendingChunkCount: number;
+  retryingChunkCount: number;
   error: string | null;
 }
 
@@ -127,7 +130,9 @@ function encodeWAV(samples: Float32Array, sampleRate: number): Blob {
 
 export function useAudioRecorder(
   localStream: MediaStream | null,
-  meetingId: string | null
+  meetingId: string | null,
+  transcriptionMode: "realtime" | "deferred" = "realtime",
+  sttProvider: string = "deepgram"
 ): UseAudioRecorderReturn {
   const [isRecording, setIsRecording] = useState(false);
   const [liveTranscripts, setLiveTranscripts] = useState<LiveTranscript[]>([]);
@@ -135,6 +140,8 @@ export function useAudioRecorder(
   const [allSegments, setAllSegments] = useState<TranscriptSegment[]>([]);
   const [interimTranscript, setInterimTranscript] = useState("");
   const [sttStatus, setSttStatus] = useState<UseAudioRecorderReturn["sttStatus"]>("idle");
+  const [storedChunkCount, setStoredChunkCount] = useState(0);
+  const [retryingChunkCount, setRetryingChunkCount] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -212,24 +219,41 @@ export function useAudioRecorder(
       if (!meetingId) return;
 
       pendingChunksRef.current++;
-      const maxRetries = 3;
+      const maxRetries = transcriptionMode === "deferred" ? 2 : 3;
       const formData = new FormData();
       formData.append("audio", blob, `chunk_${chunkIndex}.wav`);
       formData.append("chunk_index", String(chunkIndex));
       formData.append("start_ms", String(startMs || 0));
+      formData.append("transcription_mode", transcriptionMode);
+      if (sttProvider) {
+        formData.append("provider_name", sttProvider);
+      }
 
       try {
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
           try {
+            setRetryingChunkCount((current) => (attempt > 1 ? Math.max(current, 1) : current));
             const response = await api.post(
               `/api/meetings/${meetingId}/transcribe-chunk`,
               formData,
               {
                 headers: { "Content-Type": "multipart/form-data" },
-                timeout: 120000,
+                timeout: transcriptionMode === "deferred" ? 30000 : 120000,
               }
             );
 
+            // Deferred mode: just store, no transcript processing
+            if (transcriptionMode === "deferred") {
+              setStoredChunkCount((current) =>
+                response.data?.transcription_runtime?.stored_chunk_count != null
+                  ? Number(response.data.transcription_runtime.stored_chunk_count)
+                  : Math.max(current, chunkIndex + 1),
+              );
+              setRetryingChunkCount(0);
+              break;
+            }
+
+            // Realtime mode: process transcript response
             const { text, segments, language } = response.data;
 
             if (text && text.trim()) {
@@ -248,19 +272,23 @@ export function useAudioRecorder(
                 timestamp: Date.now(),
               }, "local");
             }
+            setRetryingChunkCount(0);
             break;
           } catch (err: any) {
             const isLastAttempt = attempt === maxRetries;
             console.error(
-              `Chunk ${chunkIndex} transcription failed (attempt ${attempt}/${maxRetries}):`,
+              `Chunk ${chunkIndex} ${transcriptionMode === "deferred" ? "upload" : "transcription"} failed (attempt ${attempt}/${maxRetries}):`,
               err
             );
-            if (isLastAttempt) {
+            if (isLastAttempt && transcriptionMode !== "deferred") {
               setError(
                 `Chunk ${chunkIndex} failed after ${maxRetries} attempts: ${err.response?.data?.detail || err.message}`
               );
-            } else {
+              setRetryingChunkCount(0);
+            } else if (!isLastAttempt) {
               await new Promise((resolve) => setTimeout(resolve, 1000 * attempt));
+            } else {
+              setRetryingChunkCount(0);
             }
           }
         }
@@ -268,7 +296,7 @@ export function useAudioRecorder(
         pendingChunksRef.current--;
       }
     },
-    [meetingId, mergeTranscriptChunk]
+    [meetingId, mergeTranscriptChunk, transcriptionMode, sttProvider]
   );
 
   const startChunkRecording = useCallback(async (preserveTranscriptState = false) => {
@@ -288,6 +316,8 @@ export function useAudioRecorder(
       setFullTranscript("");
       setAllSegments([]);
       setInterimTranscript("");
+      setStoredChunkCount(0);
+      setRetryingChunkCount(0);
     } else {
       chunkCounterRef.current = Array.from(chunksByIndexRef.current.values()).reduce(
         (maxIndex, item) => Math.max(maxIndex, item.chunkIndex),
@@ -412,7 +442,6 @@ export function useAudioRecorder(
     }
 
     setError(null);
-    setSttStatus("connecting");
     setInterimTranscript("");
     fallbackModeRef.current = false;
     intentionalCloseRef.current = false;
@@ -424,6 +453,18 @@ export function useAudioRecorder(
     setLiveTranscripts([]);
     setFullTranscript("");
     setAllSegments([]);
+    setStoredChunkCount(0);
+    setRetryingChunkCount(0);
+
+    // Deferred mode: skip WebSocket, use chunk recording directly
+    if (transcriptionMode === "deferred") {
+      setSttStatus("recording");
+      await startChunkRecording(false);
+      return;
+    }
+
+    // Realtime mode: connect WebSocket for streaming STT
+    setSttStatus("connecting");
 
     const wsUrl = `${resolveWebSocketBaseUrl()}/api/meetings/${meetingId}/stt-stream?token=${encodeURIComponent(getAuthToken())}`;
     let ws = new WebSocket(wsUrl);
@@ -527,7 +568,7 @@ export function useAudioRecorder(
         resolve();
       };
     });
-  }, [localStream, meetingId, mergeTranscriptChunk, setupStreamingAudio, startChunkRecording]);
+  }, [localStream, meetingId, mergeTranscriptChunk, setupStreamingAudio, startChunkRecording, transcriptionMode]);
 
   const flushRecording = useCallback(async () => {
     if (!workletNodeRef.current) return;
@@ -635,8 +676,11 @@ export function useAudioRecorder(
             transcript: fullTranscriptRef.current,
             segments: allSegmentsRef.current,
             language: language || getPreferredLanguage(),
+            generate_action_items: true,
+            transcription_mode: transcriptionMode,
+            stt_provider: sttProvider,
           },
-          { timeout: 120000 }
+          { timeout: transcriptionMode === "deferred" ? 300000 : 120000 }
         );
 
         return response.data;
@@ -646,7 +690,7 @@ export function useAudioRecorder(
         throw err;
       }
     },
-    [stopRecording]
+    [stopRecording, transcriptionMode, sttProvider]
   );
 
   const hydrateDraft = useCallback(async (draftMeetingId: string) => {
@@ -696,6 +740,9 @@ export function useAudioRecorder(
     stopRecording,
     finalize,
     hydrateDraft,
+    storedChunkCount,
+    pendingChunkCount: pendingChunksRef.current,
+    retryingChunkCount,
     error,
   };
 }

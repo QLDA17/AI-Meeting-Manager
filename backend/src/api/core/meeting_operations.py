@@ -29,6 +29,7 @@ from src.api.core.transcript_support import (
     normalize_summary_language,
     serialize_transcript_draft_chunks,
 )
+from src.api.core.meeting_stt import get_meeting_settings, get_transcription_runtime
 from src.api.core.user_payloads import format_user_payload
 
 logger = logging.getLogger(__name__)
@@ -392,7 +393,7 @@ def format_summary_payload(summary: Optional[models.MeetingSummary]) -> Optional
         "decisions": summary.decisions or [],
         "action_items": summary.action_items or [],
         "risks": summary.risks or [],
-        "open_questions": summary.open_questions or [],
+        "open_questions": [],
         "timeline_highlights": summary.timeline_highlights or [],
         "speaker_summaries": summary.speaker_summaries or [],
         "processing_status": summary.processing_status,
@@ -1049,6 +1050,7 @@ def build_meeting_detail_payload(
         summary_error_text=summary_error_text,
         action_items=serialized_action_items,
     )
+    meeting_settings = get_meeting_settings(meeting)
 
     return {
         "id": meeting.id,
@@ -1069,6 +1071,8 @@ def build_meeting_detail_payload(
         "transcript_url": meeting.transcript_url,
         "audio_url": meeting.audio_url,
         "audio_status": audio_status,
+        "settings": meeting_settings,
+        "transcription_runtime": get_transcription_runtime(meeting),
         "is_pinned": meeting.is_pinned,
         "created_by": meeting.created_by,
         "created_at": meeting.created_at,
@@ -1114,7 +1118,7 @@ def build_meeting_detail_payload(
         "decisions_text": decisions_text,
         "decisions_items": build_anchored_text_items(decisions_text, cleaned_transcript_segments),
         "risks_text": summarize_json_items(latest_summary.risks if latest_summary else None),
-        "open_questions_text": summarize_json_items(latest_summary.open_questions if latest_summary else None),
+        "open_questions_text": [],
         "timeline_highlights_text": timeline_highlights_text,
         "timeline_highlights_items": build_anchored_text_items(timeline_highlights_text, cleaned_transcript_segments),
         "speaker_summaries_text": summarize_json_items(latest_summary.speaker_summaries if latest_summary else None),
@@ -1167,6 +1171,8 @@ def build_room_snapshot(db: Session, meeting_id: str, current_user: models.User)
             "title": meeting.title,
             "code": meeting.code,
             "access_mode": get_meeting_access_mode(db, current_user, meeting),
+            "settings": get_meeting_settings(meeting),
+            "transcription_runtime": get_transcription_runtime(meeting),
         },
         "participants": [format_meeting_participant_payload(item) for item in participant_records],
         "online_participants": meeting_room_manager.get_participants(meeting_id),
@@ -1175,6 +1181,7 @@ def build_room_snapshot(db: Session, meeting_id: str, current_user: models.User)
         "transcript": draft_payload,
         "transcript_status": transcript_status,
         "has_transcript_draft": has_transcript_draft,
+        "summary_status": latest_summary.processing_status if latest_summary else None,
         "ai_notes": format_summary_payload(latest_summary),
     }
 
