@@ -1,6 +1,6 @@
 from typing import Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -19,11 +19,13 @@ from src.api.core.admin_operations import (
     get_admin_users_payload,
     get_costs_payload,
     get_feature_flags_payload,
+    require_system_admin_user,
     update_admin_prompt_payload,
     update_admin_settings_payload,
     update_admin_user_role_payload,
     update_admin_user_status_payload,
 )
+from src.api.core.upload_jobs import get_upload_job
 from src.api.database import get_db
 
 router = APIRouter(tags=["admin"])
@@ -57,6 +59,9 @@ class AdminSettingsUpdateRequest(BaseModel):
     storage_limit_gb_per_org: Optional[int] = None
     transcript_retention_policy: Optional[str] = None
     maintenance_mode: Optional[bool] = None
+    llm_provider: Optional[str] = None
+    router_model: Optional[str] = None
+    router_api_key: Optional[str] = None
 
 
 @router.get("/api/admin/costs")
@@ -110,8 +115,11 @@ def admin_delete_user(
 
 
 @router.get("/api/admin/ai-services")
-def admin_get_ai_services(current_user=Depends(auth.get_current_user)):
-    return get_admin_ai_services_payload(current_user)
+def admin_get_ai_services(
+    db: Session = Depends(get_db),
+    current_user=Depends(auth.get_current_user),
+):
+    return get_admin_ai_services_payload(current_user, db)
 
 
 @router.get("/api/admin/ai-services/usage")
@@ -196,3 +204,15 @@ def admin_update_settings(
 @router.get("/api/config/features")
 def get_feature_flags(current_user=Depends(auth.get_current_user)):
     return get_feature_flags_payload(current_user)
+
+
+@router.get("/api/admin/upload-jobs/{job_id}/diagnostics")
+def admin_get_upload_job_diagnostics(
+    job_id: str,
+    current_user=Depends(auth.get_current_user),
+):
+    require_system_admin_user(current_user)
+    job = get_upload_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Upload job not found")
+    return job.diagnostics()

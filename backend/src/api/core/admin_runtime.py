@@ -84,6 +84,9 @@ DEFAULT_ADMIN_SETTINGS: Dict[str, Any] = {
     "maintenance_mode": False,
     "upload_enabled": True,
     "job_tracking_enabled": True,
+    "llm_provider": "router",
+    "router_model": "qwen/qwen3-32b",
+    "router_api_key": "",
 }
 
 

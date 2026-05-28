@@ -60,6 +60,9 @@ MAX_FINAL_BUFFER_SECONDS = 4.5
 MAX_FINAL_BUFFER_WORDS = 18
 MIN_FINAL_BUFFER_WORDS = 6
 FINAL_GAP_SECONDS = 0.8
+TEST_AI_NOTES_MAX_SEGMENTS = 36
+TEST_AI_NOTES_MAX_TRANSCRIPT_CHARS = 9000
+TEST_AI_NOTES_RETRY_TRANSCRIPT_CHARS = 5500
 
 
 def parse_bool_form(value: Any, default: bool = True) -> bool:
@@ -82,6 +85,55 @@ def parse_optional_form_datetime(raw_value: Optional[str]) -> Optional[datetime]
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=timezone.utc)
     return parsed
+
+
+def _truncate_text_middle(text: str, max_chars: int) -> str:
+    normalized = (text or "").strip()
+    if len(normalized) <= max_chars:
+        return normalized
+    if max_chars <= 64:
+        return normalized[:max_chars].rstrip()
+    head_chars = max_chars // 3
+    tail_chars = max_chars - head_chars - 24
+    omitted = max(0, len(normalized) - head_chars - tail_chars)
+    return (
+        f"{normalized[:head_chars].rstrip()}\n"
+        f"... [omitted {omitted} chars for live AI Notes token budget] ...\n"
+        f"{normalized[-tail_chars:].lstrip()}"
+    )
+
+
+def _limit_test_ai_notes_context(
+    transcript: str,
+    segments: List[Dict[str, Any]],
+    *,
+    max_segments: int,
+    max_chars: int,
+) -> tuple[str, List[Dict[str, Any]]]:
+    usable_segments = [segment for segment in (segments or []) if str(segment.get("text") or "").strip()]
+    if not usable_segments:
+        return _truncate_text_middle(transcript, max_chars), []
+
+    if len(usable_segments) > max_segments:
+        usable_segments = usable_segments[-max_segments:]
+
+    selected: List[Dict[str, Any]] = []
+    total_chars = 0
+    for segment in reversed(usable_segments):
+        text = str(segment.get("text") or "").strip()
+        next_chars = len(text) + 32
+        if selected and total_chars + next_chars > max_chars:
+            break
+        selected.append(segment)
+        total_chars += next_chars
+
+    selected.reverse()
+    limited_transcript = build_speaker_aware_transcript(
+        transcript,
+        selected,
+        {},
+    ) if selected else transcript
+    return _truncate_text_middle(limited_transcript, max_chars), selected
 
 
 async def save_upload_file_stream(upload: UploadFile, destination_path: str, max_upload_size: int) -> int:
@@ -1177,6 +1229,7 @@ async def test_stt_transcribe_chunk(
 @router.post("/api/test-stt/analyze", response_model=schemas.TestSTTAnalyzeResponse)
 async def test_stt_analyze(
     payload: schemas.TestSTTAnalyzeRequest,
+    db: Session = Depends(get_db),
     current_user=Depends(auth.get_current_user),
 ):
     """No-DB AI Notes endpoint for upload-page microphone tests."""
@@ -1218,7 +1271,12 @@ async def test_stt_analyze(
         "content",
         "Create a concise meeting brief. Focus on outcomes, explicit decisions, and next steps only.",
     )
-    speaker_aware_transcript = build_speaker_aware_transcript(full_text, segments, {})
+    speaker_aware_transcript, limited_segments = _limit_test_ai_notes_context(
+        full_text,
+        segments,
+        max_segments=TEST_AI_NOTES_MAX_SEGMENTS,
+        max_chars=TEST_AI_NOTES_MAX_TRANSCRIPT_CHARS,
+    )
     system_prompt, user_prompt = build_structured_summary_prompts(
         speaker_aware_transcript,
         custom_instruction,
@@ -1233,6 +1291,8 @@ async def test_stt_analyze(
             raw_response = router.structured_completion(system_prompt, user_prompt)
             if not raw_response:
                 raise ValueError(router.last_error or "Router LLM returned empty response")
+            if limited_segments:
+                segments = limited_segments
         except Exception as exc:
             summary_error_message = f"Router LLM summarization failed: {exc}"
             errors.append(summary_error_message)
@@ -1240,6 +1300,37 @@ async def test_stt_analyze(
     else:
         summary_error_message = router.last_error or "Router LLM is not configured"
         errors.append(summary_error_message)
+
+    if (
+        not raw_response
+        and router.last_error_type == "rate_limit"
+        and "tokens per minute" in str(router.last_error or "").lower()
+    ):
+        retry_transcript, retry_segments = _limit_test_ai_notes_context(
+            full_text,
+            segments,
+            max_segments=max(18, TEST_AI_NOTES_MAX_SEGMENTS // 2),
+            max_chars=TEST_AI_NOTES_RETRY_TRANSCRIPT_CHARS,
+        )
+        retry_system_prompt, retry_user_prompt = build_structured_summary_prompts(
+            retry_transcript,
+            custom_instruction,
+            language,
+            nlp_metadata,
+        )
+        try:
+            raw_response = router.structured_completion(retry_system_prompt, retry_user_prompt)
+            if raw_response:
+                segments = retry_segments
+                if errors:
+                    errors.pop()
+                summary_error_message = ""
+        except Exception as retry_exc:
+            summary_error_message = f"Router LLM summarization failed after compact retry: {retry_exc}"
+            if errors:
+                errors[-1] = summary_error_message
+            else:
+                errors.append(summary_error_message)
 
     if not raw_response:
         google_key = os.getenv("GOOGLE_API_KEY")

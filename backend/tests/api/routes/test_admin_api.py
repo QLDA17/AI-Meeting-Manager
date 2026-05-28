@@ -176,6 +176,14 @@ def test_admin_ai_services_and_usage(client: TestClient, db_session, monkeypatch
     monkeypatch.setenv("LLM_PROVIDER", "google")
     monkeypatch.setenv("STT_PROVIDER", "deepgram")
     monkeypatch.setenv("PHOBERT_ENABLED", "true")
+    update_admin_settings_values(
+        {
+            "llm_provider": "router",
+            "router_model": "qwen/qwen3-32b",
+            "router_api_key": "admin-router-key",
+        },
+        db_session,
+    )
 
     db_session.add(
         models.CostTracking(
@@ -192,8 +200,10 @@ def test_admin_ai_services_and_usage(client: TestClient, db_session, monkeypatch
     services_response = client.get("/api/admin/ai-services", headers=admin_headers)
     assert services_response.status_code == 200
     services = services_response.json()
-    assert services["llm"]["provider"] == "google"
+    assert services["llm"]["provider"] == "router"
     assert len(services["llm"]["services"]) == 2
+    assert services["llm"]["router_model"] == "qwen/qwen3-32b"
+    assert services["llm"]["router_api_key_set"] is True
     assert services["stt"]["provider"] == "deepgram"
     assert services["nlp"]["services"][0]["enabled"] is True
 
@@ -227,6 +237,22 @@ def test_admin_prompts_settings_broadcasts_and_audit_logs(client: TestClient, db
     prompts_response = client.get("/api/admin/prompts", headers=admin_headers)
     assert prompts_response.status_code == 200
     assert any(item["key"] == "custom_prompt" for item in prompts_response.json())
+
+    settings_response = client.patch(
+        "/api/admin/settings",
+        headers=admin_headers,
+        json={
+            "llm_provider": "router",
+            "router_model": "qwen/qwen3-32b",
+            "router_api_key": "fresh-key",
+        },
+    )
+    assert settings_response.status_code == 200
+    settings_payload = settings_response.json()
+    assert settings_payload["llm_provider"] == "router"
+    assert settings_payload["router_model"] == "qwen/qwen3-32b"
+    assert settings_payload["router_api_key"] == ""
+    assert settings_payload["router_api_key_set"] is True
 
     settings_response = client.patch(
         "/api/admin/settings",

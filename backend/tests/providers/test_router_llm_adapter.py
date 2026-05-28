@@ -36,7 +36,7 @@ def test_agentrouter_token_fallback_enables_adapter():
 
     assert adapter.enabled is True
     assert adapter.api_key == "sk-agentrouter"
-    assert adapter.model == "llama-3.3-70b-versatile"
+    assert adapter.model == "qwen/qwen3-32b"
 
 
 def test_legacy_router_api_url_is_preserved():
@@ -136,3 +136,20 @@ def test_rate_limit_error_sets_retry_metadata():
     assert adapter.last_error_type == "rate_limit"
     assert adapter.last_status_code == 429
     assert adapter.last_retry_after_seconds == 2.5
+
+
+def test_admin_settings_override_router_model_and_api_key(monkeypatch):
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.delenv("ROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("AGENT_ROUTER_TOKEN", raising=False)
+    monkeypatch.delenv("ROUTER_MODEL", raising=False)
+
+    with patch(
+        "src.providers.router_llm.RouterLLMAdapter._load_runtime_settings",
+        return_value={"router_api_key": "admin-key", "router_model": "qwen/qwen3-32b"},
+    ):
+        adapter = RouterLLMAdapter()
+
+    assert adapter.enabled is True
+    assert adapter.api_key == "admin-key"
+    assert adapter.model == "qwen/qwen3-32b"

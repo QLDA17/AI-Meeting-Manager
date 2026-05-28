@@ -5,7 +5,9 @@
       "Bash(curl -s http://localhost:8000/api/meetings -H 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhZG1pbiIsImV4cCI6MTc3OTAyMTc2Mn0.UQ4Zo1Fgchi1Q4sDdgS24kEsh-sY8sVVciK4mSxxr4g')",
       "Bash(python3 -c \"import sys,json; data=json.load\\(sys.stdin\\); [print\\(f'{m[\\\\\"id\\\\\"]} - {m[\\\\\"title\\\\\"]} \\({m[\\\\\"status\\\\\"]}\\)'\\) for m in data[:5]]\")",
       "Bash(curl -s http://localhost:8000/api/meetings/3ca1a814-8f6a-4e74-a996-d4bad1530b17 -H 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhZG1pbiIsImV4cCI6MTc3OTAyMTc2Mn0.UQ4Zo1Fgchi1Q4sDdgS24kEsh-sY8sVVciK4mSxxr4g')",
-      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(f'Title: {d[\\\\\"title\\\\\"]}'\\); print\\(f'Status: {d[\\\\\"status\\\\\"]}'\\); print\\(f'Segments: {len\\(d.get\\(\\\\\"transcript_segments\\\\\",[]\\)\\)}'\\); print\\(f'Action items: {len\\(d.get\\(\\\\\"action_items\\\\\",[]\\)\\)}'\\); print\\(f'Summaries: {len\\(d.get\\(\\\\\"summaries\\\\\",[]\\)\\)}'\\)\")"
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(f'Title: {d[\\\\\"title\\\\\"]}'\\); print\\(f'Status: {d[\\\\\"status\\\\\"]}'\\); print\\(f'Segments: {len\\(d.get\\(\\\\\"transcript_segments\\\\\",[]\\)\\)}'\\); print\\(f'Action items: {len\\(d.get\\(\\\\\"action_items\\\\\",[]\\)\\)}'\\); print\\(f'Summaries: {len\\(d.get\\(\\\\\"summaries\\\\\",[]\\)\\)}'\\)\")",
+      "Bash(python3 *)",
+      "Bash(npx tsc *)"
     ]
   }
 }

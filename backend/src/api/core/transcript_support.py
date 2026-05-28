@@ -28,6 +28,9 @@ SUPPORTED_SUMMARY_LANGUAGES = ("vi", "en", "zh", "ja", "ko")
 _translation_locks: Dict[str, asyncio.Lock] = {}
 _latest_translation_batches: Dict[str, str] = {}
 MIN_DEFERRED_CHUNK_BYTES = 4096
+SUMMARY_MAX_SEGMENTS = 48
+SUMMARY_MAX_TRANSCRIPT_CHARS = 12000
+SUMMARY_RETRY_TRANSCRIPT_CHARS = 7000
 
 
 def _empty_summary_payload() -> schemas.MeetingAnalysisOutput:
@@ -40,6 +43,48 @@ def _empty_summary_payload() -> schemas.MeetingAnalysisOutput:
         open_questions=[],
         timeline_highlights=[],
         speaker_summaries=[],
+    )
+
+
+def _truncate_text_middle(text: str, max_chars: int) -> str:
+    normalized = str(text or "").strip()
+    if len(normalized) <= max_chars:
+        return normalized
+    if max_chars < 32:
+        return normalized[:max_chars].rstrip()
+    head = max_chars // 2
+    tail = max_chars - head - 5
+    return f"{normalized[:head].rstrip()} ... {normalized[-tail:].lstrip()}"
+
+
+def _limit_summary_context(
+    transcript: str,
+    segments: List[Dict[str, Any]],
+    *,
+    max_segments: int = SUMMARY_MAX_SEGMENTS,
+    max_transcript_chars: int = SUMMARY_MAX_TRANSCRIPT_CHARS,
+) -> tuple[str, List[Dict[str, Any]]]:
+    cleaned_segments = [segment for segment in segments if str(segment.get("text") or "").strip()]
+    if len(cleaned_segments) > max_segments:
+        keep_head = max_segments // 2
+        keep_tail = max_segments - keep_head
+        cleaned_segments = [*cleaned_segments[:keep_head], *cleaned_segments[-keep_tail:]]
+
+    limited_transcript = _truncate_text_middle(transcript, max_transcript_chars)
+    if cleaned_segments:
+        segment_text = "\n".join(str(segment.get("text") or "").strip() for segment in cleaned_segments).strip()
+        if segment_text:
+            limited_transcript = _truncate_text_middle(segment_text, max_transcript_chars)
+    return limited_transcript, cleaned_segments
+
+
+def _is_router_token_budget_error(error_type: str, error_message: str) -> bool:
+    body = str(error_message or "").lower()
+    return error_type == "rate_limit" and (
+        "tokens per minute" in body
+        or "request too large" in body
+        or "reduce your message size" in body
+        or "rate_limit_exceeded" in body
     )
 
 
@@ -267,6 +312,7 @@ def build_transcript_artifacts(
     language: str,
     provider_name: str,
     provider_model: Optional[str] = None,
+    quality_metadata_overrides: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     from src.api.core.nlp_support import get_phobert_processor, phobert_enabled_for
     from src.nlp import BartPhoTextEnhancer
@@ -333,6 +379,8 @@ def build_transcript_artifacts(
         phobert_applied=phobert_applied,
         bartpho_applied=bartpho_applied,
     )
+    if isinstance(quality_metadata_overrides, dict):
+        quality_metadata.update(quality_metadata_overrides)
 
     return {
         "raw_text": raw_text,
@@ -531,6 +579,8 @@ def _generate_and_persist_summary_for_language(
     summary_error_message = ""
     ai_provider_name = "router"
     router = RouterLLMAdapter()
+    speaker_map: Dict[str, str] = {}
+    custom_instruction = ""
     if source_summary_payload is None:
         prompt_key = f"summary_{language}"
         custom_instruction = prompts.get(prompt_key, prompts.get("summary_vi", {})).get(
@@ -538,7 +588,11 @@ def _generate_and_persist_summary_for_language(
             "Create a concise executive meeting brief. Focus on outcomes, explicit decisions, and next steps only.",
         )
         speaker_map = get_speaker_mapping_dict(db, meeting_id)
-        speaker_aware_transcript = build_speaker_aware_transcript(transcript_text, segments_to_save, speaker_map)
+        limited_transcript, limited_segments = _limit_summary_context(
+            transcript_text,
+            segments_to_save,
+        )
+        speaker_aware_transcript = build_speaker_aware_transcript(limited_transcript, limited_segments, speaker_map)
         system_prompt, user_prompt = build_structured_summary_prompts(
             speaker_aware_transcript,
             custom_instruction,
@@ -561,9 +615,33 @@ def _generate_and_persist_summary_for_language(
             if not raw_response:
                 raise ValueError(router.last_error or "Router LLM returned empty response")
         except Exception as exc:
-            summary_error_message = f"Router LLM summarization failed: {exc}"
-            errors.append(summary_error_message)
-            raw_response = None
+            if (
+                source_summary_payload is None
+                and _is_router_token_budget_error(router.last_error_type or "", router.last_error or "")
+            ):
+                try:
+                    retry_transcript, retry_segments = _limit_summary_context(
+                        transcript_text,
+                        segments_to_save,
+                        max_segments=max(20, SUMMARY_MAX_SEGMENTS // 2),
+                        max_transcript_chars=SUMMARY_RETRY_TRANSCRIPT_CHARS,
+                    )
+                    retry_speaker_transcript = build_speaker_aware_transcript(retry_transcript, retry_segments, speaker_map)
+                    system_prompt, user_prompt = build_structured_summary_prompts(
+                        retry_speaker_transcript,
+                        custom_instruction,
+                        language,
+                        nlp_metadata,
+                    )
+                    raw_response = router.structured_completion(system_prompt, user_prompt)
+                    if raw_response:
+                        exc = None
+                except Exception:
+                    raw_response = None
+            if not raw_response:
+                summary_error_message = f"Router LLM summarization failed: {exc}"
+                errors.append(summary_error_message)
+                raw_response = None
     else:
         summary_error_message = router.last_error or "Router LLM is not configured"
         errors.append(summary_error_message)
@@ -938,6 +1016,9 @@ async def finalize_meeting_transcript(
     full_regenerate = bool(body.get("full_regenerate", True))
     generate_summary = bool(body.get("generate_summary", True))
     generate_action_items = bool(body.get("generate_action_items", False))
+    transcript_quality_metadata_overrides = body.get("transcript_quality_metadata")
+    if not isinstance(transcript_quality_metadata_overrides, dict):
+        transcript_quality_metadata_overrides = None
     errors: List[str] = []
 
     meeting = db.query(models.Meeting).filter(models.Meeting.id == meeting_id).first()
@@ -1052,6 +1133,7 @@ async def finalize_meeting_transcript(
         segments=segments if isinstance(segments, list) else [],
         language=language,
         provider_name=provider_name,
+        quality_metadata_overrides=transcript_quality_metadata_overrides,
     )
     full_text = transcript_artifacts["cleaned_text"]
     segments = transcript_artifacts["cleaned_segments"]

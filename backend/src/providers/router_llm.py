@@ -11,6 +11,7 @@ except ImportError:
     HAS_REQUESTS = False
 
 logger = logging.getLogger(__name__)
+DEFAULT_ROUTER_MODEL = "qwen/qwen3-32b"
 
 
 class RouterLLMAdapter:
@@ -23,10 +24,19 @@ class RouterLLMAdapter:
     ]
 
     def __init__(self):
+        settings = self._load_runtime_settings()
         self.api_base_url = os.getenv("ROUTER_API_BASE_URL", "https://api.groq.com/openai/v1")
         self.api_url = os.getenv("ROUTER_API_URL", "") or self._build_chat_completions_url(self.api_base_url)
-        self.api_key = os.getenv("GROQ_API_KEY") or os.getenv("ROUTER_API_KEY") or os.getenv("AGENT_ROUTER_TOKEN", "")
-        self.model = os.getenv("ROUTER_MODEL", "llama-3.3-70b-versatile")
+        self.api_key = (
+            str(settings.get("router_api_key") or "").strip()
+            or os.getenv("GROQ_API_KEY")
+            or os.getenv("ROUTER_API_KEY")
+            or os.getenv("AGENT_ROUTER_TOKEN", "")
+        )
+        self.model = (
+            str(settings.get("router_model") or "").strip()
+            or os.getenv("ROUTER_MODEL", DEFAULT_ROUTER_MODEL)
+        )
         self.timeout_seconds = float(os.getenv("ROUTER_TIMEOUT_SECONDS", "60"))
         self.enabled = bool(self.api_url and self.api_key and HAS_REQUESTS)
         self.last_error: Optional[str] = None
@@ -47,6 +57,16 @@ class RouterLLMAdapter:
             logger.warning(self.last_error)
         else:
             logger.info(f"Groq LLM enabled: endpoint={self.api_url}, model={self.model}")
+
+    @staticmethod
+    def _load_runtime_settings() -> dict:
+        try:
+            from src.api.core.admin_runtime import get_admin_settings_snapshot
+            settings = get_admin_settings_snapshot()
+            return settings if isinstance(settings, dict) else {}
+        except Exception:
+            logger.debug("RouterLLMAdapter could not load admin settings snapshot", exc_info=True)
+            return {}
 
     @staticmethod
     def _build_chat_completions_url(base_url: str) -> str:
@@ -77,10 +97,16 @@ class RouterLLMAdapter:
         return False
 
     def _is_rate_limit_error(self, status_code: int, body: str) -> bool:
-        if status_code != 429:
+        if status_code not in (413, 429):
             return False
         body_lower = body.lower()
-        return "rate limit" in body_lower or "rate_limit_exceeded" in body_lower or "tokens per minute" in body_lower
+        return (
+            "rate limit" in body_lower
+            or "rate_limit_exceeded" in body_lower
+            or "tokens per minute" in body_lower
+            or "request too large" in body_lower
+            or "please reduce your message size" in body_lower
+        )
 
     def _extract_retry_after_seconds(self, body: str) -> Optional[float]:
         match = re.search(r"try again in\s+([0-9]+(?:\.[0-9]+)?)s", body, re.IGNORECASE)

@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import os
 import queue
@@ -17,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from src.api import models
 from src.api.core.app_state import config
+from src.api.core.audio_quality import compute_audio_metrics
 from src.api.core.meeting_operations import ensure_speaker_mapping
 from src.api.core.transcript_support import build_transcript_artifacts, finalize_meeting_transcript
 from src.api.database import SessionLocal
@@ -35,8 +37,11 @@ UPLOAD_MAX_CONCURRENT_FILES = max(1, int(os.getenv("UPLOAD_MAX_CONCURRENT_FILES"
 UPLOAD_MAX_CONCURRENT_STT_PER_FILE = max(1, int(os.getenv("UPLOAD_MAX_CONCURRENT_STT_PER_FILE", "2")))
 UPLOAD_MAX_CONCURRENT_NLP = max(1, int(os.getenv("UPLOAD_MAX_CONCURRENT_NLP", "1")))
 UPLOAD_NLP_PIPELINE_VERSION = "upload-v2"
+FULL_CLEANUP_FILTER = "highpass=f=120,lowpass=f=7000,afftdn,loudnorm"
+LIGHT_CLEANUP_FILTER = "highpass=f=90,lowpass=f=7600,loudnorm"
 _STT_EXECUTOR = ThreadPoolExecutor(max_workers=UPLOAD_MAX_CONCURRENT_STT_PER_FILE, thread_name_prefix="upload-stt")
 _UPLOAD_NLP_SEMAPHORE = asyncio.Semaphore(UPLOAD_MAX_CONCURRENT_NLP)
+CHUNK_OVERLAP_SECONDS = 1.0
 
 
 def sanitize_upload_filename(filename: str) -> str:
@@ -84,6 +89,63 @@ def ffprobe_duration_seconds(audio_path: str) -> Optional[float]:
         return None
 
 
+def ffprobe_audio_profile(audio_path: str, *, original_filename: Optional[str] = None) -> Dict[str, Any]:
+    profile: Dict[str, Any] = {
+        "source_extension": file_extension(original_filename or audio_path),
+        "container": None,
+        "codec": None,
+        "sample_rate": None,
+        "channels": None,
+        "bit_rate": None,
+        "duration_seconds": None,
+    }
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "a:0",
+                "-show_entries",
+                "format=format_name,duration,bit_rate:stream=codec_name,codec_type,sample_rate,channels,bit_rate",
+                "-of",
+                "json",
+                audio_path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=True,
+        )
+        payload = json.loads(result.stdout or "{}")
+        format_data = payload.get("format") or {}
+        audio_stream = next(
+            (
+                stream
+                for stream in (payload.get("streams") or [])
+                if str(stream.get("codec_type") or "").lower() == "audio"
+            ),
+            {},
+        )
+        container = str(format_data.get("format_name") or "").split(",", 1)[0].strip() or None
+        duration_value = format_data.get("duration")
+        bit_rate_value = audio_stream.get("bit_rate") or format_data.get("bit_rate")
+        sample_rate_value = audio_stream.get("sample_rate")
+        channels_value = audio_stream.get("channels")
+        profile.update({
+            "container": container,
+            "codec": str(audio_stream.get("codec_name") or "").strip().lower() or None,
+            "sample_rate": int(sample_rate_value) if sample_rate_value not in (None, "") else None,
+            "channels": int(channels_value) if channels_value not in (None, "") else None,
+            "bit_rate": int(bit_rate_value) if bit_rate_value not in (None, "") else None,
+            "duration_seconds": float(duration_value) if duration_value not in (None, "") else None,
+        })
+    except Exception as exc:
+        logger.warning("ffprobe audio profile failed for %s: %s", audio_path, exc)
+    return profile
+
+
 def normalize_audio_to_wav(source_path: str, output_path: str) -> str:
     subprocess.run(
         [
@@ -108,7 +170,7 @@ def normalize_audio_to_wav(source_path: str, output_path: str) -> str:
     return output_path
 
 
-def apply_noise_cleanup(source_path: str, output_path: str) -> str:
+def apply_cleanup_filter(source_path: str, output_path: str, filter_chain: str) -> str:
     subprocess.run(
         [
             "ffmpeg",
@@ -116,7 +178,7 @@ def apply_noise_cleanup(source_path: str, output_path: str) -> str:
             "-i",
             source_path,
             "-af",
-            "highpass=f=120,lowpass=f=7000,afftdn,loudnorm",
+            filter_chain,
             "-ar",
             "16000",
             "-ac",
@@ -132,6 +194,116 @@ def apply_noise_cleanup(source_path: str, output_path: str) -> str:
     return output_path
 
 
+def apply_noise_cleanup(source_path: str, output_path: str) -> str:
+    return apply_cleanup_filter(source_path, output_path, FULL_CLEANUP_FILTER)
+
+
+def apply_light_cleanup(source_path: str, output_path: str) -> str:
+    return apply_cleanup_filter(source_path, output_path, LIGHT_CLEANUP_FILTER)
+
+
+def select_preprocess_strategy(
+    *,
+    original_filename: str,
+    provider_name: str,
+    audio_profile: Optional[Dict[str, Any]],
+    audio_metrics: Optional[Dict[str, Any]],
+    enable_noise_cleanup: bool,
+) -> Dict[str, Any]:
+    profile = dict(audio_profile or {})
+    metrics = dict(audio_metrics or {})
+    extension = file_extension(original_filename)
+    codec = str(profile.get("codec") or "").strip().lower()
+    container = str(profile.get("container") or "").strip().lower()
+    bit_rate = int(profile.get("bit_rate") or 0)
+    sample_rate = int(profile.get("sample_rate") or 0)
+    channels = int(profile.get("channels") or 0)
+    normalized_provider = provider_label(provider_name)
+
+    compressed_low_bitrate = bool(bit_rate and bit_rate < 96000)
+    low_sample_rate = bool(sample_rate and sample_rate < 32000)
+    clean_pcm_source = extension == ".wav" and codec.startswith("pcm")
+    m4a_like = extension == ".m4a" or codec in {"aac", "alac"} and container in {"mov", "mp4", "ipod"}
+    webm_like = extension == ".webm" or codec in {"opus", "vorbis"}
+    mp4_like = extension == ".mp4"
+    loudness_lufs = metrics.get("loudness_lufs")
+    noise_floor_dbfs = metrics.get("noise_floor_dbfs")
+    silence_ratio = metrics.get("silence_ratio")
+    clipping_ratio = metrics.get("clipping_ratio")
+
+    quiet_audio = loudness_lufs is not None and float(loudness_lufs) < -26
+    moderately_quiet = loudness_lufs is not None and float(loudness_lufs) < -20
+    noisy_audio = noise_floor_dbfs is not None and float(noise_floor_dbfs) > -45
+    moderately_noisy = noise_floor_dbfs is not None and float(noise_floor_dbfs) > -55
+    silence_heavy = silence_ratio is not None and float(silence_ratio) > 0.55
+    clipping_heavy = clipping_ratio is not None and float(clipping_ratio) > 0.0005
+
+    strategy = "legacy_cleanup"
+    cleanup_mode = "full"
+    cleanup_applied = bool(enable_noise_cleanup)
+
+    if not enable_noise_cleanup:
+        strategy = "normalize_only"
+        cleanup_mode = "none"
+        cleanup_applied = False
+    elif quiet_audio or noisy_audio or clipping_heavy:
+        strategy = "metrics_full_cleanup"
+        cleanup_mode = "full"
+        cleanup_applied = True
+    elif moderately_quiet or moderately_noisy or silence_heavy:
+        strategy = "metrics_light_cleanup"
+        cleanup_mode = "light"
+        cleanup_applied = True
+    elif m4a_like:
+        strategy = "m4a_preserve_speech"
+        cleanup_mode = "none"
+        cleanup_applied = False
+        if not compressed_low_bitrate and not low_sample_rate and normalized_provider != "deepgram":
+            strategy = "m4a_light_cleanup"
+            cleanup_mode = "light"
+            cleanup_applied = True
+    elif clean_pcm_source:
+        strategy = "wav_minimal"
+        cleanup_mode = "none"
+        cleanup_applied = False
+    elif webm_like:
+        strategy = "webm_light_cleanup"
+        cleanup_mode = "light"
+        cleanup_applied = True
+    elif mp4_like:
+        strategy = "mp4_extract_preserve" if compressed_low_bitrate else "mp4_extract_cleanup"
+        cleanup_mode = "none" if compressed_low_bitrate else "light"
+        cleanup_applied = cleanup_mode != "none"
+    elif (
+        normalized_provider == "deepgram"
+        and not compressed_low_bitrate
+        and not low_sample_rate
+        and sample_rate >= 32000
+        and channels <= 2
+    ):
+        strategy = "deepgram_fast_path"
+        cleanup_mode = "none"
+        cleanup_applied = False
+
+    return {
+        "strategy": strategy,
+        "cleanup_mode": cleanup_mode,
+        "cleanup_applied": cleanup_applied,
+        "audio_profile": {
+            **profile,
+            "audio_metrics_hint": {
+                "loudness_lufs": loudness_lufs,
+                "noise_floor_dbfs": noise_floor_dbfs,
+                "silence_ratio": silence_ratio,
+                "clipping_ratio": clipping_ratio,
+            },
+            "source_extension": extension,
+            "compressed_low_bitrate": compressed_low_bitrate,
+            "low_sample_rate": low_sample_rate,
+        },
+    }
+
+
 def chunk_audio_for_processing(audio_path: str, meeting_dir: str) -> List[Dict[str, Any]]:
     duration = ffprobe_duration_seconds(audio_path) or 0.0
     if duration <= 0 or duration < CHUNK_THRESHOLD_SECONDS:
@@ -143,39 +315,43 @@ def chunk_audio_for_processing(audio_path: str, meeting_dir: str) -> List[Dict[s
 
     chunk_dir = os.path.join(meeting_dir, "chunks")
     os.makedirs(chunk_dir, exist_ok=True)
-    output_pattern = os.path.join(chunk_dir, "part_%03d.wav")
-    subprocess.run(
-        [
-            "ffmpeg",
-            "-y",
-            "-i",
-            audio_path,
-            "-f",
-            "segment",
-            "-segment_time",
-            str(int(CHUNK_DURATION_SECONDS)),
-            "-c",
-            "copy",
-            output_pattern,
-        ],
-        capture_output=True,
-        timeout=300,
-        check=True,
-    )
-
     chunks: List[Dict[str, Any]] = []
     offset_seconds = 0.0
-    for name in sorted(os.listdir(chunk_dir)):
-        path = os.path.join(chunk_dir, name)
-        if not os.path.isfile(path):
-            continue
-        chunk_duration = ffprobe_duration_seconds(path) or CHUNK_DURATION_SECONDS
+    index = 0
+    while offset_seconds < duration:
+        chunk_start = max(0.0, offset_seconds - (CHUNK_OVERLAP_SECONDS if index > 0 else 0.0))
+        chunk_duration = min(CHUNK_DURATION_SECONDS + (CHUNK_OVERLAP_SECONDS if index > 0 else 0.0), duration - chunk_start)
+        path = os.path.join(chunk_dir, f"part_{index:03d}.wav")
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-ss",
+                f"{chunk_start:.3f}",
+                "-i",
+                audio_path,
+                "-t",
+                f"{chunk_duration:.3f}",
+                "-ar",
+                "16000",
+                "-ac",
+                "1",
+                "-acodec",
+                "pcm_s16le",
+                path,
+            ],
+            capture_output=True,
+            timeout=300,
+            check=True,
+        )
+        actual_duration = ffprobe_duration_seconds(path) or chunk_duration
         chunks.append({
             "path": path,
-            "offset_seconds": offset_seconds,
-            "duration_seconds": chunk_duration,
+            "offset_seconds": chunk_start,
+            "duration_seconds": actual_duration,
         })
-        offset_seconds += chunk_duration
+        offset_seconds += CHUNK_DURATION_SECONDS
+        index += 1
     return chunks or [{
         "path": audio_path,
         "offset_seconds": 0.0,
@@ -185,6 +361,57 @@ def chunk_audio_for_processing(audio_path: str, meeting_dir: str) -> List[Dict[s
 
 def provider_label(provider_name: str) -> str:
     return (provider_name or "deepgram").strip().lower() or "deepgram"
+
+
+def should_retry_deepgram_auto_result(result: Dict[str, Any]) -> bool:
+    text = str(result.get("text") or "").strip()
+    quality = result.get("quality") if isinstance(result.get("quality"), dict) else {}
+    duration_seconds = float(quality.get("duration_seconds") or 0.0)
+    word_count = int(quality.get("word_count") or len(text.split()))
+    low_conf_ratio = quality.get("low_conf_word_ratio")
+
+    if duration_seconds >= 15 and word_count <= 3:
+        return True
+    if duration_seconds >= 30 and len(text) < 32:
+        return True
+    if duration_seconds >= 15 and low_conf_ratio is not None:
+        try:
+            if float(low_conf_ratio) >= 0.9 and word_count <= 5:
+                return True
+        except (TypeError, ValueError):
+            pass
+    return False
+
+
+def should_retry_deepgram_low_confidence(chunk_results: List[Dict[str, Any]]) -> bool:
+    if not chunk_results:
+        return False
+    total_words = 0
+    weighted_low_conf = 0.0
+    weak_chunks = 0
+    for item in chunk_results:
+        result = item.get("result") or {}
+        quality = result.get("quality") if isinstance(result.get("quality"), dict) else {}
+        avg_conf = quality.get("avg_confidence")
+        low_ratio = quality.get("low_conf_word_ratio")
+        word_count = int(quality.get("word_count") or 0)
+        total_words += word_count
+        if low_ratio is not None:
+            try:
+                weighted_low_conf += float(low_ratio) * max(word_count, 1)
+            except (TypeError, ValueError):
+                pass
+        if avg_conf is not None:
+            try:
+                if float(avg_conf) < 0.68:
+                    weak_chunks += 1
+            except (TypeError, ValueError):
+                pass
+    if weak_chunks >= max(1, len(chunk_results) // 2):
+        return True
+    if total_words > 0 and (weighted_low_conf / total_words) >= 0.3:
+        return True
+    return False
 
 
 def transcribe_audio_path(
@@ -214,6 +441,18 @@ def transcribe_audio_path(
         normalized_result["language_used"] = language_choice
         normalized_result["attempt_index"] = index
         attempts.append(normalized_result)
+        if (
+            normalized_provider == "deepgram"
+            and language == "auto"
+            and language_choice == "auto"
+            and should_retry_deepgram_auto_result(normalized_result)
+        ):
+            logger.warning(
+                "Deepgram auto language detection returned a weak transcript for %s; retrying with fallback language %s",
+                audio_path,
+                languages_to_try[1] if len(languages_to_try) > 1 else os.getenv("DEEPGRAM_LANGUAGE", "vi"),
+            )
+            continue
         if str(normalized_result.get("text") or "").strip() or list(normalized_result.get("segments") or []):
             normalized_result["attempted_languages"] = languages_to_try
             return normalized_result
@@ -359,12 +598,14 @@ def persist_transcript_without_summary(
     segments: List[Dict[str, Any]],
     language: str,
     provider_name: str,
+    transcript_quality_metadata: Optional[Dict[str, Any]] = None,
 ) -> None:
     transcript_artifacts = build_transcript_artifacts(
         text=text,
         segments=segments,
         language=language,
         provider_name=provider_name,
+        quality_metadata_overrides=transcript_quality_metadata,
     )
     text = transcript_artifacts["cleaned_text"]
     segments = transcript_artifacts["cleaned_segments"]
@@ -509,6 +750,12 @@ class UploadMeetingJob:
     completed_at: Optional[str] = None
     retry_count: int = 0
     queue_position: Optional[int] = None
+    audio_profile: Optional[Dict[str, Any]] = None
+    preprocess_strategy: Optional[str] = None
+    cleanup_applied: bool = False
+    audio_metrics: Optional[Dict[str, Any]] = None
+    processed_audio_metrics: Optional[Dict[str, Any]] = None
+    deepgram_quality: List[Dict[str, Any]] = field(default_factory=list)
     result: Optional[Dict[str, Any]] = None
 
     def set_stage(self, stage: str, progress: int, *, status: Optional[str] = None, error: str = "") -> None:
@@ -544,7 +791,30 @@ class UploadMeetingJob:
             "batch_id": self.batch_id,
             "client_id": self.client_id,
             "queue_position": self.queue_position,
+            "audio_profile": self.audio_profile,
+            "preprocess_strategy": self.preprocess_strategy,
+            "cleanup_applied": self.cleanup_applied,
             "result": self.result if self.status == "completed" else None,
+        }
+
+    def diagnostics(self) -> Dict[str, Any]:
+        """Full diagnostic snapshot for admin debugging.
+
+        Includes raw audio metrics + per-chunk Deepgram quality stats. Not
+        exposed to end users — used by the admin diagnostics endpoint to
+        explain why a particular file transcribed well or poorly.
+        """
+
+        return {
+            **self.snapshot(),
+            "stt_provider": self.stt_provider,
+            "language_requested": self.language,
+            "enable_diarization": self.enable_diarization,
+            "enable_noise_cleanup": self.enable_noise_cleanup,
+            "audio_metrics": self.audio_metrics,
+            "processed_audio_metrics": self.processed_audio_metrics,
+            "deepgram_quality": self.deepgram_quality,
+            "original_filename": self.original_filename,
         }
 
     async def run(self) -> Dict[str, Any]:
@@ -565,20 +835,59 @@ class UploadMeetingJob:
             meeting_dir = os.path.dirname(self.original_audio_path)
             working_wav_path = os.path.join(meeting_dir, "working.wav")
             cleaned_wav_path = os.path.join(meeting_dir, "working_clean.wav")
+            self.audio_profile = ffprobe_audio_profile(
+                self.original_audio_path,
+                original_filename=self.original_filename,
+            )
+            try:
+                self.audio_metrics = compute_audio_metrics(self.original_audio_path).to_dict()
+            except Exception as exc:
+                logger.warning("compute_audio_metrics(original) failed for job %s: %s", self.job_id, exc)
+            preprocess_plan = select_preprocess_strategy(
+                original_filename=self.original_filename,
+                provider_name=self.stt_provider,
+                audio_profile=self.audio_profile,
+                audio_metrics=self.audio_metrics,
+                enable_noise_cleanup=self.enable_noise_cleanup,
+            )
+            self.audio_profile = preprocess_plan["audio_profile"]
+            self.preprocess_strategy = str(preprocess_plan["strategy"])
+            self.cleanup_applied = bool(preprocess_plan["cleanup_applied"])
+            logger.info(
+                "Upload job %s selected preprocess strategy=%s cleanup_mode=%s profile=%s",
+                self.job_id,
+                self.preprocess_strategy,
+                preprocess_plan["cleanup_mode"],
+                self.audio_profile,
+            )
 
             self.set_stage("normalized", 25)
             normalized_path = normalize_audio_to_wav(self.original_audio_path, working_wav_path)
 
             processing_audio_path = normalized_path
-            if self.enable_noise_cleanup:
+            if preprocess_plan["cleanup_mode"] != "none":
                 try:
                     self.set_stage("noise_cleanup", 35)
-                    processing_audio_path = apply_noise_cleanup(normalized_path, cleaned_wav_path)
+                    if preprocess_plan["cleanup_mode"] == "light":
+                        processing_audio_path = apply_light_cleanup(normalized_path, cleaned_wav_path)
+                    else:
+                        processing_audio_path = apply_noise_cleanup(normalized_path, cleaned_wav_path)
                 except Exception as exc:
                     logger.warning("Noise cleanup failed for meeting %s: %s", meeting.id, exc)
                     processing_audio_path = normalized_path
+                    self.cleanup_applied = False
 
-            actual_duration_seconds = ffprobe_duration_seconds(processing_audio_path) or ffprobe_duration_seconds(self.original_audio_path) or 0.0
+            try:
+                self.processed_audio_metrics = compute_audio_metrics(processing_audio_path).to_dict()
+            except Exception as exc:
+                logger.warning("compute_audio_metrics(processed) failed for job %s: %s", self.job_id, exc)
+
+            actual_duration_seconds = (
+                ffprobe_duration_seconds(processing_audio_path)
+                or self.audio_profile.get("duration_seconds")
+                or ffprobe_duration_seconds(self.original_audio_path)
+                or 0.0
+            )
             if actual_duration_seconds > 0:
                 audio_file.duration_seconds = int(round(actual_duration_seconds))
                 meeting.duration = max(1, int(round(actual_duration_seconds / 60)))
@@ -602,12 +911,59 @@ class UploadMeetingJob:
                 language=self.language,
                 enable_diarization=self.enable_diarization,
             )
+            retried_with_full_cleanup = False
+            if (
+                provider_label(self.stt_provider) == "deepgram"
+                and preprocess_plan["cleanup_mode"] != "full"
+                and normalized_path != processing_audio_path
+                and should_retry_deepgram_low_confidence(chunk_results)
+            ):
+                retried_with_full_cleanup = True
+            elif (
+                provider_label(self.stt_provider) == "deepgram"
+                and preprocess_plan["cleanup_mode"] == "none"
+                and should_retry_deepgram_low_confidence(chunk_results)
+            ):
+                retried_with_full_cleanup = True
+
+            if retried_with_full_cleanup:
+                retry_cleaned_path = os.path.join(meeting_dir, "working_retry_full.wav")
+                logger.warning(
+                    "Upload job %s got weak Deepgram confidence after strategy=%s; retrying once with stronger cleanup",
+                    self.job_id,
+                    self.preprocess_strategy,
+                )
+                self.set_stage("noise_cleanup", 52)
+                retry_processing_audio_path = apply_noise_cleanup(normalized_path, retry_cleaned_path)
+                try:
+                    self.processed_audio_metrics = compute_audio_metrics(retry_processing_audio_path).to_dict()
+                except Exception as exc:
+                    logger.warning("compute_audio_metrics(retry_processed) failed for job %s: %s", self.job_id, exc)
+                self.preprocess_strategy = f"{self.preprocess_strategy}+retry_full_cleanup"
+                self.cleanup_applied = True
+                self.set_stage("chunking", 56)
+                chunk_specs = chunk_audio_for_processing(retry_processing_audio_path, meeting_dir)
+                self.deepgram_quality = []
+                self.set_stage("transcribing", 60)
+                chunk_results = await transcribe_chunk_specs(
+                    provider_name=self.stt_provider,
+                    chunk_specs=chunk_specs,
+                    language=self.language,
+                    enable_diarization=self.enable_diarization,
+                )
             for chunk_result in chunk_results:
                 chunk_spec = chunk_result["chunk_spec"]
                 result = chunk_result["result"]
                 error_message = str(result.get("error") or "").strip()
                 if error_message:
                     chunk_errors.append(error_message)
+                quality = result.get("quality")
+                if isinstance(quality, dict):
+                    self.deepgram_quality.append({
+                        "offset_seconds": float(chunk_spec.get("offset_seconds") or 0.0),
+                        "chunk_duration_seconds": float(chunk_spec.get("duration_seconds") or 0.0),
+                        **quality,
+                    })
                 text = str(result.get("text") or "").strip()
                 if text:
                     transcript_parts.append(text)
@@ -662,6 +1018,14 @@ class UploadMeetingJob:
             final_language = normalize_upload_language(detected_language if detected_language != "auto" else self.language)
             if final_language == "auto":
                 final_language = "vi"
+            transcript_quality_metadata = {
+                "audio_profile": self.audio_profile,
+                "preprocess_strategy": self.preprocess_strategy,
+                "cleanup_applied": self.cleanup_applied,
+                "audio_metrics": self.audio_metrics,
+                "processed_audio_metrics": self.processed_audio_metrics,
+                "deepgram_quality": self.deepgram_quality,
+            }
 
             if final_language == "vi":
                 self.set_stage("phobert_processing", 82)
@@ -679,6 +1043,7 @@ class UploadMeetingJob:
                             "language": final_language,
                             "generate_summary": True,
                             "generate_action_items": self.enable_action_items,
+                            "transcript_quality_metadata": transcript_quality_metadata,
                         },
                     )
             else:
@@ -690,6 +1055,7 @@ class UploadMeetingJob:
                         segments=segments,
                         language=final_language,
                         provider_name=self.stt_provider,
+                        transcript_quality_metadata=transcript_quality_metadata,
                     )
                 result = {
                     "meeting_id": self.meeting_id,
@@ -697,6 +1063,7 @@ class UploadMeetingJob:
                     "summary_status": "SKIPPED",
                     "summary": None,
                     "errors": [],
+                    "transcript_quality_metadata": transcript_quality_metadata,
                 }
 
             update_audio_file(db, audio_file.id, {"upload_status": "PROCESSED"})

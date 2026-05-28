@@ -12,10 +12,11 @@ import {
 } from 'lucide-react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import api from '../../services/api';
+import { useAuth } from '../../context/AuthContext';
 import { normalizeFeatureFlags } from '../../services/mappers';
 import { useOrgStore } from '../../stores';
 import { useLiveTestRecorder } from '../../hooks';
-import type { BatchUploadResponse, BatchUploadItemStatus, UploadJobStatus } from '../../types';
+import type { UploadJobStatus } from '../../types';
 import { Button } from '../../components/ui';
 
 
@@ -36,6 +37,7 @@ const LANGUAGE_OPTIONS = [
 ];
 
 const STAGE_LABELS: Record<string, string> = {
+  uploading: 'Đang tải file lên backend',
   queued: 'Đang chờ vào hàng',
   uploaded: 'Đã nhận file',
   normalized: 'Chuẩn hóa audio',
@@ -60,6 +62,8 @@ const STATUS_LABELS: Record<string, string> = {
   failed: 'Lỗi',
   completed_with_errors: 'Hoàn tất có lỗi',
 };
+const UPLOAD_UI_STAGE_LABEL = 'Đang tải file lên backend';
+const MAX_PARALLEL_UPLOADS = 3;
 
 const formatBytes = (bytes: number) => {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
@@ -85,6 +89,7 @@ const formatDuration = (seconds: number | null) => {
 };
 
 type UploadItemStatus = 'draft' | UploadJobStatus['status'];
+type UploadRequestState = 'idle' | 'uploading' | 'uploaded' | 'failed';
 
 interface UploadAudioItem {
   clientId: string;
@@ -103,9 +108,48 @@ interface UploadAudioItem {
   currentStage?: string;
   progressPercent?: number;
   errorMessage?: string;
+  uploadProgress?: number;
+  uploadState?: UploadRequestState;
+  uploadError?: string;
+}
+
+interface TrackedUploadItem {
+  clientId: string;
+  title: string;
+  sourceLabel: string;
+  jobId?: string;
+  meetingId?: string;
+  status: UploadItemStatus;
+  currentStage?: string;
+  progressPercent?: number;
+  errorMessage?: string;
+}
+
+interface PersistedUploadTracker {
+  batchId: string;
+  orgId: string;
+  userId: string;
+  savedAt: string;
+  items: TrackedUploadItem[];
 }
 
 const makeClientId = () => `upload_${Math.random().toString(36).slice(2, 10)}_${Date.now()}`;
+
+const runWithConcurrency = async <T,>(
+  items: T[],
+  limit: number,
+  worker: (item: T) => Promise<void>,
+) => {
+  let nextIndex = 0;
+  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (nextIndex < items.length) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      await worker(items[currentIndex]);
+    }
+  });
+  await Promise.all(runners);
+};
 
 const readAudioDuration = (objectUrl: string): Promise<number | null> =>
   new Promise((resolve) => {
@@ -118,15 +162,24 @@ const readAudioDuration = (objectUrl: string): Promise<number | null> =>
 
 const UploadAudio: React.FC = () => {
   const navigate = useNavigate();
+  const { user } = useAuth();
   const { currentOrg, groups } = useOrgStore();
   const [activeTab, setActiveTab] = React.useState<UploadTab>('file');
   const [selectedGroupId, setSelectedGroupId] = React.useState('');
   const [uploadItems, setUploadItems] = React.useState<UploadAudioItem[]>([]);
+  const [trackedItems, setTrackedItems] = React.useState<TrackedUploadItem[]>([]);
   const [language, setLanguage] = React.useState('auto');
   const [uploadDefaultProvider, setUploadDefaultProvider] = React.useState('deepgram');
   const [sttProvider, setSttProvider] = React.useState('deepgram');
   const [currentBatchId, setCurrentBatchId] = React.useState('');
+  const [isRestoringTracker, setIsRestoringTracker] = React.useState(false);
+  const [restoredTracker, setRestoredTracker] = React.useState(false);
+  const [trackerWarning, setTrackerWarning] = React.useState('');
   const uploadItemsRef = React.useRef<UploadAudioItem[]>([]);
+  const trackingStorageKey = React.useMemo(() => {
+    if (!currentOrg?.id || !user?.id) return '';
+    return `upload-tracker:${user.id}:${currentOrg.id}`;
+  }, [currentOrg?.id, user?.id]);
 
   const liveTest = useLiveTestRecorder(sttProvider === 'deepgram' ? undefined : sttProvider);
   const isViWhisper = sttProvider === 'viwhisper';
@@ -163,87 +216,261 @@ const UploadAudio: React.FC = () => {
   const uploadEnabled = featureQuery.data?.uploadEnabled ?? false;
   const jobTrackingEnabled = featureQuery.data?.jobTrackingEnabled ?? false;
 
-  const applyBatchStatus = React.useCallback((statuses: BatchUploadItemStatus[]) => {
-    const statusMap = new Map(statuses.map((item) => [item.client_id, item]));
+  const clearStoredTracker = React.useCallback(() => {
+    if (trackingStorageKey) {
+      localStorage.removeItem(trackingStorageKey);
+    }
+  }, [trackingStorageKey]);
+
+  const persistTrackedBatch = React.useCallback((batchId: string, items: TrackedUploadItem[]) => {
+    if (!trackingStorageKey || !currentOrg?.id || !user?.id || !batchId || items.length === 0) return;
+    const payload: PersistedUploadTracker = {
+      batchId,
+      orgId: currentOrg.id,
+      userId: user.id,
+      savedAt: new Date().toISOString(),
+      items,
+    };
+    localStorage.setItem(trackingStorageKey, JSON.stringify(payload));
+  }, [currentOrg?.id, trackingStorageKey, user?.id]);
+
+  const dismissTrackedBatch = React.useCallback(() => {
+    setCurrentBatchId('');
+    setTrackedItems([]);
+    setIsRestoringTracker(false);
+    setRestoredTracker(false);
+    setTrackerWarning('');
+    clearStoredTracker();
+  }, [clearStoredTracker]);
+
+  const applyJobStatuses = React.useCallback((statuses: UploadJobStatus[]) => {
+    const statusMap = new Map(statuses.map((item) => [item.job_id, item]));
     setUploadItems((current) =>
       current.map((item) => {
-        const next = statusMap.get(item.clientId);
+        const next = item.jobId ? statusMap.get(item.jobId) : undefined;
         if (!next) return item;
         return {
           ...item,
-          jobId: next.job_id,
-          meetingId: next.meeting_id,
           status: next.status,
           currentStage: next.current_stage,
           progressPercent: next.progress_percent,
           errorMessage: next.error_message,
+          uploadState: item.uploadState === 'failed' ? item.uploadState : 'uploaded',
         };
       }),
     );
+    setTrackedItems((current) => {
+      const trackedByJobId = new Map(current.map((item) => [item.jobId, item]));
+      return current.map((trackedItem) => {
+        const statusItem = trackedItem.jobId ? statusMap.get(trackedItem.jobId) : undefined;
+        if (!statusItem) {
+          return trackedItem;
+        }
+        const existingTracked = trackedByJobId.get(statusItem.job_id);
+        const existingDraft = uploadItemsRef.current.find((item) => item.jobId === statusItem.job_id);
+        return {
+          clientId: existingTracked?.clientId || existingDraft?.clientId || trackedItem.clientId,
+          title: existingTracked?.title || existingDraft?.title || trackedItem.title,
+          sourceLabel: existingTracked?.sourceLabel || existingDraft?.sourceLabel || trackedItem.sourceLabel,
+          jobId: statusItem.job_id,
+          meetingId: statusItem.meeting_id,
+          status: statusItem.status,
+          currentStage: statusItem.current_stage,
+          progressPercent: statusItem.progress_percent,
+          errorMessage: statusItem.error_message,
+        } satisfies TrackedUploadItem;
+      });
+    });
   }, []);
 
-  const batchStatusQuery = useQuery({
-    queryKey: ['upload-batch', currentBatchId],
-    enabled: Boolean(currentBatchId) && jobTrackingEnabled,
+  React.useEffect(() => {
+    if (!trackingStorageKey || currentBatchId || trackedItems.length > 0) return;
+    const raw = localStorage.getItem(trackingStorageKey);
+    if (!raw) return;
+    try {
+      const parsed = JSON.parse(raw) as PersistedUploadTracker;
+      if (!parsed?.batchId || !Array.isArray(parsed.items) || parsed.items.length === 0) {
+        localStorage.removeItem(trackingStorageKey);
+        return;
+      }
+      setCurrentBatchId(parsed.batchId);
+      setTrackedItems(parsed.items);
+      setRestoredTracker(true);
+      setIsRestoringTracker(true);
+      setTrackerWarning('');
+    } catch {
+      localStorage.removeItem(trackingStorageKey);
+    }
+  }, [currentBatchId, trackedItems.length, trackingStorageKey]);
+
+  React.useEffect(() => {
+    if (currentBatchId && trackedItems.length > 0) {
+      persistTrackedBatch(currentBatchId, trackedItems);
+    }
+  }, [currentBatchId, persistTrackedBatch, trackedItems]);
+
+  const trackedJobIds = React.useMemo(
+    () => trackedItems.map((item) => item.jobId).filter((jobId): jobId is string => Boolean(jobId)),
+    [trackedItems],
+  );
+
+  const jobsStatusQuery = useQuery({
+    queryKey: ['upload-jobs', trackedJobIds],
+    enabled: trackedJobIds.length > 0 && jobTrackingEnabled,
     queryFn: async () => {
-      const response = await api.get<BatchUploadResponse>(`/api/uploads/batch/${currentBatchId}`);
-      return response.data;
+      return Promise.allSettled(
+        trackedJobIds.map(async (jobId) => {
+          const response = await api.get<UploadJobStatus>(`/api/upload/jobs/${jobId}`);
+          return response.data;
+        }),
+      );
     },
     refetchInterval: (query) => {
-      const status = (query.state.data as BatchUploadResponse | undefined)?.status;
-      if (!status || status === 'queued' || status === 'processing') return 1500;
+      const hasActiveJobs = trackedItems.some((item) => item.status === 'queued' || item.status === 'processing');
+      if (hasActiveJobs) return 1500;
       return false;
     },
   });
 
   React.useEffect(() => {
-    if (batchStatusQuery.data?.items) {
-      applyBatchStatus(batchStatusQuery.data.items);
+    const data = jobsStatusQuery.data;
+    if (!data) return;
+    const fulfilled = data
+      .filter((entry): entry is PromiseFulfilledResult<UploadJobStatus> => entry.status === 'fulfilled')
+      .map((entry) => entry.value);
+    const rejectedCount = data.length - fulfilled.length;
+    if (fulfilled.length > 0) {
+      applyJobStatuses(fulfilled);
+      setIsRestoringTracker(false);
+      setTrackerWarning(
+        rejectedCount > 0
+          ? 'Một số job không còn live tracking, nhưng các meeting đã tạo vẫn có thể tiếp tục xử lý ở backend.'
+          : '',
+      );
+    } else if (rejectedCount > 0 && currentBatchId) {
+      setIsRestoringTracker(false);
+      setTrackerWarning(
+        'Không thể khôi phục theo dõi tiến độ trực tiếp. Backend không còn giữ các job này trong bộ nhớ, nhưng meeting liên quan vẫn có thể tiếp tục xử lý.',
+      );
     }
-  }, [applyBatchStatus, batchStatusQuery.data]);
+  }, [applyJobStatuses, currentBatchId, jobsStatusQuery.data]);
 
   const uploadMutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (clientIds?: string[]) => {
       if (!currentOrg?.id) {
         throw new Error('Chưa có tổ chức để gắn meeting upload.');
       }
-      if (uploadItems.length === 0) {
+      const eligibleItems = uploadItemsRef.current.filter((item) => {
+        if (clientIds?.length) {
+          return clientIds.includes(item.clientId);
+        }
+        return !item.jobId && (item.status === 'draft' || item.uploadState === 'failed' || item.uploadState == null);
+      });
+      if (eligibleItems.length === 0) {
         throw new Error('Vui lòng chọn ít nhất một file âm thanh.');
       }
-      const formData = new FormData();
-      formData.append('organization_id', currentOrg.id);
       const uploadedAt = new Date();
-      const metadata = uploadItems.map((item) => {
+      const trackerId = currentBatchId || `tracker_${Date.now()}`;
+      setCurrentBatchId(trackerId);
+      setTrackerWarning('');
+
+      const successes: Array<{ clientId: string; sourceLabel: string; title: string; data: UploadJobStatus }> = [];
+      await runWithConcurrency(eligibleItems, MAX_PARALLEL_UPLOADS, async (item) => {
+        setUploadItems((current) => current.map((entry) => (
+          entry.clientId === item.clientId
+            ? { ...entry, uploadState: 'uploading', uploadProgress: 0, uploadError: '', errorMessage: '' }
+            : entry
+        )));
+
         const estimatedEnd = item.estimatedDurationSeconds
           ? new Date(uploadedAt.getTime() + item.estimatedDurationSeconds * 1000)
           : uploadedAt;
-        return {
-          client_id: item.clientId,
-          title: item.title.trim() || item.file.name.replace(/\.[^/.]+$/, ''),
-          group_id: item.groupId || undefined,
-          language: item.language,
-          stt_provider: item.sttProvider,
-          scheduled_start: uploadedAt.toISOString(),
-          scheduled_end: estimatedEnd.toISOString(),
-          enable_diarization: true,
-          enable_summary: true,
-          enable_action_items: true,
-          enable_noise_cleanup: true,
-        };
+        const formData = new FormData();
+        formData.append('file', item.file);
+        formData.append('organization_id', currentOrg.id);
+        formData.append('title', item.title.trim() || item.file.name.replace(/\.[^/.]+$/, ''));
+        formData.append('language', item.language);
+        formData.append('stt_provider', item.sttProvider);
+        formData.append('scheduled_start', uploadedAt.toISOString());
+        formData.append('scheduled_end', estimatedEnd.toISOString());
+        formData.append('enable_diarization', 'true');
+        formData.append('enable_summary', 'true');
+        formData.append('enable_action_items', 'true');
+        formData.append('enable_noise_cleanup', 'true');
+        if (item.groupId) {
+          formData.append('group_id', item.groupId);
+        }
+
+        try {
+          const response = await api.post<UploadJobStatus>('/api/upload', formData, {
+            headers: { 'Content-Type': 'multipart/form-data' },
+            timeout: 120000,
+            onUploadProgress: (event) => {
+              const total = event.total || item.file.size || 0;
+              const progress = total > 0 ? Math.min(100, Math.round((event.loaded / total) * 100)) : 0;
+              setUploadItems((current) => current.map((entry) => (
+                entry.clientId === item.clientId ? { ...entry, uploadProgress: progress, uploadState: 'uploading' } : entry
+              )));
+            },
+          });
+          successes.push({
+            clientId: item.clientId,
+            sourceLabel: item.sourceLabel,
+            title: item.title,
+            data: response.data,
+          });
+          setUploadItems((current) => current.map((entry) => (
+            entry.clientId === item.clientId
+              ? {
+                  ...entry,
+                  jobId: response.data.job_id,
+                  meetingId: response.data.meeting_id,
+                  status: response.data.status,
+                  currentStage: response.data.current_stage,
+                  progressPercent: response.data.progress_percent,
+                  uploadProgress: 100,
+                  uploadState: 'uploaded',
+                  uploadError: '',
+                }
+              : entry
+          )));
+        } catch (error: any) {
+          const message = error?.response?.data?.detail || error?.message || 'Upload that bai';
+          setUploadItems((current) => current.map((entry) => (
+            entry.clientId === item.clientId
+              ? { ...entry, uploadState: 'failed', uploadError: message, uploadProgress: 0 }
+              : entry
+          )));
+        }
       });
-      formData.append('items', JSON.stringify(metadata));
-      uploadItems.forEach((item) => {
-        formData.append('files', item.file);
-      });
-      const response = await api.post<BatchUploadResponse>('/api/uploads/batch', formData, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-        timeout: 120000,
-      });
-      return response.data;
+
+      return { trackerId, successes };
     },
-    onSuccess: (data) => {
-      setCurrentBatchId(data.batch_id);
-      applyBatchStatus(data.items);
+    onSuccess: ({ trackerId, successes }) => {
+      if (successes.length === 0) {
+        return;
+      }
+      setCurrentBatchId(trackerId);
+      setTrackedItems((current) => {
+        const byClientId = new Map(current.map((item) => [item.clientId, item]));
+        successes.forEach(({ clientId, sourceLabel, title, data }) => {
+          byClientId.set(clientId, {
+            clientId,
+            title: title || sourceLabel,
+            sourceLabel,
+            jobId: data.job_id,
+            meetingId: data.meeting_id,
+            status: data.status,
+            currentStage: data.current_stage,
+            progressPercent: data.progress_percent,
+            errorMessage: data.error_message,
+          });
+        });
+        return Array.from(byClientId.values());
+      });
+      setRestoredTracker(false);
+      setIsRestoringTracker(false);
+      setTrackerWarning('');
     },
   });
 
@@ -268,6 +495,22 @@ const UploadAudio: React.FC = () => {
             : item,
         ),
       );
+      setTrackedItems((current) =>
+        current.map((item) =>
+          item.jobId === data.job_id || item.meetingId === data.meeting_id
+            ? {
+                ...item,
+                jobId: data.job_id,
+                meetingId: data.meeting_id,
+                status: data.status,
+                currentStage: data.current_stage,
+                progressPercent: data.progress_percent,
+                errorMessage: data.error_message,
+              }
+            : item,
+        ),
+      );
+      setTrackerWarning('');
     },
   });
 
@@ -318,19 +561,49 @@ const UploadAudio: React.FC = () => {
       current.forEach((item) => URL.revokeObjectURL(item.objectUrl));
       return [];
     });
-    setCurrentBatchId('');
   }, []);
 
   const uploadError = uploadMutation.error instanceof Error ? uploadMutation.error.message : '';
   const retryError = retryMutation.error instanceof Error ? retryMutation.error.message : '';
-  const batchStatus = batchStatusQuery.data;
   const isUploading = uploadMutation.isPending;
   const orgGroups = groups.filter((group) => group.organization_id === currentOrg?.id);
-  const batchProgressPercent = batchStatus?.progress_percent ?? (uploadItems.length > 0
+  const inFlightUploadItems: TrackedUploadItem[] = uploadItems
+    .filter((item) => (item.uploadState === 'uploading' || item.uploadState === 'failed') && !item.jobId)
+    .map((item) => ({
+      clientId: item.clientId,
+      title: item.title,
+      sourceLabel: item.sourceLabel,
+      status: item.uploadState === 'failed' ? 'failed' : 'draft',
+      currentStage: item.uploadState === 'uploading' ? 'uploading' : 'failed',
+      progressPercent: item.uploadProgress ?? 0,
+      errorMessage: item.uploadError,
+    }));
+  const displayTrackedItems = [
+    ...trackedItems,
+    ...inFlightUploadItems.filter((uploadItem) => !trackedItems.some((tracked) => tracked.clientId === uploadItem.clientId)),
+  ];
+  const trackedItemCount = displayTrackedItems.length;
+  const completedTrackedCount = displayTrackedItems.filter((item) => item.status === 'completed').length;
+  const failedTrackedCount = displayTrackedItems.filter((item) => item.status === 'failed').length;
+  const queuedTrackedCount = displayTrackedItems.filter((item) => item.status === 'queued').length;
+  const processingTrackedCount = displayTrackedItems.filter((item) => item.status === 'processing').length;
+  const isTrackedBatchTerminal = trackedItemCount > 0 && displayTrackedItems.every(
+    (item) => item.status === 'completed' || item.status === 'failed' || item.status === 'draft',
+  );
+  const aggregateTrackerStatus = failedTrackedCount > 0 && completedTrackedCount + failedTrackedCount === trackedItemCount
+    ? 'completed_with_errors'
+    : completedTrackedCount === trackedItemCount && trackedItemCount > 0
+      ? 'completed'
+      : processingTrackedCount > 0 || isUploading
+        ? 'processing'
+        : queuedTrackedCount > 0
+          ? 'queued'
+          : 'draft';
+  const batchProgressPercent = trackedItemCount > 0
     ? Math.round(
-      uploadItems.reduce((sum, item) => sum + (item.progressPercent ?? (item.status === 'draft' ? 0 : 5)), 0) / uploadItems.length,
+      displayTrackedItems.reduce((sum, item) => sum + (item.progressPercent ?? (item.status === 'draft' ? 0 : 5)), 0) / trackedItemCount,
     )
-    : 0);
+    : 0;
 
   return (
     <div className="mx-auto max-w-6xl space-y-6">
@@ -423,7 +696,7 @@ const UploadAudio: React.FC = () => {
                 <div className="rounded-2xl border border-gray-150 bg-gray-50/70 p-4 dark:border-slate-800/80 dark:bg-slate-950/20">
                   <p className="text-[10px] font-black uppercase tracking-wider text-gray-400 dark:text-slate-500">Batch hiện tại</p>
                   <p className="mt-1.5 text-sm font-bold text-gray-800 dark:text-slate-200">
-                    {uploadItems.length} file · {batchStatus?.completed_count ?? 0} xong · {batchStatus?.failed_count ?? 0} lỗi
+                    {trackedItemCount || uploadItems.length} file · {completedTrackedCount} xong · {failedTrackedCount} lỗi
                   </p>
                 </div>
               </div>
@@ -545,7 +818,46 @@ const UploadAudio: React.FC = () => {
                               <p className="mt-2 text-[11px] font-semibold text-gray-500 dark:text-slate-400">
                                 {item.previewStatus === 'error' ? 'Không đọc được metadata thời lượng, nhưng vẫn có thể upload.' : 'Preview sẵn sàng.'}
                               </p>
+                              {(item.uploadState === 'uploading' || item.uploadState === 'failed' || item.uploadState === 'uploaded') && (
+                                <div className="mt-3">
+                                  <div className="h-2 overflow-hidden rounded-full bg-gray-200 dark:bg-slate-800">
+                                    <div
+                                      className={`h-full rounded-full transition-all duration-300 ${
+                                        item.uploadState === 'failed'
+                                          ? 'bg-gradient-to-r from-red-500 to-red-600'
+                                          : 'bg-gradient-to-r from-sky-400 to-primary-500'
+                                      }`}
+                                      style={{ width: `${item.uploadProgress ?? (item.uploadState === 'uploaded' ? 100 : 0)}%` }}
+                                    />
+                                  </div>
+                                  <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-slate-500">
+                                    <span>
+                                      {item.uploadState === 'uploading'
+                                        ? UPLOAD_UI_STAGE_LABEL
+                                        : item.uploadState === 'uploaded'
+                                          ? 'Upload xong, backend đang xử lý'
+                                          : 'Upload thất bại'}
+                                    </span>
+                                    <span>{item.uploadProgress ?? (item.uploadState === 'uploaded' ? 100 : 0)}%</span>
+                                  </div>
+                                </div>
+                              )}
+                              {item.uploadError && (
+                                <p className="mt-3 text-[11px] font-semibold text-red-600 dark:text-red-400">{item.uploadError}</p>
+                              )}
                           </div>
+                          {item.uploadState === 'failed' && (
+                            <div className="mt-3 flex justify-end">
+                              <Button
+                                variant="secondary"
+                                onClick={() => uploadMutation.mutate([item.clientId])}
+                                disabled={isUploading}
+                                className="h-9 rounded-2xl px-4 text-[10px] font-bold uppercase tracking-wider"
+                              >
+                                Retry upload file này
+                              </Button>
+                            </div>
+                          )}
                         </div>
                       ))}
                     </>
@@ -567,13 +879,13 @@ const UploadAudio: React.FC = () => {
               <div className="mt-6 flex flex-wrap gap-3">
                 <Button
                   variant="primary"
-                  onClick={() => uploadMutation.mutate()}
+                  onClick={() => uploadMutation.mutate(undefined)}
                   disabled={!uploadEnabled || !currentOrg?.id || uploadItems.length === 0 || isUploading}
                   isLoading={isUploading}
                   className="h-11 px-6 rounded-2xl text-xs font-bold uppercase tracking-wider flex items-center gap-2 shadow-lg shadow-primary-600/15"
                 >
                   {!isUploading && <UploadCloud size={14} className="stroke-[2.5]" />}
-                  {isUploading ? 'Đang gửi batch...' : 'Gửi batch lên backend'}
+                  {isUploading ? 'Đang gửi từng file...' : 'Bắt đầu upload từng file'}
                 </Button>
                 <Button
                   variant="secondary"
@@ -591,14 +903,14 @@ const UploadAudio: React.FC = () => {
             <div className="rounded-3xl border border-gray-200 bg-white p-6 shadow-sm dark:border-slate-700 dark:bg-slate-900 transition-all">
               <div className="flex items-center justify-between pb-3 border-b border-gray-100 dark:border-slate-800">
                 <h2 className="text-xs font-black text-gray-900 dark:text-slate-100 uppercase tracking-widest">Tiến độ xử lý AI</h2>
-                {batchStatus?.status === 'completed' && (
+                {(aggregateTrackerStatus === 'completed' || isTrackedBatchTerminal) && (
                   <span className="rounded-full bg-emerald-50 border border-emerald-100 px-3 py-1 text-[9px] font-black uppercase tracking-wider text-emerald-700 dark:bg-emerald-950/20 dark:border-emerald-900/30 dark:text-emerald-400">
                     Batch done
                   </span>
                 )}
               </div>
 
-              {!currentBatchId && uploadItems.length === 0 ? (
+              {!currentBatchId && trackedItemCount === 0 && uploadItems.length === 0 ? (
                 <div className="mt-5 flex min-h-[220px] flex-col items-center justify-center rounded-2xl border border-dashed border-gray-250 p-6 text-center dark:border-slate-850 bg-gray-50/20 dark:bg-slate-950/10">
                   <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gray-50 text-gray-400 dark:bg-slate-900/60 dark:text-slate-600">
                     <Loader2 size={18} className="stroke-[1.8] text-gray-300 animate-spin" />
@@ -610,18 +922,36 @@ const UploadAudio: React.FC = () => {
                 </div>
               ) : (
                 <div className="mt-5 space-y-5">
+                  <div className="rounded-2xl border border-blue-100 bg-blue-50/50 p-4 text-xs font-semibold text-blue-700 dark:border-blue-900/30 dark:bg-blue-900/10 dark:text-blue-300">
+                    {isRestoringTracker
+                      ? 'Đang khôi phục tiến độ batch đã gửi trước đó. Xử lý AI vẫn tiếp tục ở backend ngay cả khi bạn rời khỏi trang này.'
+                      : restoredTracker
+                        ? 'Đây là batch đang được theo dõi lại sau khi bạn quay lại trang hoặc reload.'
+                        : 'Mỗi file được upload riêng, nhưng backend vẫn tiếp tục xử lý AI ngay cả khi bạn chuyển sang chức năng khác.'}
+                  </div>
+
                   <div className="rounded-2xl bg-gray-50/50 border border-gray-150 p-4 dark:bg-slate-950/25 dark:border-slate-850 shadow-inner">
                     <p className="text-[10px] font-black uppercase tracking-wider text-gray-400 dark:text-slate-550">Giai đoạn hiện tại</p>
                     <p className="mt-1 text-sm font-black text-gray-900 dark:text-slate-100 flex items-center gap-1.5">
                       <span className="h-2 w-2 rounded-full bg-primary-500 animate-ping" />
-                      {batchStatus?.status === 'completed_with_errors' ? 'Batch hoàn tất nhưng có file lỗi' : batchStatus?.status === 'completed' ? 'Toàn bộ batch đã hoàn tất' : 'Đang xử lý batch nhiều file'}
+                      {trackerWarning
+                        ? 'Không còn live tracking cho batch này'
+                        : aggregateTrackerStatus === 'completed_with_errors'
+                          ? 'Batch hoàn tất nhưng có file lỗi'
+                          : aggregateTrackerStatus === 'completed' || isTrackedBatchTerminal
+                            ? 'Toàn bộ batch đã hoàn tất'
+                            : restoredTracker
+                              ? 'Đang theo dõi lại batch nhiều file'
+                              : isUploading && trackedItemCount === 0
+                                ? 'Đang tải file lên backend'
+                                : 'Đang xử lý batch nhiều file'}
                     </p>
                     
                     {/* Glowing progress bar with shimmer effect */}
                     <div className="mt-4 h-2.5 overflow-hidden rounded-full bg-gray-200 dark:bg-slate-800 border border-gray-100/10">
                       <div
                         className={`h-full rounded-full transition-all duration-500 animate-shimmer bg-gradient-to-r ${
-                          batchStatus?.failed_count 
+                          failedTrackedCount 
                             ? 'from-red-500 to-red-600' 
                             : 'from-primary-400 via-primary-500 to-emerald-500'
                         }`}
@@ -629,28 +959,34 @@ const UploadAudio: React.FC = () => {
                       />
                     </div>
                     <div className="mt-2 flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-slate-500">
-                      <span>{STATUS_LABELS[batchStatus?.status || 'draft'] || batchStatus?.status || 'Chưa gửi'}</span>
+                      <span>{trackerWarning ? 'Tracker stale' : STATUS_LABELS[aggregateTrackerStatus] || aggregateTrackerStatus || 'Chưa gửi'}</span>
                       <span>{batchProgressPercent}% hoàn thành</span>
                     </div>
                   </div>
 
                   <div className="grid gap-3 sm:grid-cols-2">
                     <div className="rounded-2xl border border-gray-100 bg-gray-50/20 p-4 dark:border-slate-850 dark:bg-slate-950/15">
-                      <p className="text-[9px] font-black uppercase tracking-wider text-gray-400 dark:text-slate-500">Batch ID</p>
+                      <p className="text-[9px] font-black uppercase tracking-wider text-gray-400 dark:text-slate-500">Tracker ID</p>
                       <p className="mt-1 text-xs font-bold text-gray-950 dark:text-slate-350 truncate" title={currentBatchId || 'N/A'}>
-                        {currentBatchId || 'Chưa submit batch'}
+                        {currentBatchId || 'Chưa bắt đầu upload'}
                       </p>
                     </div>
                     <div className="rounded-2xl border border-gray-100 bg-gray-50/20 p-4 dark:border-slate-850 dark:bg-slate-950/15">
                       <p className="text-[9px] font-black uppercase tracking-wider text-gray-400 dark:text-slate-500">Tiến độ batch</p>
                       <p className="mt-1 text-xs font-bold text-gray-950 dark:text-slate-350 truncate">
-                        {batchStatus?.completed_count ?? 0}/{uploadItems.length} file hoàn tất
+                        {completedTrackedCount}/{trackedItemCount || uploadItems.length} file hoàn tất
                       </p>
                     </div>
                   </div>
 
+                  {trackerWarning && (
+                    <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-xs font-semibold text-amber-800 dark:border-amber-900/30 dark:bg-amber-900/10 dark:text-amber-300">
+                      {trackerWarning}
+                    </div>
+                  )}
+
                   <div className="space-y-3">
-                    {uploadItems.map((item) => (
+                    {displayTrackedItems.map((item) => (
                       <div key={item.clientId} className="rounded-2xl border border-gray-150/60 bg-gray-50/30 p-4 dark:border-slate-850 dark:bg-slate-950/20">
                         <div className="flex items-center justify-between gap-3">
                           <div className="min-w-0">
@@ -705,22 +1041,31 @@ const UploadAudio: React.FC = () => {
                     ))}
                   </div>
 
-                  {batchStatusQuery.error instanceof Error && (
+                  {jobsStatusQuery.error instanceof Error && (
                     <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-xs font-semibold text-red-700 dark:border-red-900/30 dark:bg-red-900/10 dark:text-red-300">
-                      {batchStatusQuery.error.message}
+                      {jobsStatusQuery.error.message}
                     </div>
                   )}
 
                   <div className="flex flex-wrap gap-2.5 pt-2">
                     <Button
                       variant="secondary"
-                      onClick={() => batchStatusQuery.refetch()}
-                      disabled={!currentBatchId || batchStatusQuery.isFetching}
+                      onClick={() => jobsStatusQuery.refetch()}
+                      disabled={trackedJobIds.length === 0 || jobsStatusQuery.isFetching}
                       className="h-10 rounded-2xl px-5 text-xs font-bold uppercase tracking-wider flex items-center gap-2"
                     >
-                      {batchStatusQuery.isFetching ? <Loader2 size={14} className="animate-spin" /> : <RefreshCcw size={14} />}
+                      {jobsStatusQuery.isFetching ? <Loader2 size={14} className="animate-spin" /> : <RefreshCcw size={14} />}
                       Cập nhật trạng thái
                     </Button>
+                    {(trackerWarning || isTrackedBatchTerminal) && (
+                      <Button
+                        variant="secondary"
+                        onClick={dismissTrackedBatch}
+                        className="h-10 rounded-2xl px-5 text-xs font-bold uppercase tracking-wider"
+                      >
+                        Xóa theo dõi batch
+                      </Button>
+                    )}
                   </div>
                 </div>
               )}

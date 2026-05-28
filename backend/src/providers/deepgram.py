@@ -22,6 +22,55 @@ def _read_attr(value: Any, key: str, default: Any = None) -> Any:
     return getattr(value, key, default)
 
 
+def _confidence_stats(alternative: Any, low_threshold: float = 0.6) -> Dict[str, Any]:
+    """Aggregate per-word confidence into summary stats.
+
+    Returns ``avg_confidence``, ``min_confidence`` and ``low_conf_word_ratio``
+    (fraction of words below ``low_threshold``). The alternative-level
+    ``confidence`` is included as ``alternative_confidence`` for reference.
+    Empty / missing data yields ``None`` values rather than zeros so
+    downstream code can distinguish "no data" from "all bad".
+    """
+
+    stats: Dict[str, Any] = {
+        "alternative_confidence": _to_float(_read_attr(alternative, "confidence")),
+        "avg_confidence": None,
+        "min_confidence": None,
+        "low_conf_word_ratio": None,
+        "word_count": 0,
+        "low_conf_word_count": 0,
+    }
+    words = _read_attr(alternative, "words", []) or []
+    confidences: List[float] = []
+    low_count = 0
+    for word in words:
+        value = _to_float(_read_attr(word, "confidence"))
+        if value is None:
+            continue
+        confidences.append(value)
+        if value < low_threshold:
+            low_count += 1
+    if confidences:
+        stats["word_count"] = len(confidences)
+        stats["low_conf_word_count"] = low_count
+        stats["avg_confidence"] = round(sum(confidences) / len(confidences), 4)
+        stats["min_confidence"] = round(min(confidences), 4)
+        stats["low_conf_word_ratio"] = round(low_count / len(confidences), 4)
+    return stats
+
+
+def _to_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    if result != result:  # NaN
+        return None
+    return result
+
+
 def _collect_alternative(results: Any) -> Any:
     channels = _read_attr(results, "channels", []) or []
     first_channel = channels[0] if channels else None
@@ -148,9 +197,12 @@ class DeepgramProvider:
 
             # Extract usage metadata
             duration_seconds = 0.0
+            request_id: Optional[str] = None
             try:
-                if hasattr(response, 'metadata') and response.metadata:
-                    duration_seconds = float(getattr(response.metadata, 'duration', 0) or 0)
+                metadata = getattr(response, "metadata", None)
+                if metadata:
+                    duration_seconds = float(_read_attr(metadata, "duration", 0) or 0)
+                    request_id = _read_attr(metadata, "request_id") or _read_attr(metadata, "requestId")
             except Exception:
                 pass
             self.last_duration_seconds = duration_seconds
@@ -167,14 +219,29 @@ class DeepgramProvider:
                     "end": fallback_end,
                     "text": transcript,
                 }]
+
+            confidence = _confidence_stats(alternative)
+            quality = {
+                "request_id": request_id,
+                "model": model,
+                "language": selected_language,
+                "diarize": diarize,
+                "duration_seconds": duration_seconds,
+                "segment_count": len(segments),
+                "transcript_length": len(transcript),
+                **confidence,
+            }
             logger.info(
-                "Deepgram transcription completed model=%s language=%s diarize=%s duration=%.2f text_len=%s segments=%s",
+                "Deepgram transcribe rid=%s model=%s lang=%s diarize=%s duration=%.2f text_len=%s segments=%s avg_conf=%s low_conf_ratio=%s",
+                request_id,
                 model,
                 selected_language,
                 diarize,
                 duration_seconds,
                 len(transcript),
                 len(segments),
+                confidence.get("avg_confidence"),
+                confidence.get("low_conf_word_ratio"),
             )
 
             return {
@@ -183,6 +250,7 @@ class DeepgramProvider:
                 "duration_seconds": duration_seconds,
                 "model": model,
                 "language": selected_language if selected_language != "auto" else None,
+                "quality": quality,
             }
 
         except Exception as e:

@@ -1,14 +1,6 @@
 import React from 'react';
-import { Cpu, Mic, Brain, CheckCircle2, XCircle, Radio, DollarSign } from 'lucide-react';
+import { Mic, Brain, CheckCircle2, XCircle, Radio, DollarSign, Activity } from 'lucide-react';
 import api from '../../../services/api';
-
-type LLMService = {
-  name: string;
-  model: string;
-  role: 'primary' | 'fallback';
-  enabled: boolean;
-  api_key_set: boolean;
-};
 
 type STTProvider = {
   name: string;
@@ -31,7 +23,8 @@ type NLPService = {
 type AIServiceConfig = {
   llm: {
     provider: string;
-    services: LLMService[];
+    router_model: string;
+    router_api_key_set: boolean;
   };
   stt: {
     provider: string;
@@ -56,6 +49,19 @@ type UsageData = {
   services: UsageEntry[];
   monthly_cost_usd: number;
   daily_cost_usd: number;
+};
+
+type UploadJobDiagnostics = {
+  job_id: string;
+  meeting_id: string;
+  status: string;
+  current_stage: string;
+  progress_percent: number;
+  preprocess_strategy?: string | null;
+  audio_metrics?: Record<string, unknown> | null;
+  processed_audio_metrics?: Record<string, unknown> | null;
+  deepgram_quality?: Array<Record<string, unknown>>;
+  original_filename?: string;
 };
 
 const StatusBadge: React.FC<{ active: boolean; label: string }> = ({ active, label }) => (
@@ -94,7 +100,7 @@ const formatDuration = (seconds: number) => {
 
 const serviceLabel = (service: string, model: string) => {
   if (service === 'stt') return `STT: ${model || 'Deepgram'}`;
-  if (service === 'llm') return `LLM: ${model || 'Groq'}`;
+  if (service === 'llm') return `LLM: ${model || 'Router / Groq'}`;
   return `${service}: ${model}`;
 };
 
@@ -103,6 +109,10 @@ const AdminAIServices: React.FC = () => {
   const [usage, setUsage] = React.useState<UsageData | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState('');
+  const [diagnosticJobId, setDiagnosticJobId] = React.useState('');
+  const [diagnostics, setDiagnostics] = React.useState<UploadJobDiagnostics | null>(null);
+  const [diagnosticsLoading, setDiagnosticsLoading] = React.useState(false);
+  const [diagnosticsError, setDiagnosticsError] = React.useState('');
 
   React.useEffect(() => {
     let cancelled = false;
@@ -135,9 +145,40 @@ const AdminAIServices: React.FC = () => {
     return <p className="text-sm text-red-500">{error || 'Khong co du lieu'}</p>;
   }
 
+  const loadDiagnostics = async () => {
+    if (!diagnosticJobId.trim()) {
+      setDiagnosticsError('Nhap job_id de xem diagnostics.');
+      return;
+    }
+    setDiagnosticsLoading(true);
+    setDiagnosticsError('');
+    try {
+      const response = await api.get(`/api/admin/upload-jobs/${diagnosticJobId.trim()}/diagnostics`);
+      setDiagnostics(response.data);
+    } catch (err: any) {
+      setDiagnostics(null);
+      setDiagnosticsError(err?.response?.data?.detail || 'Khong tai duoc diagnostics cho job nay');
+    } finally {
+      setDiagnosticsLoading(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
-      {/* Usage & Costs */}
+      <div className="rounded-3xl border border-gray-200 bg-white p-6 dark:border-slate-800 dark:bg-slate-900">
+        <div className="flex items-center gap-3">
+          <div className="rounded-xl bg-sky-50 p-2 text-sky-600 dark:bg-sky-900/20 dark:text-sky-400">
+            <Activity size={20} />
+          </div>
+          <div>
+            <h3 className="text-lg font-black text-gray-900 dark:text-slate-100">AI Usage Monitoring</h3>
+            <p className="text-xs text-gray-500 dark:text-slate-400">
+              Trang nay dung de theo doi muc su dung va trang thai cac dich vu AI trong he thong.
+            </p>
+          </div>
+        </div>
+      </div>
+
       {usage && (
         <div className="rounded-3xl border border-gray-200 bg-white p-6 dark:border-slate-800 dark:bg-slate-900">
           <div className="mb-5 flex items-center gap-3">
@@ -146,7 +187,7 @@ const AdminAIServices: React.FC = () => {
             </div>
             <div>
               <h3 className="text-lg font-black text-gray-900 dark:text-slate-100">Usage & Costs</h3>
-              <p className="text-xs text-gray-500 dark:text-slate-400">Chi phi su dung AI services</p>
+              <p className="text-xs text-gray-500 dark:text-slate-400">Theo doi luot goi, token, thoi luong STT va chi phi AI.</p>
             </div>
           </div>
 
@@ -202,52 +243,6 @@ const AdminAIServices: React.FC = () => {
         </div>
       )}
 
-      {/* LLM Services */}
-      <div className="rounded-3xl border border-gray-200 bg-white p-6 dark:border-slate-800 dark:bg-slate-900">
-        <div className="mb-5 flex items-center gap-3">
-          <div className="rounded-xl bg-blue-50 p-2 text-blue-600 dark:bg-blue-900/20 dark:text-blue-400">
-            <Cpu size={20} />
-          </div>
-          <div>
-            <h3 className="text-lg font-black text-gray-900 dark:text-slate-100">LLM Services</h3>
-            <p className="text-xs text-gray-500 dark:text-slate-400">
-              Provider chinh: <span className="font-bold text-gray-700 dark:text-slate-200">{config.llm.provider}</span>
-            </p>
-          </div>
-        </div>
-
-        {config.llm.services.length === 0 ? (
-          <p className="text-sm text-gray-500 dark:text-slate-400">Chua cau hinh LLM provider nao.</p>
-        ) : (
-          <div className="space-y-3">
-            {config.llm.services.map((service) => (
-              <div
-                key={service.name}
-                className="flex items-center justify-between rounded-2xl border border-gray-100 p-4 dark:border-slate-800"
-              >
-                <div>
-                  <p className="text-sm font-bold text-gray-900 dark:text-slate-100">{service.name}</p>
-                  <p className="text-xs text-gray-500 dark:text-slate-400">Model: {service.model}</p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <StatusBadge active={service.api_key_set} label={service.api_key_set ? 'API Key set' : 'No key'} />
-                  <span
-                    className={`rounded-full px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-widest ${
-                      service.role === 'primary'
-                        ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/20 dark:text-blue-400'
-                        : 'bg-amber-100 text-amber-700 dark:bg-amber-900/20 dark:text-amber-400'
-                    }`}
-                  >
-                    {service.role}
-                  </span>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* STT Services */}
       <div className="rounded-3xl border border-gray-200 bg-white p-6 dark:border-slate-800 dark:bg-slate-900">
         <div className="mb-5 flex items-center gap-3">
           <div className="rounded-xl bg-purple-50 p-2 text-purple-600 dark:bg-purple-900/20 dark:text-purple-400">
@@ -286,7 +281,6 @@ const AdminAIServices: React.FC = () => {
         </div>
       </div>
 
-      {/* NLP Post-Processing */}
       <div className="rounded-3xl border border-gray-200 bg-white p-6 dark:border-slate-800 dark:bg-slate-900">
         <div className="mb-5 flex items-center gap-3">
           <div className="rounded-xl bg-amber-50 p-2 text-amber-600 dark:bg-amber-900/20 dark:text-amber-400">
@@ -345,6 +339,112 @@ const AdminAIServices: React.FC = () => {
                 </div>
               </div>
             ))}
+          </div>
+        )}
+      </div>
+
+      <div className="rounded-3xl border border-gray-200 bg-white p-6 dark:border-slate-800 dark:bg-slate-900">
+        <div className="mb-5 flex items-center gap-3">
+          <div className="rounded-xl bg-orange-50 p-2 text-orange-600 dark:bg-orange-900/20 dark:text-orange-400">
+            <Activity size={20} />
+          </div>
+          <div>
+            <h3 className="text-lg font-black text-gray-900 dark:text-slate-100">STT Diagnostics</h3>
+            <p className="text-xs text-gray-500 dark:text-slate-400">
+              Nhap job_id de xem audio metrics, preprocess strategy va Deepgram quality tung chunk.
+            </p>
+          </div>
+        </div>
+
+        <div className="flex flex-col gap-3 sm:flex-row">
+          <input
+            value={diagnosticJobId}
+            onChange={(event) => setDiagnosticJobId(event.target.value)}
+            placeholder="Vi du: 6c2d..."
+            className="h-11 flex-1 rounded-2xl border border-gray-200 bg-white px-4 text-sm font-medium outline-none focus:border-orange-500 focus:ring-2 focus:ring-orange-500/30 dark:border-slate-750 dark:bg-slate-950 dark:text-slate-100"
+          />
+          <button
+            onClick={() => void loadDiagnostics()}
+            disabled={diagnosticsLoading}
+            className="inline-flex h-11 items-center justify-center rounded-2xl bg-slate-900 px-5 text-xs font-black uppercase tracking-wider text-white transition hover:bg-slate-800 disabled:opacity-50 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-white"
+          >
+            {diagnosticsLoading ? 'Dang tai...' : 'Xem diagnostics'}
+          </button>
+        </div>
+
+        {diagnosticsError && (
+          <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 p-4 text-xs font-semibold text-red-700 dark:border-red-900/30 dark:bg-red-900/10 dark:text-red-300">
+            {diagnosticsError}
+          </div>
+        )}
+
+        {diagnostics && (
+          <div className="mt-5 space-y-4">
+            <div className="grid gap-4 md:grid-cols-4">
+              <div className="rounded-2xl border border-gray-100 p-4 dark:border-slate-800">
+                <p className="text-[10px] font-bold uppercase tracking-widest text-gray-500">Job</p>
+                <p className="mt-1 text-sm font-black text-gray-900 dark:text-slate-100 break-all">{diagnostics.job_id}</p>
+              </div>
+              <div className="rounded-2xl border border-gray-100 p-4 dark:border-slate-800">
+                <p className="text-[10px] font-bold uppercase tracking-widest text-gray-500">Status</p>
+                <p className="mt-1 text-sm font-black text-gray-900 dark:text-slate-100">{diagnostics.status}</p>
+              </div>
+              <div className="rounded-2xl border border-gray-100 p-4 dark:border-slate-800">
+                <p className="text-[10px] font-bold uppercase tracking-widest text-gray-500">Stage</p>
+                <p className="mt-1 text-sm font-black text-gray-900 dark:text-slate-100">{diagnostics.current_stage}</p>
+              </div>
+              <div className="rounded-2xl border border-gray-100 p-4 dark:border-slate-800">
+                <p className="text-[10px] font-bold uppercase tracking-widest text-gray-500">Strategy</p>
+                <p className="mt-1 text-sm font-black text-gray-900 dark:text-slate-100">{diagnostics.preprocess_strategy || 'n/a'}</p>
+              </div>
+            </div>
+
+            <div className="grid gap-4 lg:grid-cols-2">
+              <div className="rounded-2xl border border-gray-100 p-4 dark:border-slate-800">
+                <p className="mb-3 text-xs font-black uppercase tracking-wider text-gray-500">Original Audio Metrics</p>
+                <pre className="overflow-x-auto rounded-2xl bg-gray-50 p-3 text-[11px] text-gray-700 dark:bg-slate-950/50 dark:text-slate-300">
+                  {JSON.stringify(diagnostics.audio_metrics || {}, null, 2)}
+                </pre>
+              </div>
+              <div className="rounded-2xl border border-gray-100 p-4 dark:border-slate-800">
+                <p className="mb-3 text-xs font-black uppercase tracking-wider text-gray-500">Processed Audio Metrics</p>
+                <pre className="overflow-x-auto rounded-2xl bg-gray-50 p-3 text-[11px] text-gray-700 dark:bg-slate-950/50 dark:text-slate-300">
+                  {JSON.stringify(diagnostics.processed_audio_metrics || {}, null, 2)}
+                </pre>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-gray-100 p-4 dark:border-slate-800">
+              <p className="mb-3 text-xs font-black uppercase tracking-wider text-gray-500">Deepgram Quality Per Chunk</p>
+              {!diagnostics.deepgram_quality?.length ? (
+                <p className="text-sm text-gray-500 dark:text-slate-400">Chua co chunk quality data.</p>
+              ) : (
+                <div className="overflow-hidden rounded-2xl border border-gray-100 dark:border-slate-800">
+                  <table className="w-full text-left text-sm">
+                    <thead className="bg-gray-50 dark:bg-slate-800/60">
+                      <tr>
+                        <th className="px-4 py-3 font-bold text-gray-500">Offset</th>
+                        <th className="px-4 py-3 font-bold text-gray-500">Duration</th>
+                        <th className="px-4 py-3 font-bold text-gray-500">Model</th>
+                        <th className="px-4 py-3 font-bold text-gray-500">Avg conf</th>
+                        <th className="px-4 py-3 font-bold text-gray-500">Low conf ratio</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100 dark:divide-slate-800">
+                      {diagnostics.deepgram_quality.map((chunk, idx) => (
+                        <tr key={idx}>
+                          <td className="px-4 py-3 text-gray-700 dark:text-slate-300">{String(chunk.offset_seconds ?? 0)}</td>
+                          <td className="px-4 py-3 text-gray-700 dark:text-slate-300">{String(chunk.chunk_duration_seconds ?? 0)}</td>
+                          <td className="px-4 py-3 text-gray-700 dark:text-slate-300">{String(chunk.model ?? 'n/a')}</td>
+                          <td className="px-4 py-3 text-gray-700 dark:text-slate-300">{String(chunk.avg_confidence ?? 'n/a')}</td>
+                          <td className="px-4 py-3 text-gray-700 dark:text-slate-300">{String(chunk.low_conf_word_ratio ?? 'n/a')}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
           </div>
         )}
       </div>

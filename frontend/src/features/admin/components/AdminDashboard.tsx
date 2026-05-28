@@ -103,7 +103,8 @@ interface UserEntry {
 interface AIServiceStatus {
   llm: {
     provider: string;
-    services: Array<{ name: string; model: string; role: string; enabled: boolean; api_key_set: boolean }>;
+    router_model: string;
+    router_api_key_set: boolean;
   };
   stt: {
     provider: string;
@@ -464,9 +465,13 @@ const AdminDashboardContent: React.FC = () => {
               </div>
             </div>
             <div className="space-y-3">
-              {aiServices?.llm?.services?.map((svc) => (
-                <ServiceItem key={svc.name} name={svc.name} status={svc.role} color={svc.role === 'primary' ? 'green' : 'amber'} />
-              ))}
+              {aiServices?.llm && (
+                <ServiceItem
+                  name="LLM: Router / Groq"
+                  status={aiServices.llm.router_api_key_set ? aiServices.llm.router_model : 'No key'}
+                  color={aiServices.llm.router_api_key_set ? 'green' : 'amber'}
+                />
+              )}
               {aiServices?.stt?.available_providers?.filter(p => p.active).map((p) => (
                 <ServiceItem key={p.id} name={`STT: ${p.name}`} status={p.model} color="green" />
               ))}

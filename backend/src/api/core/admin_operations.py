@@ -1,6 +1,6 @@
 import os
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Mapping
+from typing import Any, Dict, List, Mapping, Optional
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session, joinedload
@@ -144,35 +144,17 @@ def delete_admin_user_payload(user_id: str, db: Session, current_user: models.Us
     return {"detail": "User account deactivated", "user_id": user_id}
 
 
-def get_admin_ai_services_payload(current_user: models.User) -> Dict[str, Any]:
+def get_admin_ai_services_payload(current_user: models.User, db: Optional[Session] = None) -> Dict[str, Any]:
     require_system_admin_user(current_user)
 
-    llm_provider = os.getenv("LLM_PROVIDER", "google").lower()
+    settings = get_admin_settings_snapshot(db)
+    llm_provider = "router"
     stt_provider = os.getenv("STT_PROVIDER", "deepgram").lower()
-    groq_key = os.getenv("GROQ_API_KEY", "")
-    google_key = os.getenv("GOOGLE_API_KEY", "")
+    groq_key = str(settings.get("router_api_key") or os.getenv("GROQ_API_KEY", "") or os.getenv("ROUTER_API_KEY", ""))
     phobert_enabled = os.getenv("PHOBERT_ENABLED", "false").lower() == "true"
 
     def _key_set(key: str, placeholder: str = "") -> bool:
         return bool(key) and key != placeholder
-
-    llm_services = []
-    if _key_set(groq_key, "your_groq_key_here"):
-        llm_services.append({
-            "name": "Groq",
-            "model": os.getenv("ROUTER_MODEL", "llama-3.3-70b-versatile"),
-            "role": "primary" if llm_provider in ("router", "groq") else "fallback",
-            "enabled": True,
-            "api_key_set": True,
-        })
-    if _key_set(google_key, "your_google_ai_studio_key_here"):
-        llm_services.append({
-            "name": "Google Gemini",
-            "model": os.getenv("GEMINI_MODEL", "gemini-1.5-flash"),
-            "role": "primary" if llm_provider == "google" else "fallback",
-            "enabled": True,
-            "api_key_set": True,
-        })
 
     stt_providers = [
         {"name": "Deepgram", "id": "deepgram", "model": os.getenv("DEEPGRAM_MODEL", "nova-3")},
@@ -195,7 +177,11 @@ def get_admin_ai_services_payload(current_user: models.User) -> Dict[str, Any]:
         })
 
     return {
-        "llm": {"provider": llm_provider, "services": llm_services},
+        "llm": {
+            "provider": llm_provider,
+            "router_model": str(settings.get("router_model") or os.getenv("ROUTER_MODEL", "qwen/qwen3-32b")),
+            "router_api_key_set": _key_set(groq_key, "your_groq_key_here"),
+        },
         "stt": {
             "provider": stt_provider,
             "available_providers": stt_providers,
@@ -210,6 +196,8 @@ def get_admin_ai_usage_payload(db: Session, current_user: models.User) -> Dict[s
 
     from sqlalchemy import func as sqlfunc
 
+    settings = get_admin_settings_snapshot(db)
+    router_model = str(settings.get("router_model") or os.getenv("ROUTER_MODEL", "qwen/qwen3-32b"))
     usage_by_service = db.query(
         models.CostTracking.service,
         models.CostTracking.model_name,
@@ -230,18 +218,39 @@ def get_admin_ai_usage_payload(db: Session, current_user: models.User) -> Dict[s
         models.CostTracking.created_at >= day_start
     ).scalar() or 0
 
+    normalized_services: List[Dict[str, Any]] = []
+    llm_totals = {
+        "service": "llm",
+        "model": router_model,
+        "total_input_tokens": 0,
+        "total_output_tokens": 0,
+        "total_cost_usd": 0.0,
+        "request_count": 0,
+    }
+
+    for row in usage_by_service:
+        service_name = str(row.service or "").strip().lower()
+        if service_name == "llm":
+            llm_totals["total_input_tokens"] += int(row.total_input_tokens or 0)
+            llm_totals["total_output_tokens"] += int(row.total_output_tokens or 0)
+            llm_totals["total_cost_usd"] += float(row.total_cost_usd or 0)
+            llm_totals["request_count"] += int(row.request_count or 0)
+            continue
+
+        normalized_services.append({
+            "service": row.service,
+            "model": row.model_name,
+            "total_input_tokens": int(row.total_input_tokens or 0),
+            "total_output_tokens": int(row.total_output_tokens or 0),
+            "total_cost_usd": float(row.total_cost_usd or 0),
+            "request_count": int(row.request_count or 0),
+        })
+
+    if llm_totals["request_count"] > 0:
+        normalized_services.insert(0, llm_totals)
+
     return {
-        "services": [
-            {
-                "service": row.service,
-                "model": row.model_name,
-                "total_input_tokens": int(row.total_input_tokens or 0),
-                "total_output_tokens": int(row.total_output_tokens or 0),
-                "total_cost_usd": float(row.total_cost_usd or 0),
-                "request_count": int(row.request_count or 0),
-            }
-            for row in usage_by_service
-        ],
+        "services": normalized_services,
         "monthly_cost_usd": float(monthly_cost),
         "daily_cost_usd": float(daily_cost),
     }
@@ -344,14 +353,28 @@ def get_admin_audit_logs_payload(
 
 def get_admin_settings_payload(db: Session, current_user: models.User) -> Dict[str, Any]:
     require_system_admin_user(current_user)
-    return get_admin_settings_snapshot(db)
+    settings = get_admin_settings_snapshot(db)
+    router_api_key = str(settings.get("router_api_key") or "").strip()
+    return {
+        **settings,
+        "router_api_key": "",
+        "router_api_key_set": bool(router_api_key),
+    }
 
 
 def update_admin_settings_payload(payload: Mapping[str, Any], db: Session, current_user: models.User) -> Dict[str, Any]:
     require_system_admin_user(current_user)
-    settings = update_admin_settings_values(payload, db)
+    sanitized_payload = dict(payload)
+    if "router_api_key" in sanitized_payload and sanitized_payload["router_api_key"] is not None:
+        sanitized_payload["router_api_key"] = str(sanitized_payload["router_api_key"]).strip()
+    settings = update_admin_settings_values(sanitized_payload, db)
     append_admin_audit_log(actor=current_user.username, action="UPDATE_SYSTEM_SETTINGS", target="admin.settings")
-    return settings
+    router_api_key = str(settings.get("router_api_key") or "").strip()
+    return {
+        **settings,
+        "router_api_key": "",
+        "router_api_key_set": bool(router_api_key),
+    }
 
 
 def get_costs_payload() -> None:
