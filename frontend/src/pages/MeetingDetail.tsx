@@ -71,6 +71,14 @@ type ActivityFeedItem = {
   tone: 'neutral' | 'success' | 'warning' | 'danger' | 'info';
 };
 
+type SummaryActionItemText = {
+  task?: string;
+  title?: string;
+  description?: string;
+  owner?: string;
+  deadline?: string;
+};
+
 const TRANSCRIPT_GROUP_GAP_SECONDS = 3;
 const endsWithStrongPunctuation = (value: string) => /[.!?]\s*$/.test(value.trim());
 
@@ -309,6 +317,25 @@ const buildMeetingActivityFeed = (meeting: MeetingDetailType | undefined, action
     .slice(0, 8);
 };
 
+const localizeActionItems = (
+  canonicalItems: ActionItem[],
+  translatedItems: unknown[] | undefined,
+): ActionItem[] => {
+  const translatedList = Array.isArray(translatedItems) ? translatedItems as SummaryActionItemText[] : [];
+  return canonicalItems.map((item, index) => {
+    if (!item.summary_id) return item;
+    const translated = translatedList[index];
+    if (!translated || typeof translated !== 'object') return item;
+    const localizedTitle = String(translated.task || translated.title || '').trim();
+    const localizedDescription = String(translated.description || '').trim();
+    return {
+      ...item,
+      title: localizedTitle || item.title,
+      description: localizedDescription || item.description,
+    };
+  });
+};
+
 const MeetingDetail: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const location = useLocation();
@@ -317,7 +344,6 @@ const MeetingDetail: React.FC = () => {
   const [activeTab, setActiveTab] = useState<DetailTab>('summary');
   const [isRegenerating, setIsRegenerating] = useState(false);
   const [summaryLanguage, setSummaryLanguage] = useState<string>('vi');
-  const [generateAiTasks, setGenerateAiTasks] = useState(false);
   const [isEditTitleOpen, setIsEditTitleOpen] = useState(false);
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [exportFormat, setExportFormat] = useState<ExportFormat>('pdf');
@@ -393,13 +419,6 @@ const MeetingDetail: React.FC = () => {
       fallbackSummary &&
       fallbackSummary.language !== summaryLanguage,
   );
-  const manualActionItems = (meeting?.actionItems || []).filter((item) => !item.summary_id);
-  const canonicalSummaryId = meeting?.canonicalSummaryId || canonicalSummary?.id;
-  const selectedAiActionItems = (meeting?.actionItems || []).filter(
-    (item) => Boolean(item.summary_id) && item.summary_id === canonicalSummaryId,
-  );
-  const actionItems = [...manualActionItems, ...selectedAiActionItems];
-
   const sectionLabels: Record<string, Record<string, string>> = {
     vi: { summary: 'Tóm tắt', keyPoints: 'Điểm chính', decisions: 'Quyết định',
       actions: 'Việc cần làm', risks: 'Rủi ro / điểm nghẽn', questions: 'Câu hỏi mở',
@@ -542,6 +561,22 @@ const MeetingDetail: React.FC = () => {
   );
   const summary = effectiveSummary?.meetingSummary
     || (isMeetingDefaultLanguage ? (meeting?.meetingSummaryText || meeting?.summary || '') : '');
+  const manualActionItems = useMemo(
+    () => (meeting?.actionItems || []).filter((item) => !item.summary_id),
+    [meeting?.actionItems],
+  );
+  const canonicalAiActionItems = useMemo(
+    () => (meeting?.actionItems || []).filter((item) => Boolean(item.summary_id)),
+    [meeting?.actionItems],
+  );
+  const localizedAiActionItems = useMemo(
+    () => localizeActionItems(canonicalAiActionItems, effectiveSummary?.actionItems),
+    [canonicalAiActionItems, effectiveSummary?.actionItems],
+  );
+  const actionItems = useMemo(
+    () => [...manualActionItems, ...localizedAiActionItems],
+    [localizedAiActionItems, manualActionItems],
+  );
   const summaryFailed = summaryGenerationState === 'FAILED' || (summaryLanguage === meeting?.meetingDefaultSummaryLanguage && meeting?.summaryStatus === 'FAILED');
   const summaryErrorText = summaryFailed
     ? (
@@ -732,7 +767,7 @@ const MeetingDetail: React.FC = () => {
         language: targetLang,
         regenerate: true,
         full_regenerate: true,
-        generate_action_items: generateAiTasks,
+        generate_action_items: true,
       });
       const result = response.data;
       if (result?.summary_status === "COMPLETED") {
@@ -1616,15 +1651,6 @@ const MeetingDetail: React.FC = () => {
                               <option value="ja">🇯🇵 日本語</option>
                               <option value="ko">🇰🇷 한국어</option>
                             </select>
-                            <label className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-sm font-bold text-gray-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
-                              <input
-                                type="checkbox"
-                                checked={generateAiTasks}
-                                onChange={(event) => setGenerateAiTasks(event.target.checked)}
-                                className="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-                              />
-                              <span>Sinh AI tasks</span>
-                            </label>
                             <button
                               onClick={() => handleRegenerateAINotes(summaryLanguage)}
                               disabled={isRegenerating}

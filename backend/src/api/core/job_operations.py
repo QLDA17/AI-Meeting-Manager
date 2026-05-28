@@ -2,13 +2,20 @@ from typing import Any, Dict
 
 from fastapi import HTTPException
 
-from src.api.core.upload_jobs import create_retry_job, get_upload_job, start_upload_job
+from src.api.core.upload_jobs import create_retry_job, get_upload_batch, get_upload_job, start_upload_job
 
 def get_job_status_payload(job_id: str) -> Dict[str, Any]:
     job = get_upload_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return job.snapshot()
+
+
+def get_batch_status_payload(batch_id: str) -> Dict[str, Any]:
+    batch = get_upload_batch(batch_id)
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found")
+    return batch.snapshot()
 
 
 def retry_job_payload(job_id: str) -> Dict[str, Any]:

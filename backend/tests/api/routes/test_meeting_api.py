@@ -1,4 +1,5 @@
 import pytest
+import json
 from unittest.mock import patch
 from io import BytesIO
 from pathlib import Path
@@ -437,6 +438,63 @@ def test_upload_audio_creates_meeting_audio_and_job(client, auth_context, monkey
         job = get_upload_job(payload["job_id"])
         assert job is not None
         assert job.enable_action_items is False
+    finally:
+        db.close()
+
+
+def test_upload_audio_batch_creates_one_meeting_per_file(client, auth_context, monkeypatch, tmp_path):
+    from src.api.routes import stt as stt_routes
+
+    monkeypatch.setattr(stt_routes, "ensure_audio_upload_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(stt_routes, "start_upload_job", lambda job: None)
+
+    response = client.post(
+        "/api/uploads/batch",
+        headers=auth_context["headers"],
+        files=[
+            ("files", ("first.wav", b"fake-wave-data-1", "audio/wav")),
+            ("files", ("second.wav", b"fake-wave-data-2", "audio/wav")),
+        ],
+        data={
+            "organization_id": auth_context["org_id"],
+            "items": json.dumps([
+                {
+                    "client_id": "client-1",
+                    "title": "First Upload",
+                    "language": "vi",
+                    "stt_provider": "deepgram",
+                    "group_id": "",
+                },
+                {
+                    "client_id": "client-2",
+                    "title": "Second Upload",
+                    "language": "auto",
+                    "stt_provider": "viwhisper",
+                    "group_id": "",
+                },
+            ]),
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total_items"] == 2
+    assert payload["status"] == "queued"
+    assert len(payload["items"]) == 2
+    assert payload["items"][0]["client_id"] == "client-1"
+    assert payload["items"][1]["client_id"] == "client-2"
+
+    batch_status = client.get(f"/api/uploads/batch/{payload['batch_id']}", headers=auth_context["headers"])
+    assert batch_status.status_code == 200
+    assert batch_status.json()["total_items"] == 2
+
+    db = TestingSessionLocal()
+    try:
+        meetings = db.query(models.Meeting).filter(models.Meeting.title.in_(["First Upload", "Second Upload"])).all()
+        assert len(meetings) == 2
+        audio_files = db.query(models.AudioFile).filter(models.AudioFile.meeting_id.in_([meeting.id for meeting in meetings])).all()
+        assert len(audio_files) == 2
+        assert all(Path(audio_file.file_path).exists() for audio_file in audio_files)
     finally:
         db.close()
 

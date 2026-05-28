@@ -1,12 +1,14 @@
 import asyncio
 import logging
 import os
+import queue
 import re
 import shutil
 import subprocess
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
@@ -29,6 +31,12 @@ ALLOWED_UPLOAD_EXTENSIONS = {".wav", ".mp3", ".m4a", ".mp4", ".webm", ".ogg", ".
 SUPPORTED_UPLOAD_LANGUAGES = {"auto", "vi", "en", "zh", "ja", "ko"}
 CHUNK_THRESHOLD_SECONDS = 600.0
 CHUNK_DURATION_SECONDS = 300.0
+UPLOAD_MAX_CONCURRENT_FILES = max(1, int(os.getenv("UPLOAD_MAX_CONCURRENT_FILES", "2")))
+UPLOAD_MAX_CONCURRENT_STT_PER_FILE = max(1, int(os.getenv("UPLOAD_MAX_CONCURRENT_STT_PER_FILE", "2")))
+UPLOAD_MAX_CONCURRENT_NLP = max(1, int(os.getenv("UPLOAD_MAX_CONCURRENT_NLP", "1")))
+UPLOAD_NLP_PIPELINE_VERSION = "upload-v2"
+_STT_EXECUTOR = ThreadPoolExecutor(max_workers=UPLOAD_MAX_CONCURRENT_STT_PER_FILE, thread_name_prefix="upload-stt")
+_UPLOAD_NLP_SEMAPHORE = asyncio.Semaphore(UPLOAD_MAX_CONCURRENT_NLP)
 
 
 def sanitize_upload_filename(filename: str) -> str:
@@ -187,12 +195,38 @@ def transcribe_audio_path(
     enable_diarization: bool,
 ) -> Dict[str, Any]:
     provider = STTService(provider=provider_name).provider
-    kwargs: Dict[str, Any] = {}
-    if provider_name == "deepgram":
-        kwargs["language"] = language
-        kwargs["diarize"] = enable_diarization
-    result = provider.transcribe(audio_path, **kwargs) if kwargs else provider.transcribe(audio_path)
-    return result if isinstance(result, dict) else {"text": "", "segments": []}
+    normalized_provider = provider_label(provider_name)
+    attempts: List[Dict[str, Any]] = []
+    languages_to_try = [language]
+    if normalized_provider == "deepgram" and language == "auto":
+        fallback_language = (os.getenv("DEEPGRAM_LANGUAGE", "vi") or "vi").strip().lower()
+        if fallback_language and fallback_language not in languages_to_try:
+            languages_to_try.append(fallback_language)
+
+    for index, language_choice in enumerate(languages_to_try):
+        kwargs: Dict[str, Any] = {}
+        if normalized_provider == "deepgram":
+            kwargs["language"] = language_choice
+            kwargs["diarize"] = enable_diarization
+        result = provider.transcribe(audio_path, **kwargs) if kwargs else provider.transcribe(audio_path)
+        normalized_result = result if isinstance(result, dict) else {"text": "", "segments": []}
+        normalized_result.setdefault("provider", normalized_provider)
+        normalized_result["language_used"] = language_choice
+        normalized_result["attempt_index"] = index
+        attempts.append(normalized_result)
+        if str(normalized_result.get("text") or "").strip() or list(normalized_result.get("segments") or []):
+            normalized_result["attempted_languages"] = languages_to_try
+            return normalized_result
+
+    final_result = attempts[-1] if attempts else {"text": "", "segments": []}
+    if not final_result.get("error") and normalized_provider == "deepgram":
+        final_result["error"] = (
+            f"Deepgram returned empty transcript after retry with language="
+            f"{final_result.get('language_used') or language}"
+        )
+    final_result.setdefault("provider", normalized_provider)
+    final_result["attempted_languages"] = languages_to_try
+    return final_result
 
 
 def normalize_transcript_segments(
@@ -209,6 +243,9 @@ def normalize_transcript_segments(
         start = float(segment.get("start", segment.get("start_time", 0)) or 0) + offset_seconds
         end = float(segment.get("end", segment.get("end_time", 0)) or 0) + offset_seconds
         speaker = segment.get("speaker") or segment.get("speaker_label") or f"Speaker_{index + 1:02d}"
+        speaker_confidence = segment.get("speaker_confidence")
+        if speaker_confidence is None:
+            speaker_confidence = segment.get("confidence") or segment.get("confidence_score")
         normalized_segments.append({
             "speaker": speaker,
             "speaker_label": speaker,
@@ -217,6 +254,10 @@ def normalize_transcript_segments(
             "text": text,
             "language": segment.get("language") or segment.get("detected_language") or default_language,
             "confidence": segment.get("confidence") or segment.get("confidence_score"),
+            "nlp_metadata": {
+                "speaker_source": segment.get("speaker_source") or ("provider" if segment.get("speaker") or segment.get("speaker_label") else "propagated"),
+                "speaker_confidence": float(speaker_confidence) if speaker_confidence is not None else None,
+            },
         })
     return normalized_segments
 
@@ -258,15 +299,56 @@ def apply_diarization_fallback(audio_path: str, segments: List[Dict[str, Any]]) 
         )
         remapped: List[Dict[str, Any]] = []
         for original, updated in zip(segments, aligned):
+            metadata = dict(original.get("nlp_metadata") or {})
+            metadata.update({
+                "speaker_source": "diarization_fallback",
+                "speaker_confidence": metadata.get("speaker_confidence") or 0.55,
+            })
             remapped.append({
                 **original,
                 "speaker": updated.get("speaker") or original.get("speaker"),
                 "speaker_label": updated.get("speaker") or original.get("speaker_label"),
+                "nlp_metadata": metadata,
             })
         return remapped
     except Exception as exc:
         logger.warning("Diarization fallback failed for %s: %s", audio_path, exc, exc_info=True)
-        return segments
+        degraded_segments: List[Dict[str, Any]] = []
+        for segment in segments:
+            metadata = dict(segment.get("nlp_metadata") or {})
+            metadata.setdefault("speaker_source", "propagated")
+            metadata.setdefault("speaker_confidence", metadata.get("speaker_confidence"))
+            metadata["diarization_limited"] = True
+            degraded_segments.append({**segment, "nlp_metadata": metadata})
+        return degraded_segments
+
+
+async def transcribe_chunk_specs(
+    *,
+    provider_name: str,
+    chunk_specs: List[Dict[str, Any]],
+    language: str,
+    enable_diarization: bool,
+) -> List[Dict[str, Any]]:
+    loop = asyncio.get_running_loop()
+    semaphore = asyncio.Semaphore(UPLOAD_MAX_CONCURRENT_STT_PER_FILE)
+
+    async def transcribe_one(chunk_spec: Dict[str, Any]) -> Dict[str, Any]:
+        async with semaphore:
+            result = await loop.run_in_executor(
+                _STT_EXECUTOR,
+                lambda: transcribe_audio_path(
+                    provider_name=provider_name,
+                    audio_path=chunk_spec["path"],
+                    language=language,
+                    enable_diarization=enable_diarization,
+                ),
+            )
+        return {"chunk_spec": chunk_spec, "result": result}
+
+    ordered_results = await asyncio.gather(*(transcribe_one(chunk_spec) for chunk_spec in chunk_specs))
+    ordered_results.sort(key=lambda item: float(item["chunk_spec"].get("offset_seconds") or 0.0))
+    return ordered_results
 
 
 def persist_transcript_without_summary(
@@ -335,6 +417,72 @@ def persist_transcript_without_summary(
 
 
 @dataclass
+class UploadBatchState:
+    batch_id: str
+    organization_id: str
+    created_by: str
+    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    item_refs: List[Dict[str, str]] = field(default_factory=list)
+
+    def add_item(self, *, client_id: str, job_id: str, filename: str) -> None:
+        self.item_refs.append({
+            "client_id": client_id,
+            "job_id": job_id,
+            "filename": filename,
+        })
+
+    def snapshot(self) -> Dict[str, Any]:
+        items: List[Dict[str, Any]] = []
+        completed = failed = processing = queued = 0
+        total_progress = 0
+        for item in self.item_refs:
+            job = get_upload_job(item["job_id"])
+            if not job:
+                continue
+            snapshot = job.snapshot()
+            items.append({
+                "client_id": item["client_id"],
+                "filename": item["filename"],
+                **snapshot,
+            })
+            total_progress += snapshot.get("progress_percent", 0)
+            status = snapshot.get("status")
+            if status == "completed":
+                completed += 1
+            elif status == "failed":
+                failed += 1
+            elif status == "processing":
+                processing += 1
+            else:
+                queued += 1
+
+        total_items = len(items)
+        if failed > 0 and completed + failed == total_items:
+            aggregate_status = "completed_with_errors"
+        elif total_items > 0 and completed == total_items:
+            aggregate_status = "completed"
+        elif processing > 0:
+            aggregate_status = "processing"
+        else:
+            aggregate_status = "queued"
+
+        return {
+            "batch_id": self.batch_id,
+            "organization_id": self.organization_id,
+            "created_by": self.created_by,
+            "created_at": self.created_at,
+            "status": aggregate_status,
+            "total_items": total_items,
+            "queued_count": queued,
+            "processing_count": processing,
+            "completed_count": completed,
+            "failed_count": failed,
+            "progress_percent": round(total_progress / total_items) if total_items else 0,
+            "items": items,
+        }
+
+
+@dataclass
 class UploadMeetingJob:
     meeting_id: str
     created_by: str
@@ -342,6 +490,8 @@ class UploadMeetingJob:
     original_audio_path: str
     original_filename: str
     organization_id: str
+    batch_id: Optional[str] = None
+    client_id: Optional[str] = None
     stt_provider: str = "deepgram"
     language: str = "auto"
     enable_diarization: bool = True
@@ -358,6 +508,7 @@ class UploadMeetingJob:
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
     retry_count: int = 0
+    queue_position: Optional[int] = None
     result: Optional[Dict[str, Any]] = None
 
     def set_stage(self, stage: str, progress: int, *, status: Optional[str] = None, error: str = "") -> None:
@@ -390,6 +541,9 @@ class UploadMeetingJob:
             "started_at": self.started_at,
             "completed_at": self.completed_at,
             "retry_count": self.retry_count,
+            "batch_id": self.batch_id,
+            "client_id": self.client_id,
+            "queue_position": self.queue_position,
             "result": self.result if self.status == "completed" else None,
         }
 
@@ -403,6 +557,7 @@ class UploadMeetingJob:
                 raise ValueError("Upload job context is no longer valid")
 
             self.started_at = datetime.now(timezone.utc).isoformat()
+            self.queue_position = None
             self.set_stage("uploaded", 10, status="processing")
             update_meeting(db, meeting.id, {"status": "processing"})
             update_audio_file(db, audio_file.id, {"upload_status": "PROCESSING"})
@@ -439,18 +594,24 @@ class UploadMeetingJob:
             transcript_parts: List[str] = []
             segments: List[Dict[str, Any]] = []
             detected_language = self.language
+            chunk_errors: List[str] = []
             self.set_stage("transcribing", 60)
-            for chunk_spec in chunk_specs:
-                result = transcribe_audio_path(
-                    provider_name=self.stt_provider,
-                    audio_path=chunk_spec["path"],
-                    language=self.language,
-                    enable_diarization=self.enable_diarization,
-                )
+            chunk_results = await transcribe_chunk_specs(
+                provider_name=self.stt_provider,
+                chunk_specs=chunk_specs,
+                language=self.language,
+                enable_diarization=self.enable_diarization,
+            )
+            for chunk_result in chunk_results:
+                chunk_spec = chunk_result["chunk_spec"]
+                result = chunk_result["result"]
+                error_message = str(result.get("error") or "").strip()
+                if error_message:
+                    chunk_errors.append(error_message)
                 text = str(result.get("text") or "").strip()
                 if text:
                     transcript_parts.append(text)
-                chunk_language = result.get("language") or result.get("detected_language")
+                chunk_language = result.get("language_used") or result.get("language") or result.get("detected_language")
                 if chunk_language and detected_language == "auto":
                     detected_language = str(chunk_language).lower()
                 chunk_segments = normalize_transcript_segments(
@@ -467,11 +628,23 @@ class UploadMeetingJob:
                         "end": float(chunk_spec.get("offset_seconds") or 0) + duration_hint,
                         "text": text,
                         "language": detected_language if detected_language != "auto" else "vi",
+                        "nlp_metadata": {
+                            "speaker_source": "propagated",
+                            "speaker_confidence": None,
+                        },
                     }]
                 segments.extend(chunk_segments)
 
             if not transcript_parts and not segments:
-                raise ValueError("Transcription returned no usable content")
+                if chunk_errors:
+                    raise ValueError(chunk_errors[0])
+                raise ValueError(
+                    f"{provider_label(self.stt_provider)} returned no usable transcript "
+                    f"for {len(chunk_specs)} chunk(s)"
+                )
+
+            self.set_stage("merging_transcript", 68)
+            segments.sort(key=lambda segment: (float(segment.get("start") or 0), float(segment.get("end") or 0)))
 
             if self.enable_diarization and not segments_have_explicit_speakers(segments):
                 self.set_stage("diarizing", 72)
@@ -490,30 +663,34 @@ class UploadMeetingJob:
             if final_language == "auto":
                 final_language = "vi"
 
-            self.set_stage("post_processing", 82)
+            if final_language == "vi":
+                self.set_stage("phobert_processing", 82)
+            self.set_stage("bartpho_processing", 86)
             if self.enable_summary:
                 self.set_stage("summarizing", 90)
-                result = await finalize_meeting_transcript(
-                    self.meeting_id,
-                    db,
-                    user,
-                    body={
-                        "transcript": full_text,
-                        "segments": segments,
-                        "language": final_language,
-                        "generate_summary": True,
-                        "generate_action_items": self.enable_action_items,
-                    },
-                )
+                async with _UPLOAD_NLP_SEMAPHORE:
+                    result = await finalize_meeting_transcript(
+                        self.meeting_id,
+                        db,
+                        user,
+                        body={
+                            "transcript": full_text,
+                            "segments": segments,
+                            "language": final_language,
+                            "generate_summary": True,
+                            "generate_action_items": self.enable_action_items,
+                        },
+                    )
             else:
-                persist_transcript_without_summary(
-                    db,
-                    meeting=meeting,
-                    text=full_text,
-                    segments=segments,
-                    language=final_language,
-                    provider_name=self.stt_provider,
-                )
+                async with _UPLOAD_NLP_SEMAPHORE:
+                    persist_transcript_without_summary(
+                        db,
+                        meeting=meeting,
+                        text=full_text,
+                        segments=segments,
+                        language=final_language,
+                        provider_name=self.stt_provider,
+                    )
                 result = {
                     "meeting_id": self.meeting_id,
                     "transcript_status": "COMPLETED",
@@ -555,6 +732,12 @@ class UploadMeetingJob:
 UPLOAD_JOBS: Dict[str, UploadMeetingJob] = {}
 UPLOAD_JOBS_BY_MEETING: Dict[str, str] = {}
 UPLOAD_JOBS_LOCK = threading.Lock()
+UPLOAD_BATCHES: Dict[str, UploadBatchState] = {}
+UPLOAD_BATCHES_LOCK = threading.Lock()
+UPLOAD_JOB_QUEUE: "queue.Queue[UploadMeetingJob]" = queue.Queue()
+UPLOAD_WORKERS_STARTED = False
+UPLOAD_WORKERS_LOCK = threading.Lock()
+UPLOAD_WORKERS: List[threading.Thread] = []
 
 
 def register_upload_job(job: UploadMeetingJob) -> UploadMeetingJob:
@@ -569,18 +752,54 @@ def get_upload_job(job_id: str) -> Optional[UploadMeetingJob]:
         return UPLOAD_JOBS.get(job_id)
 
 
+def register_upload_batch(batch: UploadBatchState) -> UploadBatchState:
+    with UPLOAD_BATCHES_LOCK:
+        UPLOAD_BATCHES[batch.batch_id] = batch
+    return batch
+
+
+def get_upload_batch(batch_id: str) -> Optional[UploadBatchState]:
+    with UPLOAD_BATCHES_LOCK:
+        return UPLOAD_BATCHES.get(batch_id)
+
+
 def run_upload_job_async(job: UploadMeetingJob) -> None:
     asyncio.run(job.run())
 
 
+def upload_worker_main() -> None:
+    while True:
+        job = UPLOAD_JOB_QUEUE.get()
+        try:
+            run_upload_job_async(job)
+        except Exception:
+            logger.exception("Unhandled upload worker error for job %s", job.job_id)
+        finally:
+            UPLOAD_JOB_QUEUE.task_done()
+
+
+def ensure_upload_workers_started() -> None:
+    global UPLOAD_WORKERS_STARTED
+    if UPLOAD_WORKERS_STARTED:
+        return
+    with UPLOAD_WORKERS_LOCK:
+        if UPLOAD_WORKERS_STARTED:
+            return
+        for index in range(UPLOAD_MAX_CONCURRENT_FILES):
+            worker = threading.Thread(
+                target=upload_worker_main,
+                name=f"upload-worker-{index}",
+                daemon=True,
+            )
+            worker.start()
+            UPLOAD_WORKERS.append(worker)
+        UPLOAD_WORKERS_STARTED = True
+
+
 def start_upload_job(job: UploadMeetingJob) -> None:
-    thread = threading.Thread(
-        target=run_upload_job_async,
-        args=(job,),
-        name=f"upload-job-{job.job_id}",
-        daemon=True,
-    )
-    thread.start()
+    ensure_upload_workers_started()
+    job.queue_position = UPLOAD_JOB_QUEUE.qsize() + 1
+    UPLOAD_JOB_QUEUE.put(job)
 
 
 def create_retry_job(job_id: str) -> UploadMeetingJob:
@@ -596,6 +815,8 @@ def create_retry_job(job_id: str) -> UploadMeetingJob:
         original_audio_path=job.original_audio_path,
         original_filename=job.original_filename,
         organization_id=job.organization_id,
+        batch_id=job.batch_id,
+        client_id=job.client_id,
         stt_provider=job.stt_provider,
         language=job.language,
         enable_diarization=job.enable_diarization,

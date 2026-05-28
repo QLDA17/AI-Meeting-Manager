@@ -370,7 +370,28 @@ export interface UploadJobStatus {
   started_at?: string;
   completed_at?: string;
   retry_count?: number;
+  batch_id?: string | null;
+  client_id?: string | null;
+  queue_position?: number | null;
   result?: Record<string, unknown> | null;
+}
+
+export interface BatchUploadItemStatus extends UploadJobStatus {
+  client_id: string;
+  filename: string;
+}
+
+export interface BatchUploadResponse {
+  batch_id: string;
+  organization_id: string;
+  status: 'queued' | 'processing' | 'completed' | 'completed_with_errors';
+  total_items: number;
+  progress_percent: number;
+  queued_count: number;
+  processing_count: number;
+  completed_count: number;
+  failed_count: number;
+  items: BatchUploadItemStatus[];
 }
 
 export interface NotificationItem {

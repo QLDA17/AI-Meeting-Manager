@@ -214,6 +214,8 @@ def _build_transcript_quality_metadata(
     raw_segments: List[Dict[str, Any]],
     cleaned_segments: List[Dict[str, Any]],
     post_processing_applied: bool,
+    phobert_applied: bool = False,
+    bartpho_applied: bool = False,
 ) -> Dict[str, Any]:
     correction_count = sum(len(_segment_corrections(segment)) for segment in cleaned_segments)
     low_confidence_segment_count = sum(
@@ -223,6 +225,21 @@ def _build_transcript_quality_metadata(
     )
     quality_status = "healthy"
     if not cleaned_segments or low_confidence_segment_count > max(1, len(cleaned_segments) // 2):
+        quality_status = "degraded"
+    diarization_sources = {
+        str(((segment.get("nlp_metadata") or {}).get("speaker_source") or "")).strip()
+        for segment in cleaned_segments
+        if isinstance(segment.get("nlp_metadata"), dict)
+    }
+    diarization_sources.discard("")
+    diarization_applied = any(source in {"provider", "diarization_fallback"} for source in diarization_sources)
+    diarization_source = "provider" if "provider" in diarization_sources else "diarization_fallback" if "diarization_fallback" in diarization_sources else "limited"
+    speaker_limited = any(
+        bool((segment.get("nlp_metadata") or {}).get("diarization_limited"))
+        for segment in cleaned_segments
+        if isinstance(segment.get("nlp_metadata"), dict)
+    )
+    if speaker_limited:
         quality_status = "degraded"
     return {
         "provider": provider,
@@ -234,6 +251,11 @@ def _build_transcript_quality_metadata(
         "speaker_assignment_rate": _speaker_assignment_rate(cleaned_segments),
         "low_confidence_segment_count": low_confidence_segment_count,
         "post_processing_applied": post_processing_applied,
+        "nlp_pipeline_version": "upload-v2",
+        "phobert_applied": phobert_applied,
+        "bartpho_applied": bartpho_applied,
+        "diarization_applied": diarization_applied,
+        "diarization_source": diarization_source,
         "quality_status": quality_status,
     }
 
@@ -247,6 +269,7 @@ def build_transcript_artifacts(
     provider_model: Optional[str] = None,
 ) -> Dict[str, Any]:
     from src.api.core.nlp_support import get_phobert_processor, phobert_enabled_for
+    from src.nlp import BartPhoTextEnhancer
 
     raw_text = text or ""
     raw_segments = [normalize_segment_payload(segment, language) for segment in (segments or [])]
@@ -254,6 +277,8 @@ def build_transcript_artifacts(
     cleaned_segments = [dict(segment) for segment in raw_segments]
     nlp_metadata = None
     post_processed = False
+    phobert_applied = False
+    bartpho_applied = False
 
     if phobert_enabled_for(language):
         try:
@@ -266,6 +291,7 @@ def build_transcript_artifacts(
             ]
             nlp_metadata = processed.get("nlp_metadata")
             post_processed = bool(processed.get("post_processed"))
+            phobert_applied = post_processed
             raw_text = str(processed.get("raw_text") or raw_text)
             raw_segments = [
                 normalize_segment_payload(segment, language)
@@ -274,6 +300,29 @@ def build_transcript_artifacts(
         except Exception as exc:
             logger.warning("PhoBERT finalize post-processing skipped: %s", exc, exc_info=True)
 
+    try:
+        bartpho = BartPhoTextEnhancer()
+        bartpho_result = bartpho.process_finalize(
+            cleaned_text,
+            cleaned_segments,
+            language=language,
+        )
+        cleaned_text = str(bartpho_result.get("text") or cleaned_text)
+        cleaned_segments = [
+            normalize_segment_payload(segment, language)
+            for segment in (bartpho_result.get("segments") or cleaned_segments)
+        ]
+        bartpho_applied = bool(bartpho_result.get("post_processed"))
+        bartpho_metadata = bartpho_result.get("nlp_metadata")
+        if bartpho_metadata:
+            merged_metadata = dict(nlp_metadata or {})
+            merged_metadata["bartpho"] = bartpho_metadata
+            merged_metadata["bartpho_applied"] = bartpho_applied
+            nlp_metadata = merged_metadata
+        post_processed = post_processed or bartpho_applied
+    except Exception as exc:
+        logger.warning("BARTpho finalize enhancement skipped: %s", exc, exc_info=True)
+
     quality_metadata = _build_transcript_quality_metadata(
         provider=provider_name,
         provider_model=provider_model,
@@ -281,6 +330,8 @@ def build_transcript_artifacts(
         raw_segments=raw_segments,
         cleaned_segments=cleaned_segments,
         post_processing_applied=post_processed,
+        phobert_applied=phobert_applied,
+        bartpho_applied=bartpho_applied,
     )
 
     return {

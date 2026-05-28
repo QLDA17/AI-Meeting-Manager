@@ -2,7 +2,6 @@ import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   ArrowLeft,
-  FileAudio,
   Loader2,
   Mic,
   RefreshCcw,
@@ -16,7 +15,7 @@ import api from '../../services/api';
 import { normalizeFeatureFlags } from '../../services/mappers';
 import { useOrgStore } from '../../stores';
 import { useLiveTestRecorder } from '../../hooks';
-import type { UploadJobStatus } from '../../types';
+import type { BatchUploadResponse, BatchUploadItemStatus, UploadJobStatus } from '../../types';
 import { Button } from '../../components/ui';
 
 
@@ -43,11 +42,23 @@ const STAGE_LABELS: Record<string, string> = {
   noise_cleanup: 'Lọc nhiễu',
   chunking: 'Tách chunk xử lý',
   transcribing: 'Đang nhận dạng giọng nói',
+  merging_transcript: 'Đang ghép transcript',
   diarizing: 'Đang tách người nói',
+  phobert_processing: 'Đang tối ưu PhoBERT',
+  bartpho_processing: 'Đang tối ưu BARTpho',
   post_processing: 'Đang hậu xử lý transcript',
   summarizing: 'Đang tạo summary và action items',
   completed: 'Hoàn tất',
   failed: 'Thất bại',
+};
+
+const STATUS_LABELS: Record<string, string> = {
+  draft: 'Chưa gửi',
+  queued: 'Đang chờ',
+  processing: 'Đang xử lý',
+  completed: 'Hoàn tất',
+  failed: 'Lỗi',
+  completed_with_errors: 'Hoàn tất có lỗi',
 };
 
 const formatBytes = (bytes: number) => {
@@ -73,18 +84,49 @@ const formatDuration = (seconds: number | null) => {
   return `${remainingSeconds}s`;
 };
 
+type UploadItemStatus = 'draft' | UploadJobStatus['status'];
+
+interface UploadAudioItem {
+  clientId: string;
+  file: File;
+  objectUrl: string;
+  title: string;
+  groupId: string;
+  language: string;
+  sttProvider: string;
+  estimatedDurationSeconds: number | null;
+  sourceLabel: string;
+  previewStatus: 'ready' | 'reading' | 'error';
+  jobId?: string;
+  meetingId?: string;
+  status: UploadItemStatus;
+  currentStage?: string;
+  progressPercent?: number;
+  errorMessage?: string;
+}
+
+const makeClientId = () => `upload_${Math.random().toString(36).slice(2, 10)}_${Date.now()}`;
+
+const readAudioDuration = (objectUrl: string): Promise<number | null> =>
+  new Promise((resolve) => {
+    const audio = document.createElement('audio');
+    audio.preload = 'metadata';
+    audio.src = objectUrl;
+    audio.onloadedmetadata = () => resolve(Number.isFinite(audio.duration) ? audio.duration : null);
+    audio.onerror = () => resolve(null);
+  });
+
 const UploadAudio: React.FC = () => {
   const navigate = useNavigate();
   const { currentOrg, groups } = useOrgStore();
   const [activeTab, setActiveTab] = React.useState<UploadTab>('file');
   const [selectedGroupId, setSelectedGroupId] = React.useState('');
-  const [selectedFile, setSelectedFile] = React.useState<File | null>(null);
-  const [title, setTitle] = React.useState('');
-  const [estimatedDurationSeconds, setEstimatedDurationSeconds] = React.useState<number | null>(null);
+  const [uploadItems, setUploadItems] = React.useState<UploadAudioItem[]>([]);
   const [language, setLanguage] = React.useState('auto');
+  const [uploadDefaultProvider, setUploadDefaultProvider] = React.useState('deepgram');
   const [sttProvider, setSttProvider] = React.useState('deepgram');
-  const [currentJobId, setCurrentJobId] = React.useState('');
-  const [currentMeetingId, setCurrentMeetingId] = React.useState('');
+  const [currentBatchId, setCurrentBatchId] = React.useState('');
+  const uploadItemsRef = React.useRef<UploadAudioItem[]>([]);
 
   const liveTest = useLiveTestRecorder(sttProvider === 'deepgram' ? undefined : sttProvider);
   const isViWhisper = sttProvider === 'viwhisper';
@@ -101,25 +143,14 @@ const UploadAudio: React.FC = () => {
   }, [currentOrg?.id, groups, selectedGroupId]);
 
   React.useEffect(() => {
-    if (!selectedFile) {
-      setEstimatedDurationSeconds(null);
-      return undefined;
-    }
-    const audio = document.createElement('audio');
-    const objectUrl = URL.createObjectURL(selectedFile);
-    const clear = () => URL.revokeObjectURL(objectUrl);
-    audio.preload = 'metadata';
-    audio.src = objectUrl;
-    audio.onloadedmetadata = () => {
-      setEstimatedDurationSeconds(Number.isFinite(audio.duration) ? audio.duration : null);
-      clear();
+    uploadItemsRef.current = uploadItems;
+  }, [uploadItems]);
+
+  React.useEffect(() => {
+    return () => {
+      uploadItemsRef.current.forEach((item) => URL.revokeObjectURL(item.objectUrl));
     };
-    audio.onerror = () => {
-      setEstimatedDurationSeconds(null);
-      clear();
-    };
-    return () => clear();
-  }, [selectedFile]);
+  }, []);
 
   const featureQuery = useQuery({
     queryKey: ['feature-flags'],
@@ -132,111 +163,174 @@ const UploadAudio: React.FC = () => {
   const uploadEnabled = featureQuery.data?.uploadEnabled ?? false;
   const jobTrackingEnabled = featureQuery.data?.jobTrackingEnabled ?? false;
 
-  const uploadMutation = useMutation({
-    mutationFn: async () => {
-      if (!currentOrg?.id) {
-        throw new Error('Chưa có tổ chức để gắn meeting upload.');
-      }
-      if (!selectedFile) {
-        throw new Error('Vui lòng chọn file âm thanh.');
-      }
-      const formData = new FormData();
-      const uploadedAt = new Date();
-      const estimatedEnd = estimatedDurationSeconds
-        ? new Date(uploadedAt.getTime() + estimatedDurationSeconds * 1000)
-        : uploadedAt;
-      formData.append('file', selectedFile);
-      formData.append('organization_id', currentOrg.id);
-      if (selectedGroupId) formData.append('group_id', selectedGroupId);
-      formData.append('title', title.trim() || selectedFile.name.replace(/\.[^/.]+$/, ''));
-      formData.append('scheduled_start', uploadedAt.toISOString());
-      formData.append('scheduled_end', estimatedEnd.toISOString());
-      formData.append('language', language);
-      formData.append('stt_provider', sttProvider);
-      formData.append('enable_diarization', 'true');
-      formData.append('enable_summary', 'true');
-      formData.append('enable_action_items', 'true');
-      formData.append('enable_noise_cleanup', 'true');
-      const response = await api.post<UploadJobStatus>('/api/upload', formData, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-        timeout: 120000,
-      });
-      return response.data;
-    },
-    onSuccess: (data) => {
-      setCurrentJobId(data.job_id);
-      setCurrentMeetingId(data.meeting_id);
-    },
-  });
+  const applyBatchStatus = React.useCallback((statuses: BatchUploadItemStatus[]) => {
+    const statusMap = new Map(statuses.map((item) => [item.client_id, item]));
+    setUploadItems((current) =>
+      current.map((item) => {
+        const next = statusMap.get(item.clientId);
+        if (!next) return item;
+        return {
+          ...item,
+          jobId: next.job_id,
+          meetingId: next.meeting_id,
+          status: next.status,
+          currentStage: next.current_stage,
+          progressPercent: next.progress_percent,
+          errorMessage: next.error_message,
+        };
+      }),
+    );
+  }, []);
 
-  const retryMutation = useMutation({
-    mutationFn: async () => {
-      if (!currentJobId) {
-        throw new Error('Không có job để retry.');
-      }
-      const response = await api.post<UploadJobStatus>(`/api/upload/jobs/${currentJobId}/retry`);
-      return response.data;
-    },
-    onSuccess: (data) => {
-      setCurrentJobId(data.job_id);
-      setCurrentMeetingId(data.meeting_id);
-    },
-  });
-
-  const jobQuery = useQuery({
-    queryKey: ['upload-job', currentJobId],
-    enabled: Boolean(currentJobId) && jobTrackingEnabled,
+  const batchStatusQuery = useQuery({
+    queryKey: ['upload-batch', currentBatchId],
+    enabled: Boolean(currentBatchId) && jobTrackingEnabled,
     queryFn: async () => {
-      const response = await api.get<UploadJobStatus>(`/api/upload/jobs/${currentJobId}`);
+      const response = await api.get<BatchUploadResponse>(`/api/uploads/batch/${currentBatchId}`);
       return response.data;
     },
     refetchInterval: (query) => {
-      const status = (query.state.data as UploadJobStatus | undefined)?.status;
+      const status = (query.state.data as BatchUploadResponse | undefined)?.status;
       if (!status || status === 'queued' || status === 'processing') return 1500;
       return false;
     },
   });
 
   React.useEffect(() => {
-    if (jobQuery.data?.status === 'completed' && jobQuery.data.meeting_id) {
-      const timeout = window.setTimeout(() => {
-        navigate(`/meetings/${jobQuery.data?.meeting_id}`);
-      }, 1200);
-      return () => window.clearTimeout(timeout);
+    if (batchStatusQuery.data?.items) {
+      applyBatchStatus(batchStatusQuery.data.items);
     }
-    return undefined;
-  }, [jobQuery.data?.meeting_id, jobQuery.data?.status, navigate]);
+  }, [applyBatchStatus, batchStatusQuery.data]);
+
+  const uploadMutation = useMutation({
+    mutationFn: async () => {
+      if (!currentOrg?.id) {
+        throw new Error('Chưa có tổ chức để gắn meeting upload.');
+      }
+      if (uploadItems.length === 0) {
+        throw new Error('Vui lòng chọn ít nhất một file âm thanh.');
+      }
+      const formData = new FormData();
+      formData.append('organization_id', currentOrg.id);
+      const uploadedAt = new Date();
+      const metadata = uploadItems.map((item) => {
+        const estimatedEnd = item.estimatedDurationSeconds
+          ? new Date(uploadedAt.getTime() + item.estimatedDurationSeconds * 1000)
+          : uploadedAt;
+        return {
+          client_id: item.clientId,
+          title: item.title.trim() || item.file.name.replace(/\.[^/.]+$/, ''),
+          group_id: item.groupId || undefined,
+          language: item.language,
+          stt_provider: item.sttProvider,
+          scheduled_start: uploadedAt.toISOString(),
+          scheduled_end: estimatedEnd.toISOString(),
+          enable_diarization: true,
+          enable_summary: true,
+          enable_action_items: true,
+          enable_noise_cleanup: true,
+        };
+      });
+      formData.append('items', JSON.stringify(metadata));
+      uploadItems.forEach((item) => {
+        formData.append('files', item.file);
+      });
+      const response = await api.post<BatchUploadResponse>('/api/uploads/batch', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+        timeout: 120000,
+      });
+      return response.data;
+    },
+    onSuccess: (data) => {
+      setCurrentBatchId(data.batch_id);
+      applyBatchStatus(data.items);
+    },
+  });
+
+  const retryMutation = useMutation({
+    mutationFn: async (jobId: string) => {
+      const response = await api.post<UploadJobStatus>(`/api/upload/jobs/${jobId}/retry`);
+      return response.data;
+    },
+    onSuccess: (data) => {
+      setUploadItems((current) =>
+        current.map((item) =>
+          item.jobId === data.job_id || item.meetingId === data.meeting_id
+            ? {
+                ...item,
+                jobId: data.job_id,
+                meetingId: data.meeting_id,
+                status: data.status,
+                currentStage: data.current_stage,
+                progressPercent: data.progress_percent,
+                errorMessage: data.error_message,
+              }
+            : item,
+        ),
+      );
+    },
+  });
+
+  const handleFilesSelected = React.useCallback(async (fileList: FileList | null) => {
+    if (!fileList?.length) return;
+    const files = Array.from(fileList);
+    const baseGroupId = selectedGroupId;
+    const baseLanguage = language;
+    const baseProvider = uploadDefaultProvider;
+    const nextItems = await Promise.all(files.map(async (file) => {
+      const objectUrl = URL.createObjectURL(file);
+      const duration = await readAudioDuration(objectUrl);
+      return {
+        clientId: makeClientId(),
+        file,
+        objectUrl,
+        title: file.name.replace(/\.[^/.]+$/, ''),
+        groupId: baseGroupId,
+        language: baseLanguage,
+        sttProvider: baseProvider,
+        estimatedDurationSeconds: duration,
+        sourceLabel: file.name,
+        previewStatus: (duration == null ? 'error' : 'ready') as UploadAudioItem['previewStatus'],
+        status: 'draft' as const,
+      };
+    }));
+    setUploadItems((current) => [...current, ...nextItems]);
+  }, [language, selectedGroupId, uploadDefaultProvider]);
+
+  const removeUploadItem = React.useCallback((clientId: string) => {
+    setUploadItems((current) => {
+      const target = current.find((item) => item.clientId === clientId);
+      if (target) {
+        URL.revokeObjectURL(target.objectUrl);
+      }
+      return current.filter((item) => item.clientId !== clientId);
+    });
+  }, []);
+
+  const updateUploadItem = React.useCallback((clientId: string, updates: Partial<UploadAudioItem>) => {
+    setUploadItems((current) => current.map((item) => (
+      item.clientId === clientId ? { ...item, ...updates } : item
+    )));
+  }, []);
+
+  const clearBatch = React.useCallback(() => {
+    setUploadItems((current) => {
+      current.forEach((item) => URL.revokeObjectURL(item.objectUrl));
+      return [];
+    });
+    setCurrentBatchId('');
+  }, []);
 
   const uploadError = uploadMutation.error instanceof Error ? uploadMutation.error.message : '';
   const retryError = retryMutation.error instanceof Error ? retryMutation.error.message : '';
-  const statusCard = jobQuery.data;
-  const selectedFileLabel = selectedFile?.name || 'Chọn file .wav, .mp3, .m4a, .mp4, .webm';
-  const selectedFileSize = selectedFile ? formatBytes(selectedFile.size) : 'Tối đa 50MB';
-  const durationLabel = formatDuration(estimatedDurationSeconds);
+  const batchStatus = batchStatusQuery.data;
   const isUploading = uploadMutation.isPending;
-  const currentStageLabel = statusCard ? (STAGE_LABELS[statusCard.current_stage] || statusCard.current_stage) : 'Chưa có job';
-
-  const renderVisualizer = () => {
-    return (
-      <div className="flex items-center justify-center gap-1 h-12 mt-4 px-4 bg-primary-50/20 dark:bg-slate-950/20 rounded-2xl border border-primary-100/30 dark:border-slate-800/40 w-full overflow-hidden relative">
-        <div className="absolute inset-0 bg-gradient-to-r from-primary-500/5 via-transparent to-primary-500/5 animate-pulse pointer-events-none" />
-        {[...Array(24)].map((_, i) => {
-          const baseHeight = [12, 28, 16, 32, 24, 8, 36, 16, 40, 20, 28, 12, 32, 24, 16, 36, 8, 28, 20, 32, 12, 24, 16, 8][i % 24];
-          return (
-            <div
-              key={i}
-              className="w-1 rounded-full bg-gradient-to-t from-primary-400 to-primary-500"
-              style={{
-                height: `${baseHeight}px`,
-                animation: `soundwave 1.2s ease-in-out infinite alternate`,
-                animationDelay: `${i * 0.05}s`
-              }}
-            />
-          );
-        })}
-      </div>
-    );
-  };
+  const orgGroups = groups.filter((group) => group.organization_id === currentOrg?.id);
+  const batchProgressPercent = batchStatus?.progress_percent ?? (uploadItems.length > 0
+    ? Math.round(
+      uploadItems.reduce((sum, item) => sum + (item.progressPercent ?? (item.status === 'draft' ? 0 : 5)), 0) / uploadItems.length,
+    )
+    : 0);
 
   return (
     <div className="mx-auto max-w-6xl space-y-6">
@@ -313,50 +407,29 @@ const UploadAudio: React.FC = () => {
             <div className="rounded-3xl border border-gray-150/40 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900">
               <div className="pb-4 border-b border-gray-100 dark:border-slate-800 flex items-center gap-2">
                 <UploadCloud size={18} className="text-primary-500" />
-                <h2 className="text-base font-black text-gray-900 dark:text-slate-100 uppercase tracking-wider">Cấu hình tải tệp lưu trữ</h2>
+                <div>
+                  <h2 className="text-base font-black text-gray-900 dark:text-slate-100">Tải file audio thành meeting</h2>
+                  <p className="mt-1 text-xs text-gray-500 dark:text-slate-400">
+                    Mỗi file là một meeting riêng, có metadata và preview độc lập.
+                  </p>
+                </div>
               </div>
-              
-              <div className="mt-5 grid gap-5 md:grid-cols-2">
-                <div className="space-y-1.5">
-                  <span className="block text-xs font-black uppercase tracking-wider text-gray-400 dark:text-slate-500">Tổ chức</span>
-                  <div className="flex h-11 items-center rounded-2xl border border-gray-150 bg-gray-50/70 px-4 text-sm font-semibold text-gray-700 dark:border-slate-800/80 dark:bg-slate-950/20 dark:text-slate-350">
-                    {currentOrg?.name || 'Chưa chọn tổ chức'}
-                  </div>
+
+              <div className="mt-5 grid gap-3 md:grid-cols-2">
+                <div className="rounded-2xl border border-gray-150 bg-gray-50/70 p-4 dark:border-slate-800/80 dark:bg-slate-950/20">
+                  <p className="text-[10px] font-black uppercase tracking-wider text-gray-400 dark:text-slate-500">Tổ chức</p>
+                  <p className="mt-1.5 text-sm font-bold text-gray-800 dark:text-slate-200">{currentOrg?.name || 'Chưa chọn tổ chức'}</p>
                 </div>
-                <div className="space-y-1.5 text-sm">
-                  <span className="block font-bold text-xs uppercase tracking-wider text-gray-400 dark:text-slate-500">Nhóm nhận meeting</span>
-                  <select
-                    value={selectedGroupId}
-                    onChange={(event) => setSelectedGroupId(event.target.value)}
-                    className="h-11 w-full rounded-2xl border border-gray-200 bg-white px-3.5 text-sm text-gray-900 font-medium focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500 dark:border-slate-750 dark:bg-slate-950 dark:text-slate-100"
-                  >
-                    <option value="">Chọn nhóm nhận biên bản...</option>
-                    {groups
-                      .filter((group) => group.organization_id === currentOrg?.id)
-                      .map((group) => (
-                        <option key={group.id} value={group.id}>{group.name}</option>
-                      ))}
-                  </select>
-                </div>
-                <div className="space-y-1.5 text-sm">
-                  <span className="block font-bold text-xs uppercase tracking-wider text-gray-400 dark:text-slate-500">Tiêu đề cuộc họp</span>
-                  <input
-                    value={title}
-                    onChange={(event) => setTitle(event.target.value)}
-                    placeholder="Ví dụ: Sprint Review - Tuần 22"
-                    className="h-11 w-full rounded-2xl border border-gray-200 bg-white px-4 text-sm font-medium outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500 dark:border-slate-750 dark:bg-slate-950 dark:text-slate-100"
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <span className="block text-xs font-black uppercase tracking-wider text-gray-400 dark:text-slate-500">Thời lượng tệp âm thanh</span>
-                  <div className="flex h-11 items-center rounded-2xl border border-gray-150 bg-gray-50/70 px-4 text-sm font-semibold text-gray-700 dark:border-slate-800/80 dark:bg-slate-950/20 dark:text-slate-350">
-                    {durationLabel}
-                  </div>
+                <div className="rounded-2xl border border-gray-150 bg-gray-50/70 p-4 dark:border-slate-800/80 dark:bg-slate-950/20">
+                  <p className="text-[10px] font-black uppercase tracking-wider text-gray-400 dark:text-slate-500">Batch hiện tại</p>
+                  <p className="mt-1.5 text-sm font-bold text-gray-800 dark:text-slate-200">
+                    {uploadItems.length} file · {batchStatus?.completed_count ?? 0} xong · {batchStatus?.failed_count ?? 0} lỗi
+                  </p>
                 </div>
               </div>
 
               <div className="mt-5">
-                <label className="mb-2 block text-xs font-black uppercase tracking-wider text-gray-400 dark:text-slate-500">Tệp âm thanh nguồn</label>
+                <label className="mb-2 block text-xs font-black uppercase tracking-wider text-gray-400 dark:text-slate-500">Chọn file audio</label>
                 <label className={`flex cursor-pointer flex-col items-center justify-center rounded-3xl border border-dashed p-8 text-center transition-all duration-300 relative overflow-hidden group ${
                   uploadEnabled
                     ? 'border-primary-300 bg-primary-50/15 hover:border-primary-400 hover:bg-primary-50/25 dark:border-primary-900/30 dark:bg-primary-950/5 dark:hover:border-primary-800 dark:hover:bg-primary-950/10'
@@ -364,74 +437,119 @@ const UploadAudio: React.FC = () => {
                 }`}>
                   <input
                     type="file"
+                    multiple
                     accept=".wav,.mp3,.m4a,.mp4,.webm,.ogg,.flac,audio/*"
                     className="hidden"
                     disabled={!uploadEnabled}
                     onChange={(event) => {
-                      const nextFile = event.target.files?.[0] || null;
-                      setSelectedFile(nextFile);
-                      if (nextFile && !title.trim()) {
-                        setTitle(nextFile.name.replace(/\.[^/.]+$/, ''));
-                      }
+                      void handleFilesSelected(event.target.files);
+                      event.target.value = '';
                     }}
                   />
-                  {selectedFile ? (
-                    <div className="space-y-3 w-full flex flex-col items-center z-10">
-                      <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-emerald-50 text-emerald-600 dark:bg-emerald-950/40 dark:text-emerald-400 shadow-sm border border-emerald-100/50 dark:border-emerald-900/30">
-                        <FileAudio size={24} className="stroke-[2]" />
-                      </div>
-                      <div className="space-y-1">
-                        <p className="font-bold text-gray-900 dark:text-slate-100 max-w-md break-all leading-relaxed">{selectedFileLabel}</p>
-                        <p className="text-xs text-gray-400 dark:text-slate-550 font-bold uppercase tracking-wider">{selectedFileSize}</p>
-                      </div>
-                      {/* Audio visualizer active wave */}
-                      {renderVisualizer()}
+                  <div className="space-y-2 flex flex-col items-center z-10">
+                    <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-gray-50 text-gray-400 dark:bg-slate-800/40 dark:text-slate-500 group-hover:scale-110 transition-transform">
+                      <UploadCloud size={24} className="stroke-[1.8]" />
                     </div>
-                  ) : (
-                    <div className="space-y-2 flex flex-col items-center z-10">
-                      <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-gray-50 text-gray-400 dark:bg-slate-800/40 dark:text-slate-500 group-hover:scale-110 transition-transform">
-                        <UploadCloud size={24} className="stroke-[1.8]" />
-                      </div>
-                      <div className="space-y-1">
-                        <p className="font-bold text-gray-700 dark:text-slate-350">{selectedFileLabel}</p>
-                        <p className="text-xs text-gray-400 dark:text-slate-500 leading-relaxed">Định dạng hỗ trợ: wav, mp3, m4a, ogg, flac (Tối đa 50MB)</p>
-                      </div>
+                    <div className="space-y-1">
+                      <p className="font-bold text-gray-700 dark:text-slate-350">Chọn nhiều file .wav, .mp3, .m4a, .mp4, .webm</p>
+                      <p className="text-xs text-gray-400 dark:text-slate-500 leading-relaxed">Mỗi file sẽ thành một meeting riêng, có preview và metadata chỉnh riêng.</p>
                     </div>
-                  )}
+                  </div>
                 </label>
               </div>
 
               <div className="mt-6 rounded-3xl border border-gray-150/50 bg-gradient-to-br from-white/80 to-primary-50/5 p-5 dark:border-slate-800/80 dark:bg-slate-900/45 shadow-sm">
                 <h3 className="text-xs font-black uppercase tracking-wider text-gray-400 dark:text-slate-500 flex items-center gap-1.5">
                   <Sparkles size={14} className="text-primary-500" />
-                  AI / STT Pipeline Configuration
+                  Danh sách file chờ upload
                 </h3>
-                <p className="text-[11px] text-gray-400 dark:text-slate-550 mt-0.5">Cấu hình engine nhận dạng và ngôn ngữ tối ưu cho cuộc họp.</p>
-                <div className="mt-4 grid gap-4 md:grid-cols-2">
-                  <div className="space-y-1.5 text-sm">
-                    <span className="block font-semibold text-xs text-gray-600 dark:text-slate-300">STT Engine</span>
-                    <select
-                      value={sttProvider}
-                      onChange={(event) => setSttProvider(event.target.value)}
-                      className="h-11 w-full rounded-2xl border border-gray-200/80 bg-white px-3.5 text-sm text-gray-900 font-semibold focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500 dark:border-slate-750 dark:bg-slate-950 dark:text-slate-100"
-                    >
-                      {STT_PROVIDER_OPTIONS.map((option) => (
-                        <option key={option.value} value={option.value}>{option.label}</option>
+                <p className="text-[11px] text-gray-400 dark:text-slate-550 mt-0.5">Mỗi file có title, nhóm, ngôn ngữ, engine riêng và nghe thử trước khi gửi.</p>
+                <div className="mt-4 space-y-4">
+                  {uploadItems.length === 0 ? (
+                    <div className="rounded-2xl border border-dashed border-gray-200 p-6 text-center text-xs font-semibold text-gray-500 dark:border-slate-800 dark:text-slate-400">
+                      Chưa có file nào trong batch.
+                    </div>
+                  ) : (
+                    <>
+                      {uploadItems.map((item, index) => (
+                        <div key={item.clientId} className="rounded-3xl border border-gray-150/60 bg-gray-50/30 p-4 dark:border-slate-800 dark:bg-slate-950/20">
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <p className="text-sm font-black text-gray-900 dark:text-slate-100 break-all">{item.sourceLabel}</p>
+                                <span className="rounded-full bg-white px-2.5 py-1 text-[9px] font-black uppercase tracking-wider text-gray-500 dark:bg-slate-900 dark:text-slate-400">
+                                  File {index + 1}
+                                </span>
+                              </div>
+                              <p className="mt-1 text-[11px] font-semibold text-gray-500 dark:text-slate-400">{formatBytes(item.file.size)} · {formatDuration(item.estimatedDurationSeconds)}</p>
+                            </div>
+                            <button
+                              onClick={() => removeUploadItem(item.clientId)}
+                              className="flex h-10 w-10 items-center justify-center rounded-2xl border border-gray-200 bg-white text-gray-500 transition hover:text-red-600 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-400"
+                            >
+                              <Trash2 size={16} />
+                            </button>
+                          </div>
+
+                          <div className="mt-4 grid gap-4 md:grid-cols-2">
+                              <div className="space-y-1.5 text-sm">
+                                <span className="block font-bold text-xs uppercase tracking-wider text-gray-400 dark:text-slate-500">Tiêu đề cuộc họp</span>
+                                <input
+                                  value={item.title}
+                                  onChange={(event) => updateUploadItem(item.clientId, { title: event.target.value })}
+                                  className="h-11 w-full rounded-2xl border border-gray-200 bg-white px-4 text-sm font-medium outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500 dark:border-slate-750 dark:bg-slate-950 dark:text-slate-100"
+                                />
+                              </div>
+                              <div className="space-y-1.5 text-sm">
+                                <span className="block font-bold text-xs uppercase tracking-wider text-gray-400 dark:text-slate-500">Nhóm nhận meeting</span>
+                                <select
+                                  value={item.groupId}
+                                  onChange={(event) => updateUploadItem(item.clientId, { groupId: event.target.value })}
+                                  className="h-11 w-full rounded-2xl border border-gray-200 bg-white px-3.5 text-sm text-gray-900 font-medium focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500 dark:border-slate-750 dark:bg-slate-950 dark:text-slate-100"
+                                >
+                                  <option value="">Chọn nhóm nhận biên bản...</option>
+                                  {orgGroups.map((group) => (
+                                    <option key={group.id} value={group.id}>{group.name}</option>
+                                  ))}
+                                </select>
+                              </div>
+                              <div className="space-y-1.5 text-sm">
+                                <span className="block font-bold text-xs uppercase tracking-wider text-gray-400 dark:text-slate-500">Ngôn ngữ đàm thoại</span>
+                                <select
+                                  value={item.language}
+                                  onChange={(event) => updateUploadItem(item.clientId, { language: event.target.value })}
+                                  className="h-11 w-full rounded-2xl border border-gray-200 bg-white px-3.5 text-sm text-gray-900 font-medium focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500 dark:border-slate-750 dark:bg-slate-950 dark:text-slate-100"
+                                >
+                                  {LANGUAGE_OPTIONS.map((option) => (
+                                    <option key={option.value} value={option.value}>{option.label}</option>
+                                  ))}
+                                </select>
+                              </div>
+                              <div className="space-y-1.5 text-sm">
+                                <span className="block font-bold text-xs uppercase tracking-wider text-gray-400 dark:text-slate-500">STT engine</span>
+                                <select
+                                  value={item.sttProvider}
+                                  onChange={(event) => updateUploadItem(item.clientId, { sttProvider: event.target.value })}
+                                  className="h-11 w-full rounded-2xl border border-gray-200 bg-white px-3.5 text-sm text-gray-900 font-medium focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500 dark:border-slate-750 dark:bg-slate-950 dark:text-slate-100"
+                                >
+                                  {STT_PROVIDER_OPTIONS.map((option) => (
+                                    <option key={option.value} value={option.value}>{option.label}</option>
+                                  ))}
+                                </select>
+                              </div>
+                          </div>
+
+                          <div className="mt-4 rounded-2xl border border-gray-150/60 bg-white/70 p-3 dark:border-slate-800 dark:bg-slate-950/40">
+                              <p className="text-[10px] font-black uppercase tracking-wider text-gray-400 dark:text-slate-500">Nghe thử trước khi upload</p>
+                              <audio controls preload="metadata" src={item.objectUrl} className="mt-3 w-full" />
+                              <p className="mt-2 text-[11px] font-semibold text-gray-500 dark:text-slate-400">
+                                {item.previewStatus === 'error' ? 'Không đọc được metadata thời lượng, nhưng vẫn có thể upload.' : 'Preview sẵn sàng.'}
+                              </p>
+                          </div>
+                        </div>
                       ))}
-                    </select>
-                  </div>
-                  <div className="space-y-1.5 text-sm">
-                    <span className="block font-semibold text-xs text-gray-600 dark:text-slate-300">Ngôn ngữ đàm thoại</span>
-                    <select
-                      value={language}
-                      onChange={(event) => setLanguage(event.target.value)}
-                      className="h-11 w-full rounded-2xl border border-gray-200/80 bg-white px-3.5 text-sm text-gray-900 font-semibold focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500 dark:border-slate-750 dark:bg-slate-950 dark:text-slate-100"
-                    >
-                      {LANGUAGE_OPTIONS.map((option) => (
-                        <option key={option.value} value={option.value}>{option.label}</option>
-                      ))}
-                    </select>
-                  </div>
+                    </>
+                  )}
                 </div>
               </div>
 
@@ -450,24 +568,21 @@ const UploadAudio: React.FC = () => {
                 <Button
                   variant="primary"
                   onClick={() => uploadMutation.mutate()}
-                  disabled={!uploadEnabled || !currentOrg?.id || !selectedGroupId || !selectedFile || isUploading}
+                  disabled={!uploadEnabled || !currentOrg?.id || uploadItems.length === 0 || isUploading}
                   isLoading={isUploading}
                   className="h-11 px-6 rounded-2xl text-xs font-bold uppercase tracking-wider flex items-center gap-2 shadow-lg shadow-primary-600/15"
                 >
                   {!isUploading && <UploadCloud size={14} className="stroke-[2.5]" />}
-                  {isUploading ? 'Đang gửi bản ghi...' : 'Gửi file lên backend'}
+                  {isUploading ? 'Đang gửi batch...' : 'Gửi batch lên backend'}
                 </Button>
-                {statusCard?.status === 'failed' && (
-                  <Button
-                    variant="secondary"
-                    onClick={() => retryMutation.mutate()}
-                    isLoading={retryMutation.isPending}
-                    className="h-11 px-5 rounded-2xl text-xs font-bold uppercase tracking-wider border border-amber-250/30 bg-amber-50 text-amber-800 dark:bg-amber-950/15 dark:border-amber-900/30 dark:text-amber-400 flex items-center gap-2"
-                  >
-                    {!retryMutation.isPending && <RefreshCcw size={14} className="stroke-[2.5]" />}
-                    Retry job
-                  </Button>
-                )}
+                <Button
+                  variant="secondary"
+                  onClick={clearBatch}
+                  disabled={uploadItems.length === 0}
+                  className="h-11 px-5 rounded-2xl text-xs font-bold uppercase tracking-wider"
+                >
+                  Xóa batch
+                </Button>
               </div>
             </div>
           </div>
@@ -476,14 +591,14 @@ const UploadAudio: React.FC = () => {
             <div className="rounded-3xl border border-gray-200 bg-white p-6 shadow-sm dark:border-slate-700 dark:bg-slate-900 transition-all">
               <div className="flex items-center justify-between pb-3 border-b border-gray-100 dark:border-slate-800">
                 <h2 className="text-xs font-black text-gray-900 dark:text-slate-100 uppercase tracking-widest">Tiến độ xử lý AI</h2>
-                {statusCard?.status === 'completed' && (
+                {batchStatus?.status === 'completed' && (
                   <span className="rounded-full bg-emerald-50 border border-emerald-100 px-3 py-1 text-[9px] font-black uppercase tracking-wider text-emerald-700 dark:bg-emerald-950/20 dark:border-emerald-900/30 dark:text-emerald-400">
-                    Redirecting
+                    Batch done
                   </span>
                 )}
               </div>
 
-              {!currentJobId ? (
+              {!currentBatchId && uploadItems.length === 0 ? (
                 <div className="mt-5 flex min-h-[220px] flex-col items-center justify-center rounded-2xl border border-dashed border-gray-250 p-6 text-center dark:border-slate-850 bg-gray-50/20 dark:bg-slate-950/10">
                   <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gray-50 text-gray-400 dark:bg-slate-900/60 dark:text-slate-600">
                     <Loader2 size={18} className="stroke-[1.8] text-gray-300 animate-spin" />
@@ -499,120 +614,111 @@ const UploadAudio: React.FC = () => {
                     <p className="text-[10px] font-black uppercase tracking-wider text-gray-400 dark:text-slate-550">Giai đoạn hiện tại</p>
                     <p className="mt-1 text-sm font-black text-gray-900 dark:text-slate-100 flex items-center gap-1.5">
                       <span className="h-2 w-2 rounded-full bg-primary-500 animate-ping" />
-                      {currentStageLabel}
+                      {batchStatus?.status === 'completed_with_errors' ? 'Batch hoàn tất nhưng có file lỗi' : batchStatus?.status === 'completed' ? 'Toàn bộ batch đã hoàn tất' : 'Đang xử lý batch nhiều file'}
                     </p>
                     
                     {/* Glowing progress bar with shimmer effect */}
                     <div className="mt-4 h-2.5 overflow-hidden rounded-full bg-gray-200 dark:bg-slate-800 border border-gray-100/10">
                       <div
                         className={`h-full rounded-full transition-all duration-500 animate-shimmer bg-gradient-to-r ${
-                          statusCard?.status === 'failed' 
+                          batchStatus?.failed_count 
                             ? 'from-red-500 to-red-600' 
                             : 'from-primary-400 via-primary-500 to-emerald-500'
                         }`}
-                        style={{ width: `${statusCard?.progress_percent ?? 0}%` }}
+                        style={{ width: `${batchProgressPercent}%` }}
                       />
                     </div>
                     <div className="mt-2 flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-slate-500">
-                      <span>{statusCard?.status || 'queued'}</span>
-                      <span>{statusCard?.progress_percent ?? 0}% hoàn thành</span>
+                      <span>{STATUS_LABELS[batchStatus?.status || 'draft'] || batchStatus?.status || 'Chưa gửi'}</span>
+                      <span>{batchProgressPercent}% hoàn thành</span>
                     </div>
                   </div>
 
                   <div className="grid gap-3 sm:grid-cols-2">
                     <div className="rounded-2xl border border-gray-100 bg-gray-50/20 p-4 dark:border-slate-850 dark:bg-slate-950/15">
-                      <p className="text-[9px] font-black uppercase tracking-wider text-gray-400 dark:text-slate-500">Meeting ID</p>
-                      <p className="mt-1 text-xs font-bold text-gray-950 dark:text-slate-350 truncate" title={currentMeetingId || statusCard?.meeting_id || 'N/A'}>
-                        {currentMeetingId || statusCard?.meeting_id || 'Đang tạo...'}
+                      <p className="text-[9px] font-black uppercase tracking-wider text-gray-400 dark:text-slate-500">Batch ID</p>
+                      <p className="mt-1 text-xs font-bold text-gray-950 dark:text-slate-350 truncate" title={currentBatchId || 'N/A'}>
+                        {currentBatchId || 'Chưa submit batch'}
                       </p>
                     </div>
                     <div className="rounded-2xl border border-gray-100 bg-gray-50/20 p-4 dark:border-slate-850 dark:bg-slate-950/15">
-                      <p className="text-[9px] font-black uppercase tracking-wider text-gray-400 dark:text-slate-500">Job ID</p>
-                      <p className="mt-1 text-xs font-bold text-gray-950 dark:text-slate-350 truncate" title={currentJobId}>
-                        {currentJobId}
+                      <p className="text-[9px] font-black uppercase tracking-wider text-gray-400 dark:text-slate-500">Tiến độ batch</p>
+                      <p className="mt-1 text-xs font-bold text-gray-950 dark:text-slate-350 truncate">
+                        {batchStatus?.completed_count ?? 0}/{uploadItems.length} file hoàn tất
                       </p>
                     </div>
                   </div>
 
-                  {/* Vertical Spacecraft Pipeline Timeline */}
-                  <div className="relative pl-4 space-y-4 border-l border-gray-150/60 dark:border-slate-850/60 ml-2 py-1">
-                    {['uploaded', 'normalized', 'transcribing', 'diarizing', 'post_processing', 'summarizing', 'completed'].map((stage) => {
-                      const currentStage = statusCard?.current_stage || '';
-                      const isCurrent = currentStage === stage;
-                      
-                      const stageWeights: Record<string, number> = {
-                        uploaded: 10, normalized: 25, transcribing: 60, diarizing: 72, post_processing: 82, summarizing: 90, completed: 100
-                      };
-                      
-                      const reached = currentStage === stage || (statusCard?.progress_percent || 0) >= (stageWeights[stage] || 0);
-                      const isCompleted = reached && !isCurrent && statusCard?.status !== 'failed';
-                      const isFailed = isCurrent && statusCard?.status === 'failed';
-                      
-                      return (
-                        <div key={stage} className="flex items-center gap-3.5 relative group">
-                          {/* Indicator Node */}
-                          <div className="absolute -left-[24.5px] flex h-4 w-4 items-center justify-center rounded-full bg-white dark:bg-slate-900 transition-all duration-300">
-                            {isCompleted ? (
-                              <div className="h-3 w-3 rounded-full bg-emerald-500 flex items-center justify-center text-[7px] text-white font-black">
-                                ✓
-                              </div>
-                            ) : isFailed ? (
-                              <div className="h-3 w-3 rounded-full bg-red-500" />
-                            ) : isCurrent ? (
-                              <div className="h-3 w-3 rounded-full bg-primary-500 animate-ping absolute opacity-75" style={{ animationDuration: '1.2s' }} />
-                            ) : reached ? (
-                              <div className="h-2 w-2 rounded-full bg-primary-500" />
-                            ) : (
-                              <div className="h-2 w-2 rounded-full bg-gray-200 dark:bg-slate-800 group-hover:bg-gray-300 dark:group-hover:bg-slate-700 transition" />
-                            )}
+                  <div className="space-y-3">
+                    {uploadItems.map((item) => (
+                      <div key={item.clientId} className="rounded-2xl border border-gray-150/60 bg-gray-50/30 p-4 dark:border-slate-850 dark:bg-slate-950/20">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="truncate text-xs font-black text-gray-900 dark:text-slate-100">{item.title || item.sourceLabel}</p>
+                            <p className="mt-1 truncate text-[10px] font-semibold uppercase tracking-wider text-gray-400 dark:text-slate-500">
+                              {item.currentStage ? (STAGE_LABELS[item.currentStage] || item.currentStage) : 'Chưa gửi'}
+                            </p>
                           </div>
-                          
-                          {/* Label and status details */}
-                          <div className="flex flex-col">
-                            <span className={`text-[11px] uppercase tracking-wider font-bold transition-all ${
-                              isCurrent
-                                ? 'text-primary-600 dark:text-primary-400 font-extrabold'
-                                : reached
-                                ? 'text-gray-900 dark:text-slate-200 font-semibold'
-                                : 'text-gray-400 dark:text-slate-600'
-                            }`}>
-                              {STAGE_LABELS[stage]}
-                            </span>
-                            {isCurrent && !isFailed && statusCard?.status !== 'completed' && (
-                              <span className="text-[10px] text-primary-400 dark:text-primary-500 font-semibold animate-pulse mt-0.5">
-                                Đang xử lý...
-                              </span>
-                            )}
-                          </div>
+                          <span className={`rounded-full px-2.5 py-1 text-[9px] font-black uppercase tracking-wider ${
+                            item.status === 'completed'
+                              ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-300'
+                              : item.status === 'failed'
+                              ? 'bg-red-50 text-red-700 dark:bg-red-950/30 dark:text-red-300'
+                              : item.status === 'processing' || item.status === 'queued'
+                              ? 'bg-primary-50 text-primary-700 dark:bg-primary-950/30 dark:text-primary-300'
+                              : 'bg-gray-100 text-gray-600 dark:bg-slate-800 dark:text-slate-400'
+                          }`}>
+                            {STATUS_LABELS[item.status] || item.status}
+                          </span>
                         </div>
-                      );
-                    })}
+                        <div className="mt-3 h-2 overflow-hidden rounded-full bg-gray-200 dark:bg-slate-800">
+                          <div
+                            className="h-full rounded-full bg-gradient-to-r from-primary-400 to-emerald-500 transition-all duration-500"
+                            style={{ width: `${item.progressPercent ?? 0}%` }}
+                          />
+                        </div>
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          {item.meetingId && (
+                            <Button
+                              variant="secondary"
+                              onClick={() => navigate(`/meetings/${item.meetingId}`)}
+                              className="h-9 rounded-2xl px-4 text-[10px] font-bold uppercase tracking-wider"
+                            >
+                              Mở meeting
+                            </Button>
+                          )}
+                          {item.status === 'failed' && item.jobId && (
+                            <Button
+                              variant="secondary"
+                              onClick={() => retryMutation.mutate(item.jobId!)}
+                              isLoading={retryMutation.isPending}
+                              className="h-9 rounded-2xl px-4 text-[10px] font-bold uppercase tracking-wider"
+                            >
+                              Retry file này
+                            </Button>
+                          )}
+                        </div>
+                        {item.errorMessage && (
+                          <p className="mt-3 text-[11px] font-semibold text-red-600 dark:text-red-400">{item.errorMessage}</p>
+                        )}
+                      </div>
+                    ))}
                   </div>
 
-                  {statusCard?.error_message && (
+                  {batchStatusQuery.error instanceof Error && (
                     <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-xs font-semibold text-red-700 dark:border-red-900/30 dark:bg-red-900/10 dark:text-red-300">
-                      {statusCard.error_message}
+                      {batchStatusQuery.error.message}
                     </div>
                   )}
 
                   <div className="flex flex-wrap gap-2.5 pt-2">
-                    {currentMeetingId && (
-                      <Button
-                        variant="secondary"
-                        onClick={() => navigate(`/meetings/${currentMeetingId}`)}
-                        className="h-10 rounded-2xl px-5 text-xs font-bold uppercase tracking-wider flex items-center gap-2"
-                      >
-                        <FileAudio size={14} className="stroke-[2.5]" />
-                        Mở meeting
-                      </Button>
-                    )}
                     <Button
                       variant="secondary"
-                      onClick={() => jobQuery.refetch()}
-                      disabled={!currentJobId || jobQuery.isFetching}
+                      onClick={() => batchStatusQuery.refetch()}
+                      disabled={!currentBatchId || batchStatusQuery.isFetching}
                       className="h-10 rounded-2xl px-5 text-xs font-bold uppercase tracking-wider flex items-center gap-2"
                     >
-                      {jobQuery.isFetching ? <Loader2 size={14} className="animate-spin" /> : <RefreshCcw size={14} />}
+                      {batchStatusQuery.isFetching ? <Loader2 size={14} className="animate-spin" /> : <RefreshCcw size={14} />}
                       Cập nhật trạng thái
                     </Button>
                   </div>

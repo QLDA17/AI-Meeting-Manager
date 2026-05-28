@@ -7,6 +7,7 @@ import queue
 import subprocess
 import threading
 import time
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -24,7 +25,9 @@ from src.api.core.meetings_support import (
 )
 from src.api.core.meeting_operations import ensure_speaker_identity_mapping, get_ws_user, meeting_room_manager
 from src.api.core.upload_jobs import (
+    UploadBatchState,
     UploadMeetingJob,
+    register_upload_batch,
     normalize_upload_language,
     register_upload_job,
     sanitize_upload_filename,
@@ -79,6 +82,100 @@ def parse_optional_form_datetime(raw_value: Optional[str]) -> Optional[datetime]
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=timezone.utc)
     return parsed
+
+
+async def save_upload_file_stream(upload: UploadFile, destination_path: str, max_upload_size: int) -> int:
+    total_bytes = 0
+    with open(destination_path, "wb") as output_file:
+        while True:
+            chunk = await upload.read(1024 * 1024)
+            if not chunk:
+                break
+            total_bytes += len(chunk)
+            if max_upload_size and total_bytes > max_upload_size:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"File too large. Max size is {max_upload_size // (1024 * 1024)}MB",
+                )
+            output_file.write(chunk)
+    if total_bytes <= 0:
+        raise HTTPException(status_code=400, detail="Empty audio file")
+    return total_bytes
+
+
+def create_upload_job_for_file(
+    *,
+    db: Session,
+    current_user: models.User,
+    upload_file: UploadFile,
+    organization_id: str,
+    group_id: Optional[str],
+    title: Optional[str],
+    description: Optional[str],
+    scheduled_start: Optional[datetime],
+    scheduled_end: Optional[datetime],
+    language: str,
+    stt_provider: str,
+    enable_diarization: bool,
+    enable_summary: bool,
+    enable_action_items: bool,
+    enable_noise_cleanup: bool,
+    stored_filename: str,
+    original_path: str,
+    file_size: int,
+    batch_id: Optional[str] = None,
+    client_id: Optional[str] = None,
+) -> UploadMeetingJob:
+    meeting_title = (title or "").strip() or os.path.splitext(upload_file.filename or stored_filename)[0]
+    meeting_payload = {
+        "organization_id": organization_id,
+        "group_id": group_id,
+        "title": meeting_title,
+        "description": description,
+        "meeting_type": "MEETING",
+        "status": "queued",
+        "scheduled_start": scheduled_start,
+        "scheduled_end": scheduled_end,
+    }
+    meeting = create_meeting(db, meeting_payload, created_by=current_user.id)
+    add_meeting_participant(db, meeting.id, user_id=current_user.id, role="HOST", invite_status="accepted")
+
+    audio_record = create_audio_file(db, {
+        "meeting_id": meeting.id,
+        "filename": stored_filename,
+        "original_filename": upload_file.filename,
+        "file_path": original_path,
+        "file_size": file_size,
+        "format": os.path.splitext(stored_filename)[1].replace(".", "").upper() or "BIN",
+        "upload_status": "UPLOADED",
+    })
+    audio_stream_url = f"/api/audio-files/{audio_record.id}/stream"
+    update_meeting(db, meeting.id, {
+        "audio_url": audio_stream_url,
+        "recording_url": audio_stream_url,
+        "status": "queued",
+    })
+
+    normalized_language = normalize_upload_language(language)
+    provider_name = (stt_provider or "deepgram").strip().lower() or "deepgram"
+    job = register_upload_job(UploadMeetingJob(
+        meeting_id=meeting.id,
+        created_by=current_user.id,
+        audio_file_id=audio_record.id,
+        original_audio_path=original_path,
+        original_filename=upload_file.filename or stored_filename,
+        organization_id=organization_id,
+        batch_id=batch_id,
+        client_id=client_id,
+        stt_provider=provider_name,
+        language=normalized_language,
+        enable_diarization=enable_diarization,
+        enable_summary=enable_summary,
+        enable_action_items=enable_action_items,
+        enable_noise_cleanup=enable_noise_cleanup,
+    ))
+    start_upload_job(job)
+    return job
 def upsert_transcript_draft(
     db: Session,
     meeting_id: str,
@@ -155,84 +252,142 @@ async def upload_audio(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    max_upload_size = int(config.server.max_upload_size or 0)
-    upload_bytes = bytearray()
-    while True:
-        chunk = await file.read(1024 * 1024)
-        if not chunk:
-            break
-        upload_bytes.extend(chunk)
-        if max_upload_size and len(upload_bytes) > max_upload_size:
-            raise HTTPException(status_code=413, detail=f"File too large. Max size is {max_upload_size // (1024 * 1024)}MB")
-    if not upload_bytes:
-        raise HTTPException(status_code=400, detail="Empty audio file")
-
     try:
         parsed_start = parse_optional_form_datetime(scheduled_start)
         parsed_end = parse_optional_form_datetime(scheduled_end)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="Invalid meeting date/time") from exc
 
-    meeting_title = (title or "").strip() or os.path.splitext(file.filename)[0]
-    meeting_payload = {
-        "organization_id": organization_id,
-        "group_id": group_id,
-        "title": meeting_title,
-        "description": description,
-        "meeting_type": "MEETING",
-        "status": "queued",
-        "scheduled_start": parsed_start,
-        "scheduled_end": parsed_end,
-    }
-    meeting = create_meeting(db, meeting_payload, created_by=current_user.id)
-    add_meeting_participant(db, meeting.id, user_id=current_user.id, role="HOST", invite_status="accepted")
-
-    meeting_dir = os.path.join(ensure_audio_upload_dir(), meeting.id)
+    meeting_dir = os.path.join(ensure_audio_upload_dir(), str(uuid.uuid4()))
     os.makedirs(meeting_dir, exist_ok=True)
     stored_filename = sanitize_upload_filename(file.filename)
     original_path = os.path.join(meeting_dir, stored_filename)
-    with open(original_path, "wb") as output_file:
-        output_file.write(upload_bytes)
-
-    audio_record = create_audio_file(db, {
-        "meeting_id": meeting.id,
-        "filename": stored_filename,
-        "original_filename": file.filename,
-        "file_path": original_path,
-        "file_size": len(upload_bytes),
-        "format": os.path.splitext(stored_filename)[1].replace(".", "").upper() or "BIN",
-        "upload_status": "UPLOADED",
-    })
-    audio_stream_url = f"/api/audio-files/{audio_record.id}/stream"
-    update_meeting(db, meeting.id, {
-        "audio_url": audio_stream_url,
-        "recording_url": audio_stream_url,
-        "status": "queued",
-    })
-
-    normalized_language = normalize_upload_language(language)
-    provider_name = (stt_provider or "deepgram").strip().lower() or "deepgram"
-    job = register_upload_job(UploadMeetingJob(
-        meeting_id=meeting.id,
-        created_by=current_user.id,
-        audio_file_id=audio_record.id,
-        original_audio_path=original_path,
-        original_filename=file.filename,
+    file_size = await save_upload_file_stream(file, original_path, int(config.server.max_upload_size or 0))
+    job = create_upload_job_for_file(
+        db=db,
+        current_user=current_user,
+        upload_file=file,
         organization_id=organization_id,
-        stt_provider=provider_name,
-        language=normalized_language,
+        group_id=group_id,
+        title=title,
+        description=description,
+        scheduled_start=parsed_start,
+        scheduled_end=parsed_end,
+        language=language,
+        stt_provider=stt_provider,
         enable_diarization=parse_bool_form(enable_diarization, True),
         enable_summary=parse_bool_form(enable_summary, True),
         enable_action_items=parse_bool_form(enable_action_items, False),
         enable_noise_cleanup=parse_bool_form(enable_noise_cleanup, True),
-    ))
-    start_upload_job(job)
+        stored_filename=stored_filename,
+        original_path=original_path,
+        file_size=file_size,
+    )
     return {
         "job_id": job.job_id,
-        "meeting_id": meeting.id,
+        "meeting_id": job.meeting_id,
         "status": job.status,
         "progress_percent": job.progress_percent,
         "current_stage": job.current_stage,
+    }
+
+
+@router.post("/api/uploads/batch")
+async def upload_audio_batch(
+    files: List[UploadFile] = File(...),
+    items: str = Form(...),
+    organization_id: str = Form(...),
+    db: Session = Depends(get_db),
+    current_user=Depends(auth.get_current_user),
+):
+    auth.require_org_member(db, current_user, organization_id)
+
+    try:
+        raw_items = json.loads(items)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="Invalid batch metadata payload") from exc
+
+    if not isinstance(raw_items, list) or not raw_items:
+        raise HTTPException(status_code=400, detail="Batch metadata must be a non-empty array")
+    if len(raw_items) != len(files):
+        raise HTTPException(status_code=400, detail="files and items length mismatch")
+
+    batch = register_upload_batch(UploadBatchState(
+        batch_id=str(uuid.uuid4()),
+        organization_id=organization_id,
+        created_by=current_user.id,
+    ))
+    response_items: List[Dict[str, Any]] = []
+
+    for index, upload_file in enumerate(files):
+        item = raw_items[index]
+        if not isinstance(item, dict):
+            raise HTTPException(status_code=400, detail=f"Batch item {index} is invalid")
+        if not upload_file.filename:
+            raise HTTPException(status_code=400, detail=f"Audio file at index {index} is missing a filename")
+        try:
+            validate_upload_filename(upload_file.filename)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        group_id = item.get("group_id") or item.get("groupId")
+        if group_id:
+            group = auth.require_group_member(db, current_user, group_id)
+            if group.organization_id != organization_id:
+                raise HTTPException(status_code=400, detail="Group does not belong to organization")
+
+        try:
+            parsed_start = parse_optional_form_datetime(item.get("scheduled_start") or item.get("scheduledStart"))
+            parsed_end = parse_optional_form_datetime(item.get("scheduled_end") or item.get("scheduledEnd"))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid meeting date/time for item {index}") from exc
+
+        client_id = str(item.get("client_id") or item.get("clientId") or f"item-{index}")
+        meeting_dir = os.path.join(ensure_audio_upload_dir(), str(uuid.uuid4()))
+        os.makedirs(meeting_dir, exist_ok=True)
+        stored_filename = sanitize_upload_filename(upload_file.filename)
+        original_path = os.path.join(meeting_dir, stored_filename)
+        file_size = await save_upload_file_stream(upload_file, original_path, int(config.server.max_upload_size or 0))
+
+        job = create_upload_job_for_file(
+            db=db,
+            current_user=current_user,
+            upload_file=upload_file,
+            organization_id=organization_id,
+            group_id=group_id,
+            title=item.get("title"),
+            description=item.get("description"),
+            scheduled_start=parsed_start,
+            scheduled_end=parsed_end,
+            language=str(item.get("language") or "auto"),
+            stt_provider=str(item.get("stt_provider") or item.get("sttProvider") or "deepgram"),
+            enable_diarization=parse_bool_form(item.get("enable_diarization"), True),
+            enable_summary=parse_bool_form(item.get("enable_summary"), True),
+            enable_action_items=parse_bool_form(item.get("enable_action_items"), True),
+            enable_noise_cleanup=parse_bool_form(item.get("enable_noise_cleanup"), True),
+            stored_filename=stored_filename,
+            original_path=original_path,
+            file_size=file_size,
+            batch_id=batch.batch_id,
+            client_id=client_id,
+        )
+        batch.add_item(client_id=client_id, job_id=job.job_id, filename=upload_file.filename)
+        response_items.append({
+            "client_id": client_id,
+            "filename": upload_file.filename,
+            "job_id": job.job_id,
+            "meeting_id": job.meeting_id,
+            "status": job.status,
+            "current_stage": job.current_stage,
+            "progress_percent": job.progress_percent,
+        })
+
+    return {
+        "batch_id": batch.batch_id,
+        "organization_id": organization_id,
+        "status": "queued",
+        "total_items": len(response_items),
+        "items": response_items,
     }
 
 # Singleton STT providers - load once, reuse for all chunks

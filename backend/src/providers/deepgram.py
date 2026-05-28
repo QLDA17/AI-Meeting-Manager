@@ -1,6 +1,6 @@
 import os
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 try:
     from deepgram import DeepgramClient
@@ -12,6 +12,91 @@ logger = logging.getLogger(__name__)
 
 # Deepgram Nova-3 pricing: ~$0.0043/min = $0.0000717/sec
 _COST_PER_SECOND = 0.0000717
+
+
+def _read_attr(value: Any, key: str, default: Any = None) -> Any:
+    if value is None:
+        return default
+    if isinstance(value, dict):
+        return value.get(key, default)
+    return getattr(value, key, default)
+
+
+def _collect_alternative(results: Any) -> Any:
+    channels = _read_attr(results, "channels", []) or []
+    first_channel = channels[0] if channels else None
+    alternatives = _read_attr(first_channel, "alternatives", []) or []
+    return alternatives[0] if alternatives else None
+
+
+def _extract_transcript(results: Any, alternative: Any) -> str:
+    transcript = str(_read_attr(alternative, "transcript", "") or "").strip()
+    if transcript:
+        return transcript
+    utterances = _read_attr(results, "utterances", []) or []
+    utterance_texts = [str(_read_attr(item, "transcript", "") or "").strip() for item in utterances]
+    return " ".join(text for text in utterance_texts if text).strip()
+
+
+def _extract_segments(results: Any, alternative: Any) -> List[Dict[str, Any]]:
+    segments: List[Dict[str, Any]] = []
+    utterances = _read_attr(results, "utterances", []) or []
+    if utterances:
+        for utterance in utterances:
+            text = str(_read_attr(utterance, "transcript", "") or "").strip()
+            if not text:
+                continue
+            speaker = _read_attr(utterance, "speaker")
+            segments.append({
+                "start": float(_read_attr(utterance, "start", 0) or 0),
+                "end": float(_read_attr(utterance, "end", 0) or 0),
+                "text": text,
+                "speaker": f"Speaker {speaker}" if speaker is not None else None,
+            })
+        if segments:
+            return segments
+
+    words = _read_attr(alternative, "words", []) or []
+    if words:
+        current_text: List[str] = []
+        current_speaker = None
+        seg_start = float(_read_attr(words[0], "start", 0) or 0)
+        prev_end = float(_read_attr(words[0], "end", seg_start) or seg_start)
+        for word_item in words:
+            word_text = str(_read_attr(word_item, "word", "") or "").strip()
+            if not word_text:
+                continue
+            word_start = float(_read_attr(word_item, "start", prev_end) or prev_end)
+            word_end = float(_read_attr(word_item, "end", word_start) or word_start)
+            word_speaker = _read_attr(word_item, "speaker")
+            if current_text and (
+                (word_speaker is not None and word_speaker != current_speaker)
+                or (word_end - seg_start >= 5.0)
+            ):
+                segment = {
+                    "start": seg_start,
+                    "end": prev_end,
+                    "text": " ".join(current_text),
+                }
+                if current_speaker is not None:
+                    segment["speaker"] = f"Speaker {current_speaker}"
+                segments.append(segment)
+                current_text = []
+                seg_start = word_start
+            current_text.append(word_text)
+            if word_speaker is not None:
+                current_speaker = word_speaker
+            prev_end = word_end
+        if current_text:
+            segment = {
+                "start": seg_start,
+                "end": prev_end,
+                "text": " ".join(current_text),
+            }
+            if current_speaker is not None:
+                segment["speaker"] = f"Speaker {current_speaker}"
+            segments.append(segment)
+    return segments
 
 class DeepgramProvider:
     """Deepgram cloud STT provider for Vietnamese."""
@@ -72,57 +157,25 @@ class DeepgramProvider:
             self.last_model = model
 
             results = response.results
-            transcript = results.channels[0].alternatives[0].transcript
-
-            # Chuyen doi segments theo format chuan cua he thong
-            segments = []
-            utterances = results.utterances
-            if utterances:
-                for utt in utterances:
-                    segments.append({
-                        "start": utt.start,
-                        "end": utt.end,
-                        "text": utt.transcript,
-                        "speaker": f"Speaker {utt.speaker}" if hasattr(utt, "speaker") else None,
-                    })
-            else:
-                # Fallback: dung words neu khong co utterances
-                words = results.channels[0].alternatives[0].words
-                if words:
-                    current_text = []
-                    current_speaker = None
-                    seg_start = words[0].start
-                    prev_end = words[0].end
-                    for w in words:
-                        word_speaker = getattr(w, "speaker", None)
-                        # Tach segment khi doi speaker hoac du 5 giay
-                        if current_text and (
-                            (word_speaker is not None and word_speaker != current_speaker)
-                            or (w.end - seg_start >= 5.0)
-                        ):
-                            seg = {
-                                "start": seg_start,
-                                "end": prev_end,
-                                "text": " ".join(current_text),
-                            }
-                            if current_speaker is not None:
-                                seg["speaker"] = f"Speaker {current_speaker}"
-                            segments.append(seg)
-                            current_text = []
-                            seg_start = w.end
-                        current_text.append(w.word)
-                        if word_speaker is not None:
-                            current_speaker = word_speaker
-                        prev_end = w.end
-                    if current_text:
-                        seg = {
-                            "start": seg_start,
-                            "end": words[-1].end,
-                            "text": " ".join(current_text),
-                        }
-                        if current_speaker is not None:
-                            seg["speaker"] = f"Speaker {current_speaker}"
-                        segments.append(seg)
+            alternative = _collect_alternative(results)
+            transcript = _extract_transcript(results, alternative)
+            segments = _extract_segments(results, alternative)
+            if transcript and not segments:
+                fallback_end = duration_seconds if duration_seconds > 0 else 5.0
+                segments = [{
+                    "start": 0.0,
+                    "end": fallback_end,
+                    "text": transcript,
+                }]
+            logger.info(
+                "Deepgram transcription completed model=%s language=%s diarize=%s duration=%.2f text_len=%s segments=%s",
+                model,
+                selected_language,
+                diarize,
+                duration_seconds,
+                len(transcript),
+                len(segments),
+            )
 
             return {
                 "text": transcript,
